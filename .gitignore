@@ -1,0 +1,16 @@
+# Built binary (produced by `go build` / install.sh)
+/agent-local
+
+# Go build/test artifacts
+*.test
+*.out
+/dist/
+
+# Local runtime state lives in ~/.agent-local, never in the repo
+/sites/
+/dumps/
+/logs/
+/run/
+
+# macOS
+.DS_Store

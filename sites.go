@@ -1,0 +1,822 @@
+package main
+
+import (
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+)
+
+// CreateOpts configures a new site.
+type CreateOpts struct {
+	Name       string
+	Domain     string // empty → slug.test
+	PHPVersion string // empty → highest installed
+	WPVersion  string // empty → "latest"
+	Repo       string // optional git clone source instead of fresh download
+	AdminUser  string // default "admin"
+	AdminPass  string // default: random
+	AdminEmail string // default admin@<domain>
+	Title      string
+	Progress   func(stage, detail string)
+}
+
+// CreateSite builds a site end-to-end: dirs, db, wordpress, config, install.
+func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
+	cb := o.Progress
+	if cb == nil {
+		cb = func(string, string) {}
+	}
+	slug, err := SanitizeName(o.Name)
+	if err != nil {
+		return nil, err
+	}
+	if e.Store.Site(slug) != nil {
+		return nil, fmt.Errorf("site %q already exists", slug)
+	}
+	p := P()
+	wpdir := filepath.Join(p.Sites(), slug, "wp")
+	if fileExists(wpdir) {
+		return nil, fmt.Errorf("directory already exists: %s", wpdir)
+	}
+
+	// PHP version
+	if o.PHPVersion == "" {
+		rts := e.Store.Inventory().Runtimes()
+		if len(rts) == 0 {
+			return nil, fmt.Errorf("no PHP installed; run: agent-local install php 8.3")
+		}
+		o.PHPVersion = rts[len(rts)-1]
+	}
+	if e.Store.Inventory().FindPHP(o.PHPVersion) == nil {
+		return nil, fmt.Errorf("php %s not installed; run: agent-local install php %s", o.PHPVersion, o.PHPVersion)
+	}
+
+	domain := o.Domain
+	if domain == "" {
+		domain = e.Store.DefaultDomain(slug)
+	}
+	if !ValidDomain(domain) {
+		return nil, fmt.Errorf("invalid domain %q", domain)
+	}
+	if !e.Store.DomainFree(domain) {
+		return nil, fmt.Errorf("domain %q already in use", domain)
+	}
+
+	pass := o.AdminPass
+	if pass == "" {
+		pass = randomPass(16)
+	}
+	dbPass := randomPass(20)
+
+	site := &Site{
+		Name:       o.Name,
+		Slug:       slug,
+		WorkDir:    filepath.Join(p.Sites(), slug),
+		WPDir:      wpdir,
+		Branch:     "main",
+		Repo:       o.Repo,
+		PHPVersion: o.PHPVersion,
+		DBName:     "al_" + slug,
+		DBUser:     "al_" + slug,
+		DBPass:     dbPass,
+		Domain:     domain,
+		HTTPPort:   DefaultHTTPPort,
+		HTTPSPort:  DefaultHTTPSPort,
+		CreatedAt:  time.Now(),
+		State:      StateStopped,
+	}
+
+	cb("database", "provisioning "+site.DBName)
+	if err := e.CreateSiteDB(site); err != nil {
+		return nil, fmt.Errorf("database: %w", err)
+	}
+
+	cb("files", "fetching WordPress")
+	if o.Repo != "" {
+		if err := gitClone(o.Repo, site.WorkDir, cb); err != nil {
+			e.DropSiteDB(site)
+			return nil, fmt.Errorf("clone: %w", err)
+		}
+	} else {
+		if err := downloadWP(wpdir, o.WPVersion, cb); err != nil {
+			e.DropSiteDB(site)
+			return nil, fmt.Errorf("download: %w", err)
+		}
+		if err := gitInitRepo(site.WorkDir, wpdir); err != nil {
+			cb("warn", "git init failed: "+err.Error())
+		}
+	}
+	if !fileExists(filepath.Join(wpdir, "wp-load.php")) {
+		e.DropSiteDB(site)
+		return nil, fmt.Errorf("wordpress core not found at %s (repo must contain wp/)", wpdir)
+	}
+
+	cb("config", "writing wp-config.php")
+	if err := writeWPConfig(site, wpdir); err != nil {
+		return nil, err
+	}
+
+	title := o.Title
+	if title == "" {
+		title = o.Name
+	}
+	adminUser := o.AdminUser
+	if adminUser == "" {
+		adminUser = "admin"
+	}
+	email := o.AdminEmail
+	if email == "" {
+		email = "admin@" + domain
+	}
+
+	// persist the row before the installer runs so the serving router
+	// (daemon process) can resolve the domain immediately.
+	site.State = StateRunning
+	site.AdminUser, site.AdminPass = adminUser, pass
+	e.Store.PutSite(site)
+	if err := e.Store.Save(); err != nil {
+		return nil, err
+	}
+	cb("install", "running WordPress installer")
+	if err := e.startForInstall(site); err != nil {
+		return nil, fmt.Errorf("boot for install: %w", err)
+	}
+	installURL := fmt.Sprintf("http://127.0.0.1:%d/wp-admin/install.php?step=2", site.HTTPPort)
+	body, err := httpPost(installURL, url.Values{
+		"weblog_title":    {title},
+		"user_name":       {adminUser},
+		"admin_password":  {pass},
+		"admin_password2": {pass},
+		"pw_weak":         {"1"},
+		"admin_email":     {email},
+		"blog_public":     {"0"},
+	}, site.Domain)
+	if err != nil {
+		return nil, fmt.Errorf("installer: %w", err)
+	}
+	if !strings.Contains(body, "wp-login.php") && !strings.Contains(body, "already installed") && !strings.Contains(body, "Success") {
+		return nil, fmt.Errorf("installer did not report success (see logs/%s)", slug)
+	}
+
+	cb("dns", "registering "+domain)
+	if n, err := EnsureHosts(e.HostsInteractive, []string{domain}); err != nil {
+		cb("warn", "hosts entry failed (need root): "+err.Error())
+	} else if n > 0 {
+		cb("dns", "added /etc/hosts entry")
+	}
+	if cert, _, created, err := EnsureCert(domain); err == nil && created {
+		_ = TrustCert(cert, false) // best-effort; TUI offers trust action
+	}
+	cb("done", BareURL(site))
+	return site, nil
+}
+
+func (e *Engine) DeleteSite(slug string, withFiles bool, interactiveHosts bool) error {
+	site := e.Store.Site(slug)
+	if site == nil {
+		return fmt.Errorf("no such site: %s", slug)
+	}
+	_ = e.StopSite(slug)
+	for _, w := range e.Store.WorktreesFor(slug) {
+		_ = e.RemoveWorktree(w.ID)
+	}
+	if err := e.DropSiteDB(site); err != nil {
+		return fmt.Errorf("drop db: %w", err)
+	}
+	domains := append([]string{site.Domain}, site.Aliases...)
+	if err := RemoveHosts(interactiveHosts, domains); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not remove /etc/hosts entries: %v\n", err)
+	}
+	if withFiles {
+		// Only remove files that live inside our managed sites dir. An
+		// imported external directory (user's own checkout) is left intact —
+		// we merely detach the wp-config we pointed at our DB.
+		if strings.HasPrefix(site.WorkDir, P().Sites()+string(os.PathSeparator)) {
+			if err := os.RemoveAll(site.WorkDir); err != nil {
+				return fmt.Errorf("remove files: %w", err)
+			}
+		} else {
+			cfg := filepath.Join(site.WPDir, "wp-config.php")
+			if fileExists(cfg + ".agent-local.bak") {
+				// restore the config we overwrote, then drop our copy
+				os.Rename(cfg+".agent-local.bak", cfg)
+			}
+		}
+	}
+	e.Store.DelSite(slug)
+	return e.Store.Save()
+}
+
+// StartSite boots DB + FPM + HTTP front for a site.
+func (e *Engine) StartSite(slug string) error {
+	site := e.Store.Site(slug)
+	if site == nil {
+		return fmt.Errorf("no such site: %s", slug)
+	}
+	if err := e.EnsureDB(); err != nil {
+		return err
+	}
+	if err := e.StartFPM(site.Slug, site.WPDir, site.PHPVersion); err != nil {
+		site.State = StateError
+		e.Store.Save()
+		return err
+	}
+	if err := EnsureHTTPFront(e.Store); err != nil {
+		return err
+	}
+	if _, err := EnsureHosts(e.HostsInteractive, []string{site.Domain}); err != nil {
+		return fmt.Errorf("hosts entry for %s needs root: run `agent-local doctor --fix`", site.Domain)
+	}
+	site.State = StateRunning
+	return e.Store.Save()
+}
+
+// StopSite stops the FPM pool (DB stays shared).
+func (e *Engine) StopSite(slug string) error {
+	site := e.Store.Site(slug)
+	if site == nil {
+		return fmt.Errorf("no such site: %s", slug)
+	}
+	err := e.StopFPM(site.Slug)
+	site.State = StateStopped
+	e.Store.Save()
+	return err
+}
+
+// startForInstall boots minimal stack without hosts mutation.
+func (e *Engine) startForInstall(site *Site) error {
+	if err := e.EnsureDB(); err != nil {
+		return err
+	}
+	if err := e.StartFPM(site.Slug, site.WPDir, site.PHPVersion); err != nil {
+		return err
+	}
+	if err := EnsureHTTPFront(e.Store); err != nil {
+		return err
+	}
+	return waitPort(site.HTTPPort, 10*time.Second)
+}
+
+// SwitchPHP changes a site's PHP version and restarts its pool.
+func (e *Engine) SwitchPHP(slug, version string) error {
+	site := e.Store.Site(slug)
+	if site == nil {
+		return fmt.Errorf("no such site: %s", slug)
+	}
+	if e.Store.Inventory().FindPHP(version) == nil {
+		return fmt.Errorf("php %s not installed", version)
+	}
+	site.PHPVersion = version
+	if e.FPMRunning(site.Slug) {
+		if err := e.FPMRestart(site.Slug, site.WPDir, version); err != nil {
+			return err
+		}
+	}
+	for _, w := range e.Store.WorktreesFor(slug) {
+		if e.FPMRunning(w.ID) {
+			if err := e.FPMRestart(w.ID, e.wtServeDir(w), version); err != nil {
+				return err
+			}
+		}
+	}
+	return e.Store.Save()
+}
+
+// SetDomain changes a site's domain (hosts + cert follow).
+func (e *Engine) SetDomain(slug, domain string) error {
+	site := e.Store.Site(slug)
+	if site == nil {
+		return fmt.Errorf("no such site: %s", slug)
+	}
+	if !ValidDomain(domain) {
+		return fmt.Errorf("invalid domain %q", domain)
+	}
+	old := site.Domain
+	if domain != old && !e.Store.DomainFree(domain) {
+		return fmt.Errorf("domain %q already in use", domain)
+	}
+	site.Domain = domain
+	if err := e.Store.Save(); err != nil {
+		return err
+	}
+	_, _ = EnsureHosts(e.HostsInteractive, []string{domain})
+	if cert, _, created, err := EnsureCert(domain); err == nil && created {
+		_ = TrustCert(cert, false)
+	}
+	if site.State == StateRunning {
+		_ = e.StopSite(slug)
+		_ = e.StartSite(slug)
+	}
+	return nil
+}
+
+// ---------- Worktrees ----------
+
+// AddWorktree creates a git worktree for a branch and serves it on its own domain.
+func (e *Engine) AddWorktree(slug, branch string) (*Worktree, error) {
+	site := e.Store.Site(slug)
+	if site == nil {
+		return nil, fmt.Errorf("no such site: %s", slug)
+	}
+	bSlug := BranchSlug(branch)
+	id := slug + "--" + bSlug
+	if _, ok := e.Store.Data.Worktrees[id]; ok {
+		return nil, fmt.Errorf("worktree exists: %s", id)
+	}
+	repoDir := siteRepoDir(site)
+	if repoDir == "" {
+		return nil, fmt.Errorf("%s is not a git repo; worktrees need git (run: git init inside it)", site.WPDir)
+	}
+	if hasRemote(repoDir) {
+		_, _ = runCmdOut("git", "-C", repoDir, "fetch", "--all", "--prune")
+	}
+	wtPath := filepath.Join(repoDir, "@", bSlug)
+	if fileExists(wtPath) {
+		return nil, fmt.Errorf("path exists: %s", wtPath)
+	}
+	args := []string{"-C", repoDir, "worktree", "add", wtPath}
+	if branchExists(repoDir, branch) {
+		args = append(args, branch)
+	} else if remoteBranchExists(repoDir, branch) {
+		args = append(args, "-b", branch, "--track", "origin/"+branch)
+	} else {
+		args = append(args, "-b", branch)
+	}
+	if out, err := runCmdOut("git", args...); err != nil {
+		return nil, fmt.Errorf("git worktree: %v %s", err, tail(out, 300))
+	}
+	// Serving root: docroot-repo worktrees serve from their own path;
+	// WorkDir-style repos serve from <path>/wp.
+	serveDir := wtPath
+	if repoDir == site.WorkDir {
+		serveDir = wtPath + "/wp"
+	}
+	if !fileExists(serveDir) {
+		if err := os.Symlink(site.WPDir, serveDir); err != nil {
+			return nil, err
+		}
+	}
+	// Overlay: the branch checkout wins for every file it tracks; everything
+	// else (WP core, plugins, uploads, sibling themes) symlinks to the main
+	// docroot. Theme-only repos therefore boot a full site with zero copying.
+	if !isSymlink(serveDir) {
+		overlayDir(site.WPDir, serveDir)
+	}
+	// wp-config always ours: pins the DB and the preview domain so WordPress
+	// never redirects the branch back to the base site.
+	domain := bSlug + "." + site.Domain
+	if err := writeWorktreeWPConfig(site, serveDir, domain); err != nil {
+		return nil, err
+	}
+	if !isSymlink(serveDir) {
+		// Constants alone lose to plugins that filter option_home (iThemes
+		// Security's SSL module does): pin the URL from an mu-plugin at max
+		// priority. Needs mu-plugins to be ours, not the base site's dir.
+		if err := writePreviewMU(site, serveDir, domain); err != nil {
+			return nil, err
+		}
+		// Own page cache: previews must not serve or poison base cache files.
+		privateDir(filepath.Join(serveDir, "wp-content", "cache"))
+	}
+	w := &Worktree{ID: id, Site: slug, Branch: branch, Path: wtPath, Domain: domain}
+	e.Store.PutWorktree(w)
+	if err := e.Store.Save(); err != nil {
+		return nil, err
+	}
+	_, _ = EnsureHosts(e.HostsInteractive, []string{domain})
+	if cert, _, created, err := EnsureCert(domain); err == nil && created {
+		_ = TrustCert(cert, false)
+	}
+	if err := e.StartWorktree(id); err != nil {
+		return w, err
+	}
+	return w, nil
+}
+
+// privateDir makes path a real, empty directory owned by this worktree,
+// replacing an inherited symlink to the base site.
+func privateDir(path string) {
+	if isSymlink(path) {
+		os.Remove(path)
+	}
+	os.MkdirAll(path, 0o755)
+}
+
+// materializeDir turns an inherited symlink into a real directory whose
+// entries symlink back to the source, so we can add files of our own
+// without writing into the base site.
+func materializeDir(src, dst string) error {
+	if isSymlink(dst) {
+		os.Remove(dst)
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	ents, err := os.ReadDir(src)
+	if err != nil {
+		return nil // base had no such dir; empty is fine
+	}
+	for _, e := range ents {
+		d := filepath.Join(dst, e.Name())
+		if _, err := os.Lstat(d); err != nil {
+			os.Symlink(filepath.Join(src, e.Name()), d)
+		}
+	}
+	return nil
+}
+
+// writePreviewMU drops an mu-plugin that forces WordPress to render the
+// branch domain. Runs at PHP_INT_MAX so security/SSL plugins that rewrite
+// option_home to the canonical site URL cannot drag the preview back.
+func writePreviewMU(site *Site, wpdir, domain string) error {
+	mu := filepath.Join(wpdir, "wp-content", "mu-plugins")
+	if err := materializeDir(filepath.Join(site.WPDir, "wp-content", "mu-plugins"), mu); err != nil {
+		return err
+	}
+	body := fmt.Sprintf(`<?php
+/**
+ * Plugin Name: agent-local branch preview
+ * Description: Pins this worktree to %s. Managed by agent-local.
+ */
+$al_preview_url = '%s';
+foreach ( array( 'option_home', 'option_siteurl', 'pre_option_home', 'pre_option_siteurl' ) as $al_f ) {
+	add_filter( $al_f, function () use ( $al_preview_url ) { return $al_preview_url; }, PHP_INT_MAX );
+}
+// Never bounce the preview to the canonical host.
+remove_action( 'template_redirect', 'redirect_canonical' );
+add_filter( 'redirect_canonical', '__return_false', PHP_INT_MAX );
+`, domain, "http://"+domain)
+	return os.WriteFile(filepath.Join(mu, "000-agent-local-preview.php"), []byte(body), 0o644)
+}
+
+// isSymlink reports whether path itself is a symlink.
+func isSymlink(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode()&os.ModeSymlink != 0
+}
+
+// siteRepoDir returns the git repo backing a site: its work dir for
+// agent-local-created sites, else the docroot (imported checkouts keep .git
+// in the WordPress root). Empty when the site is not a repo.
+func siteRepoDir(site *Site) string {
+	if isGitRepo(site.WorkDir) {
+		return site.WorkDir
+	}
+	if isGitRepo(site.WPDir) {
+		return site.WPDir
+	}
+	return ""
+}
+
+// Branches lists the site repo's branches (local + remote-only), marking the
+// one checked out at the base docroot, so agents can pick a preview target.
+func (e *Engine) Branches(slug string) (map[string]interface{}, error) {
+	site := e.Store.Site(slug)
+	if site == nil {
+		return nil, fmt.Errorf("no such site: %s", slug)
+	}
+	repo := siteRepoDir(site)
+	if repo == "" {
+		return nil, fmt.Errorf("%s is not a git repo", site.WPDir)
+	}
+	local := gitLines(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+	remote := []string{}
+	for _, r := range gitLines(repo, "for-each-ref", "--format=%(refname:short)", "refs/remotes") {
+		name := strings.TrimPrefix(r, "origin/")
+		if name == "HEAD" || name == r {
+			continue
+		}
+		if !contains(local, name) {
+			remote = append(remote, name)
+		}
+	}
+	cur, _ := runCmdOut("git", "-C", repo, "branch", "--show-current")
+	return map[string]interface{}{
+		"repo":     repo,
+		"current":  strings.TrimSpace(cur),
+		"local":    local,
+		"remote":   remote,
+		"previews": e.Store.WorktreesFor(slug),
+	}, nil
+}
+
+func gitLines(dir string, args ...string) []string {
+	out, err := runCmdOut("git", append([]string{"-C", dir}, args...)...)
+	if err != nil {
+		return []string{}
+	}
+	lines := []string{}
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+func contains(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// sharedContent are the only paths a preview symlinks back to the base site:
+// media is large and identical, so it is shared rather than cloned.
+var sharedContent = map[string]bool{"uploads": true}
+
+// overlayDir fills dst from src for everything the branch checkout does not
+// track, recursing wherever both sides have a real directory, so gitignored
+// build output (wp-content/themes/x/assets/dist, vendor/, node_modules) and
+// untracked plugins are present in the preview too.
+//
+// Code is clone-copied, never symlinked: PHP resolves __FILE__ through
+// symlinks, so a symlinked wp-load.php would set ABSPATH to the base install
+// and silently run the base site's wp-config. On APFS the clone is
+// copy-on-write — instant and effectively free. Recursion only continues
+// along paths the checkout also has, so it never walks the cloned subtrees.
+func overlayDir(src, dst string) {
+	ents, err := os.ReadDir(src)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		name := e.Name()
+		switch name {
+		case "wp-config.php", "wp-config.php.agent-local.bak", ".git", "@":
+			continue
+		}
+		s, d := filepath.Join(src, name), filepath.Join(dst, name)
+		if _, err := os.Lstat(d); err != nil {
+			if sharedContent[name] || isSymlink(s) {
+				os.Symlink(s, d)
+			} else {
+				cloneCopy(s, d)
+			}
+			continue
+		}
+		if e.IsDir() && !isSymlink(d) {
+			if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+				overlayDir(s, d)
+			}
+		}
+	}
+}
+
+// cloneCopy copies src to dst, preferring APFS copy-on-write clones.
+func cloneCopy(src, dst string) error {
+	if err := exec.Command("cp", "-cR", src, dst).Run(); err == nil {
+		return nil
+	}
+	os.RemoveAll(dst)
+	return exec.Command("cp", "-R", src, dst).Run()
+}
+
+// writeWorktreeWPConfig writes the preview's own wp-config: same database as
+// the base site, but WP_HOME/WP_SITEURL pinned to the branch domain so
+// WordPress renders links locally instead of redirecting to the base site.
+func writeWorktreeWPConfig(site *Site, wpdir, domain string) error {
+	if err := writeWPConfig(site, wpdir); err != nil {
+		return err
+	}
+	target := filepath.Join(wpdir, "wp-config.php")
+	b, err := os.ReadFile(target)
+	if err != nil {
+		return err
+	}
+	src := string(b)
+	// Drop any inherited URL pins, then add ours ahead of wp-settings.
+	for _, c := range []string{"WP_HOME", "WP_SITEURL", "EFRONT_URL_OVERRIDE"} {
+		src = regexp.MustCompile(`(?m)^.*define\(\s*'`+c+`'.*\n`).ReplaceAllString(src, "")
+	}
+	url := "http://" + domain
+	pins := fmt.Sprintf("define( 'WP_HOME', '%s' );\ndefine( 'WP_SITEURL', '%s' );\ndefine( 'EFRONT_URL_OVERRIDE', '%s' );\n", url, url, url)
+	if i := strings.Index(src, "require_once ABSPATH"); i >= 0 {
+		src = src[:i] + pins + "\n" + src[i:]
+	} else {
+		src += "\n" + pins
+	}
+	return os.WriteFile(target, []byte(src), 0o644)
+}
+
+// StartWorktree boots the FPM pool for a worktree.
+func (e *Engine) StartWorktree(id string) error {
+	w, ok := e.Store.Data.Worktrees[id]
+	if !ok {
+		return fmt.Errorf("no such worktree: %s", id)
+	}
+	site := e.Store.Site(w.Site)
+	if err := e.EnsureDB(); err != nil {
+		return err
+	}
+	if err := e.StartFPM(w.ID, e.wtServeDir(w), site.PHPVersion); err != nil {
+		return err
+	}
+	return EnsureHTTPFront(e.Store)
+}
+
+// StopWorktree stops a worktree's pool.
+func (e *Engine) StopWorktree(id string) error {
+	return e.StopFPM(id)
+}
+
+// RemoveWorktree stops + prunes the git worktree.
+func (e *Engine) RemoveWorktree(id string) error {
+	w, ok := e.Store.Data.Worktrees[id]
+	if !ok {
+		return fmt.Errorf("no such worktree: %s", id)
+	}
+	_ = e.StopWorktree(id)
+	site := e.Store.Site(w.Site)
+	if site != nil {
+		repoDir := siteRepoDir(site)
+		_, _ = runCmdOut("git", "-C", repoDir, "worktree", "remove", "--force", w.Path)
+		if fileExists(w.Path) {
+			os.RemoveAll(w.Path)
+		}
+	}
+	_ = RemoveHosts(false, []string{w.Domain})
+	e.Store.DelWorktree(id)
+	return e.Store.Save()
+}
+
+// ---------- WordPress plumbing ----------
+
+func downloadWP(dst, version string, cb func(string, string)) error {
+	if version == "" {
+		version = "latest"
+	}
+	tarURL := "https://wordpress.org/latest.tar.gz"
+	if version != "latest" {
+		tarURL = fmt.Sprintf("https://wordpress.org/wordpress-%s.tar.gz", version)
+	}
+	cb("files", "GET "+tarURL)
+	resp, err := http.Get(tarURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("download %s: HTTP %d", tarURL, resp.StatusCode)
+	}
+	tmp, err := os.CreateTemp("", "wp-*.tar.gz")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		return err
+	}
+	tmp.Close()
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	out, err := runCmdOut("tar", "-xzf", tmp.Name(), "-C", dst, "--strip-components=1")
+	if err != nil {
+		return fmt.Errorf("extract: %v %s", err, tail(out, 300))
+	}
+	return nil
+}
+
+var saltNames = []string{
+	"AUTH_KEY", "SECURE_AUTH_KEY", "LOGGED_IN_KEY", "NONCE_KEY",
+	"AUTH_SALT", "SECURE_AUTH_SALT", "LOGGED_IN_SALT", "NONCE_SALT",
+}
+
+func writeWPConfig(site *Site, wpdir string) error {
+	var salts strings.Builder
+	for _, n := range saltNames {
+		salts.WriteString(fmt.Sprintf("define('%s', '%s');\n", n, randomPass(48)))
+	}
+	conf := fmt.Sprintf(`<?php
+// Generated by agent-local. Do not edit the DB block.
+define( 'DB_NAME', '%s' );
+define( 'DB_USER', '%s' );
+define( 'DB_PASSWORD', '%s' );
+define( 'DB_HOST', '127.0.0.1:%d' );
+define( 'DB_CHARSET', 'utf8mb4' );
+define( 'DB_COLLATE', '' );
+
+%s
+$table_prefix = 'wp_';
+
+define( 'WP_DEBUG', true );
+define( 'WP_DEBUG_LOG', true );
+define( 'WP_DEBUG_DISPLAY', false );
+define( 'WP_ENVIRONMENT_TYPE', 'local' );
+
+if ( ! defined( 'ABSPATH' ) ) {
+	define( 'ABSPATH', __DIR__ . '/' );
+}
+require_once ABSPATH . 'wp-settings.php';
+`, site.DBName, site.DBUser, site.DBPass, DefaultDBPort, salts.String())
+
+	// If wp-config already exists (cloned repo), rewrite only the DB block.
+	target := filepath.Join(wpdir, "wp-config.php")
+	if fileExists(target) {
+		b, err := os.ReadFile(target)
+		if err != nil {
+			return err
+		}
+		src := string(b)
+		src = regexp.MustCompile(`(?m)define\(\s*'DB_NAME'.*\n`).ReplaceAllString(src, fmt.Sprintf("define( 'DB_NAME', '%s' );\n", site.DBName))
+		src = regexp.MustCompile(`(?m)define\(\s*'DB_USER'.*\n`).ReplaceAllString(src, fmt.Sprintf("define( 'DB_USER', '%s' );\n", site.DBUser))
+		src = regexp.MustCompile(`(?m)define\(\s*'DB_PASSWORD'.*\n`).ReplaceAllString(src, fmt.Sprintf("define( 'DB_PASSWORD', '%s' );\n", site.DBPass))
+		src = regexp.MustCompile(`(?m)define\(\s*'DB_HOST'.*\n`).ReplaceAllString(src, fmt.Sprintf("define( 'DB_HOST', '127.0.0.1:%d' );\n", DefaultDBPort))
+		return os.WriteFile(target, []byte(src), 0o644)
+	}
+	return os.WriteFile(target, []byte(conf), 0o644)
+}
+
+func httpPost(u string, form url.Values, hostHeader string) (string, error) {
+	client := &http.Client{Timeout: 120 * time.Second}
+	req, err := http.NewRequest("POST", u, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = hostHeader
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return string(b), nil
+}
+
+func randomPass(n int) string {
+	b := make([]byte, n)
+	rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)[:n]
+}
+
+// ---------- git helpers ----------
+
+func gitClone(repo, dst string, cb func(string, string)) error {
+	cb("files", "git clone "+repo)
+	cmd := exec.Command("git", "clone", repo, dst)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v %s", err, tail(string(out), 300))
+	}
+	return nil
+}
+
+func gitInitRepo(workdir, wpdir string) error {
+	if _, err := runCmdOut("git", "-C", workdir, "init", "-b", "main"); err != nil {
+		return err
+	}
+	gitignore := filepath.Join(workdir, ".gitignore")
+	if !fileExists(gitignore) {
+		os.WriteFile(gitignore, []byte("@/\nwp/wp-config.php\n"), 0o644)
+	}
+	runCmdQuiet("git", "-C", workdir, "add", "-A")
+	runCmdQuiet("git", "-C", workdir, "-c", "user.email=agent@local", "-c", "user.name=agent-local",
+		"commit", "-m", "initial wordpress checkout")
+	return nil
+}
+
+func hasRemote(dir string) bool {
+	out, err := runCmdOut("git", "-C", dir, "remote")
+	return err == nil && strings.TrimSpace(out) != ""
+}
+
+func isGitRepo(dir string) bool {
+	err := runCmdQuiet("git", "-C", dir, "rev-parse", "--git-dir")
+	return err == nil
+}
+
+func branchExists(dir, branch string) bool {
+	err := runCmdQuiet("git", "-C", dir, "rev-parse", "--verify", "refs/heads/"+branch)
+	return err == nil
+}
+
+func remoteBranchExists(dir, branch string) bool {
+	err := runCmdQuiet("git", "-C", dir, "rev-parse", "--verify", "refs/remotes/origin/"+branch)
+	return err == nil
+}
+
+// SiteDirSize returns a human-readable size of a site directory.
+func SiteDirSize(slug string) string {
+	out, err := runCmdOut("du", "-sh", filepath.Join(P().Sites(), slug))
+	if err != nil {
+		return "?"
+	}
+	fields := strings.Fields(out)
+	if len(fields) > 0 {
+		return fields[0]
+	}
+	return "?"
+}
