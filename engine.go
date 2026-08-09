@@ -299,6 +299,22 @@ func (e *Engine) reapStrayFPM(id string, keep int) {
 	}
 }
 
+// ensurePool boots the php-fpm pool for a site or worktree id if it is not
+// already serving. Used by the router so a known domain never 503s just
+// because a pool went away (reboot, daemon replacement, stale state).
+func (e *Engine) ensurePool(id string) error {
+	if fileExists(e.fpmSock(id)) {
+		return nil
+	}
+	if e.Store.Site(id) != nil {
+		return e.StartSite(id)
+	}
+	if _, ok := e.Store.Data.Worktrees[id]; ok {
+		return e.StartWorktree(id)
+	}
+	return fmt.Errorf("unknown pool %s", id)
+}
+
 // StopFPM stops a pool.
 func (e *Engine) StopFPM(id string) error {
 	proc := &Proc{Name: FPMName(id), PidTo: e.fpmPid(id)}

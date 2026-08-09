@@ -112,7 +112,7 @@ func installFrontDaemon(interactive bool) error {
 	<key>Label</key><string>local.agent-local.front</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>%s</string><string>front-daemon</string>
+		<string>%s</string><string>front-daemon</string><string>--run-dir</string><string>%s</string>
 	</array>
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key><true/>
@@ -120,7 +120,7 @@ func installFrontDaemon(interactive bool) error {
 	<key>StandardErrorPath</key><string>%s</string>
 </dict>
 </plist>
-`, self, P().Log("front"), P().Log("front"))
+`, self, P().Run(), P().Log("front"), P().Log("front"))
 	tmp := P().Run() + "/front.plist"
 	if err := os.WriteFile(tmp, []byte(plist), 0o644); err != nil {
 		return err

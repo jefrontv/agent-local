@@ -87,8 +87,13 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	sock := r.engine.fpmSock(fpmID)
 	if !fileExists(sock) {
-		http.Error(w, "agent-local: site "+host+" not running (no php-fpm). Start it.", http.StatusServiceUnavailable)
-		return
+		// A known host whose pool is down (machine rebooted, daemon replaced,
+		// stale state) is served by starting the pool instead of erroring:
+		// the request pays the ~1s boot, every later one is warm.
+		if err := r.engine.ensurePool(fpmID); err != nil {
+			http.Error(w, "agent-local: site "+host+" could not start: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 	}
 	r.proxyFCGI(w, req, wpdir, sock, host)
 }

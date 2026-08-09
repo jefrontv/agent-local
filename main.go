@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const usage = `agent-local — local WordPress for humans and agents
@@ -26,6 +28,7 @@ USAGE
   agent-local php SLUG VERSION   switch PHP version
   agent-local alias [--off]        bare URLs via 127.0.0.2:80 (no port suffix)
   agent-local db SLUG [sql|import F|export [F]|reset|tables]   database ops
+  agent-local yield [secs]       free :80/:443 briefly (let LocalWP start)
   agent-local suffix [.test]         show/set default domain suffix
   agent-local domain SLUG NAME   change site domain
   agent-local worktree SLUG BRANCH [--remove]   branch worktree on its own URL
@@ -102,10 +105,12 @@ func main() {
 		err = cmdLocalWPSites()
 	case "alias":
 		err = cmdAlias(rest)
+	case "yield":
+		err = cmdYield(rest)
 	case "sudo":
 		err = cmdSudoSetup()
 	case "front-daemon":
-		err = RunFrontDaemon()
+		err = RunFrontDaemon(rest)
 	case "suffix":
 		err = cmdSuffix(rest)
 	case "api-token":
@@ -495,6 +500,34 @@ func cmdDomain(args []string) error {
 		return err
 	}
 	return e.SetDomain(pos[0], pos[1])
+}
+
+// cmdYield frees the bare-URL ports for a window so another local-dev app
+// (LocalWP) can pass its port pre-check and bind :80/:443 first. Our front
+// daemon re-binds its specific address afterwards, which the kernel allows
+// even with a wildcard listener present — so both keep serving.
+func cmdYield(args []string) error {
+	pos := positional(args)
+	secs := 45
+	if len(pos) > 0 {
+		if n, err := strconv.Atoi(pos[0]); err == nil && n > 0 {
+			secs = n
+		}
+	}
+	if !AliasActive() {
+		fmt.Println("bare URLs are not enabled — nothing holds :80/:443")
+		return nil
+	}
+	deadline := time.Now().Add(time.Duration(secs) * time.Second)
+	if err := os.MkdirAll(P().Run(), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(frontYieldPath(), []byte(fmt.Sprint(deadline.Unix())), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("released :80/:443 for %ds — start your other app now\n", secs)
+	fmt.Println("bare URLs resume automatically; sites stay reachable on :" + fmt.Sprint(DefaultHTTPPort) + " throughout")
+	return nil
 }
 
 func cmdWorktree(args []string) error {

@@ -75,6 +75,25 @@ agent-local alias    # 127.0.0.2 alias + root front daemon on :80/:443
   beats another app's wildcard listener, so agent-local and LocalWP can run side
   by side. Survives reboots; `agent-local alias --off` removes it.
 
+### Sharing port 80 with LocalWP (or MAMP, Valet…)
+
+Both apps can serve at once: they bind different addresses, and the kernel
+allows a specific-address listener alongside a wildcard one in either order.
+What trips people up is that LocalWP *pre-checks* port 80 and refuses to start
+when anything is listening — including us. So hand it the ports for a moment:
+
+```sh
+agent-local yield          # frees :80/:443 for 45s, then re-binds automatically
+agent-local yield 90       # longer window
+```
+
+Start the other app inside that window. agent-local reclaims its specific
+address afterwards and both keep working; your sites stay reachable on `:1080`
+throughout. The front daemon also stands aside on its own if it sees another
+local-dev **router** running with nothing bound on `:80` yet.
+
+Prefer to give up bare URLs entirely? `agent-local alias --off`.
+
 ## Create a site
 
 ```sh
@@ -315,6 +334,7 @@ agent-local install brew|php V|mariadb|apache|wp-cli
 agent-local front [router|apache]      show / switch HTTP front
 agent-local sudo                       passwordless root allowlist (one-time)
 agent-local alias [--off]              bare URLs on 127.0.0.2:80/443 (one-time)
+agent-local yield [secs]               free :80/:443 briefly, then re-bind
 agent-local doctor [--fix]
 agent-local logs NAME [lines]          mysql | apache | daemon | fpm-<slug> | <slug>
 agent-local daemon [--background]      router + agent API
