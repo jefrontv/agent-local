@@ -137,6 +137,17 @@ func Doctor(store *Store) *DoctorReport {
 		}
 	}
 
+	// Two local-dev tools, one pair of privileged ports. Ours is bound to the
+	// loopback alias, which coexists with a wildcard listener — but only if the
+	// wildcard got there first: BSD refuses a wildcard bind while any specific
+	// address holds the port. So agent-local starting first stops LocalWP's nginx
+	// from starting at all, and its sites go dark with nothing to explain it.
+	if sites, err := ListLocalWPSites(); err == nil && len(sites) > 0 {
+		if f := localwpFinding(len(sites), addrOpen(LoopbackAlias, 80), addrOpen("127.0.0.1", 80)); f != nil {
+			add(*f)
+		}
+	}
+
 	// An .htaccess uploads rewrite is invisible to the built-in router: it is an
 	// Apache directive. Sites carrying one and no media fallback would silently
 	// 404 every image the local database references but the disk does not have.
@@ -204,6 +215,32 @@ func hostsHas(domain string) bool {
 		}
 	}
 	return false
+}
+
+// localwpFinding judges the shared-port situation from two facts: whether our
+// alias listener is up, and whether anything answers on 127.0.0.1. Kept separate
+// from the dialling so the verdict can be checked without a second router
+// installed on the machine.
+func localwpFinding(sites int, ours, rival bool) *Finding {
+	switch {
+	case ours && !rival:
+		// We are on the alias and nobody holds the wildcard: LocalWP's nginx
+		// cannot bind while we are here, so its sites are unreachable.
+		return &Finding{Check: "localwp", Status: "warn",
+			Detail:  fmt.Sprintf("%d LocalWP sites configured, but nothing serves 127.0.0.1:80 — our bare-URL listener blocks nginx's wildcard bind", sites),
+			FixHint: "agent-local yield 60, then start the site in Local — both run side by side once nginx is up",
+			FixCmd:  "agent-local yield 60"}
+	case ours && rival:
+		return &Finding{Check: "localwp", Status: "ok",
+			Detail: fmt.Sprintf("%d sites, sharing :80 with the other router", sites)}
+	case !ours && rival:
+		// Someone else has the ports and we stood aside: bare URLs are theirs,
+		// ours answer on the high ports. Worth stating, not worth warning about.
+		return &Finding{Check: "localwp", Status: "ok",
+			Detail: fmt.Sprintf("%d sites hold :80; agent-local sites are on :%d/:%d", sites, DefaultHTTPPort, DefaultHTTPSPort)}
+	default:
+		return nil
+	}
 }
 
 // DoctorFix applies auto-fixable findings. Returns what it did.

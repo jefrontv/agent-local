@@ -8,6 +8,19 @@ import (
 	"time"
 )
 
+// addrOpen reports whether a specific address accepts connections. Distinguishing
+// 127.0.0.1:80 from 127.0.0.2:80 is the whole diagnosis when two local-dev tools
+// share a machine: a wildcard listener answers both, an alias-scoped one only its
+// own address.
+func addrOpen(addr string, port int) bool {
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", addr, port), 300*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
+}
+
 // portOpen reports if a local TCP port accepts connections.
 func portOpen(port int) bool {
 	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 300*time.Millisecond)

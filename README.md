@@ -82,6 +82,30 @@ agent-local list                          # every site, state, URL
 Admin credentials are printed at the end of `create` and stored in state
 (`agent-local db mysite` for DB creds, `get_site` for everything).
 
+## Sharing a machine with LocalWP
+
+Bare URLs need `:80`/`:443`, and so does every other local-dev tool. agent-local
+binds them on a loopback alias (`127.0.0.2`) rather than the wildcard, so both can
+run — but the order matters, because of how BSD sockets work:
+
+| Started first | Then | Result |
+|---|---|---|
+| LocalWP (`*:80`) | agent-local (`127.0.0.2:80`) | both work |
+| agent-local (`127.0.0.2:80`) | LocalWP (`*:80`) | LocalWP's nginx cannot bind |
+
+A wildcard bind fails while any specific address holds that port, so agent-local
+getting there first stops nginx from starting at all — and Local will still report
+its sites as "running" while nothing serves them. Step aside for a moment:
+
+```sh
+agent-local yield 60      # frees :80/:443, then takes them back automatically
+```
+
+Start the site in Local inside that window. Once nginx holds the wildcard,
+agent-local re-binds its alias alongside it and both keep working. `doctor` reports
+which of those three states you are in, so a dark site is never a mystery.
+Throughout a yield, agent-local sites stay reachable on `:1080`/`:10443`.
+
 ## Missing uploads
 
 A local database usually references thousands of images the local disk does not
