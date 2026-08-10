@@ -106,6 +106,12 @@ agent-local re-binds its alias alongside it and both keep working. `doctor` repo
 which of those three states you are in, so a dark site is never a mystery.
 Throughout a yield, agent-local sites stay reachable on `:1080`/`:10443`.
 
+The boot race resolves itself. When the front daemon starts and finds LocalWP open
+with nothing holding `:80` yet, it waits up to 20 seconds for nginx to bind before
+taking the alias — the case where both start at login. The wait is bounded, so a
+rival that never appears cannot keep the ports, and it never happens when LocalWP
+is closed or already serving. `AGENT_LOCAL_NO_GRACE=1` disables it.
+
 ## Missing uploads
 
 A local database usually references thousands of images the local disk does not

@@ -50,9 +50,63 @@ type frontDaemon struct {
 // "site not found", which is worse than taking the ports back.
 const autoYieldMax = 20 * time.Second
 
+// startupGrace bounds how long we wait, once at startup, for another local-dev
+// router to claim :80 before we take the alias.
+//
+// rivalStarting cannot help here: it notices a rival that is already running, and
+// our own listener is what stops one from getting that far. A wildcard bind fails
+// while any specific address holds the port, so agent-local winning the boot race
+// leaves LocalWP's nginx unable to start at all — its sites go dark while Local
+// still reports them as running. Twenty seconds of politeness costs a late bare
+// URL; skipping it costs someone their whole afternoon.
+const startupGrace = 20 * time.Second
+
+// rivalImminent reports whether it is worth waiting: another local-dev app is
+// open, and nothing holds :80 yet. Deliberately based on the app being alive
+// rather than on its site registry — this daemon runs as root, where the user's
+// Library is not where "~" points.
+func rivalImminent() bool {
+	if os.Getenv("AGENT_LOCAL_NO_GRACE") != "" {
+		return false
+	}
+	return rivalDecision(localAppRunning(), dialable("127.0.0.1", 80))
+}
+
+// rivalDecision is the judgement on its own: wait only when a rival could still
+// be booting, never when one already answers.
+func rivalDecision(appRunning, portTaken bool) bool {
+	return appRunning && !portTaken
+}
+
+// localAppRunning reports whether LocalWP is open. Its helper process is the
+// reliable marker: the app itself is a bundle whose name varies by version.
+func localAppRunning() bool {
+	out, err := runCmdOut("pgrep", "-f", "Local.app/Contents")
+	return err == nil && strings.TrimSpace(out) != ""
+}
+
+// waitForRival gives a booting rival router the wildcard bind it needs, then
+// binds alongside it. Bounded: a rival that never appears cannot keep our ports.
+func waitForRival() {
+	if !rivalImminent() {
+		return
+	}
+	log.Printf("front-daemon: another local router is open but nothing holds :80 — waiting up to %s so it can bind first", startupGrace)
+	deadline := time.Now().Add(startupGrace)
+	for time.Now().Before(deadline) {
+		if dialable("127.0.0.1", 80) {
+			log.Printf("front-daemon: it bound first — taking %s:80/443 alongside it", LoopbackAlias)
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	log.Printf("front-daemon: nothing claimed :80 within %s — taking %s:80/443", startupGrace, LoopbackAlias)
+}
+
 // supervise keeps the listeners in the right state forever: bound normally,
 // released while a competing router is starting up.
 func (f *frontDaemon) supervise() {
+	waitForRival()
 	f.bind()
 	var pausedAt time.Time
 	for {
