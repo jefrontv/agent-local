@@ -644,8 +644,29 @@ func cmdRestartDaemon() error {
 	if err := EnsureHTTPFront(store); err != nil {
 		return err
 	}
-	fmt.Println("daemon restarted on " + Version)
+	// Report what the daemon says, not our own Version: the process doing the
+	// restart is often the older binary that just performed an update, and
+	// printing its version claims the wrong thing.
+	if v := daemonVersion(); v != "" {
+		fmt.Println("daemon restarted on " + v)
+		return nil
+	}
+	fmt.Println("daemon restarted")
 	return nil
+}
+
+// daemonVersion asks the running daemon what build it is, "" if unreachable.
+func daemonVersion() string {
+	out, err := apiGet("/status")
+	if err {
+		return ""
+	}
+	m, ok := out.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	v, _ := m["version"].(string)
+	return v
 }
 
 func cmdWorktree(args []string) error {
