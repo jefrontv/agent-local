@@ -415,12 +415,25 @@ Same database both sides — the difference between them is code.
 
 ### MCP (Claude, Codex, any MCP client)
 
+```sh
+agent-local mcp --config     # prints this, with the absolute path filled in
+```
+
 ```json
 {
   "mcpServers": {
     "agent-local": { "command": "agent-local", "args": ["mcp"] }
   }
 }
+```
+
+`agent-local mcp` is a stdio server: a client launches it and speaks JSON-RPC over
+its stdin and stdout. Run it by hand and it will sit there waiting for input —
+correctly, but silently — so on a terminal it prints a note saying so rather than
+looking hung. To exercise it without a client:
+
+```sh
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | agent-local mcp
 ```
 
 46 tools — everything the CLI can do, no shell required:
@@ -431,6 +444,8 @@ Same database both sides — the difference between them is code.
 | lifecycle | `create_site`, `import_site`, `start_site`, `stop_site`, `restart_site`, `delete_site` |
 | runtime | `switch_php`, `install_runtime`, `get_http_front`, `set_http_front` |
 | domains | `set_domain`, `get_domain_suffix`, `set_domain_suffix`, `add_hosts_entries`, `remove_hosts_entries` |
+| media | `get_media_fallback`, `set_media_fallback` |
+| layout | `get_sites_dir`, `set_sites_dir`, `attach_site` |
 | database | `db_creds`, `db_query`, `db_tables`, `db_import`, `db_export`, `db_reset` |
 | wordpress | `wp_cli`, `worktree_wp_cli` |
 | previews | `add_worktree`, `list_worktrees`, `start_worktree`, `stop_worktree`, `remove_worktree` |

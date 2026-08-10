@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -42,7 +43,20 @@ type mcpTool struct {
 	InputSchema interface{} `json:"inputSchema"`
 }
 
-func runMCP() error {
+func runMCP(args []string) error {
+	// A person asking for the config wants to paste it somewhere, not speak
+	// JSON-RPC at a prompt.
+	if hasFlag(args, "--config") {
+		fmt.Print(mcpClientConfig())
+		return nil
+	}
+	// This is a stdio server: it reads JSON-RPC from stdin and writes to stdout.
+	// Run by hand it therefore sits in silence, which reads exactly like a hang —
+	// so say what it is waiting for. stderr, never stdout: stdout is the protocol.
+	if isTerminal(os.Stdin) {
+		fmt.Fprint(os.Stderr, mcpTTYNotice())
+	}
+
 	// ensure daemon is up (best-effort; some calls work offline)
 	EnsureRouterDaemonQuiet()
 
@@ -58,13 +72,64 @@ func runMCP() error {
 		if err := json.Unmarshal(line, &req); err != nil {
 			continue
 		}
+		// A request without an id is a notification: the spec forbids answering
+		// it, and a client that gets an answer anyway can wedge waiting to match
+		// it against a request it never made.
+		if req.ID == nil {
+			continue
+		}
 		resp := mcpHandle(&req)
 		if resp != nil {
+			// Set centrally so no handler can forget it. Responses used to go out
+			// as `"jsonrpc":""`, which a strict client rejects — the server looked
+			// like it was doing nothing at all.
+			resp.JSONRPC = "2.0"
 			resp.ID = req.ID
 			enc.Encode(resp)
 		}
 	}
 	return sc.Err()
+}
+
+// isTerminal reports whether a file is a terminal rather than a pipe. Character
+// devices are terminals; a pipe or a redirected file is not.
+func isTerminal(f *os.File) bool {
+	st, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return st.Mode()&os.ModeCharDevice != 0
+}
+
+// mcpTTYNotice explains the silence to whoever typed the command.
+func mcpTTYNotice() string {
+	return "agent-local mcp — Model Context Protocol server (stdio)\n\n" +
+		"  Nothing will happen here: this speaks JSON-RPC over stdin/stdout and is\n" +
+		"  meant to be launched by an MCP client, not run by hand.\n\n" +
+		"  Client config:      agent-local mcp --config\n" +
+		"  Try one call:       echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | agent-local mcp\n" +
+		"  Everything here is also a CLI command:  agent-local help\n\n" +
+		"  Listening on stdin — ctrl-c to quit.\n"
+}
+
+// mcpClientConfig is the block to paste into a client's config file.
+func mcpClientConfig() string {
+	bin, err := os.Executable()
+	if err != nil || bin == "" {
+		bin = "agent-local"
+	}
+	if p, err := filepath.EvalSymlinks(bin); err == nil {
+		bin = p
+	}
+	return fmt.Sprintf(`{
+  "mcpServers": {
+    "agent-local": {
+      "command": %q,
+      "args": ["mcp"]
+    }
+  }
+}
+`, bin)
 }
 
 func mcpHandle(req *mcpReq) *mcpResp {

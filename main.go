@@ -108,7 +108,7 @@ func main() {
 	case "daemon":
 		err = RunDaemon(hasFlag(rest, "--background"))
 	case "mcp":
-		err = runMCP()
+		err = runMCP(rest)
 	case "front":
 		err = cmdFront(rest)
 	case "import":
