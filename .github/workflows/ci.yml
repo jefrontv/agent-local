@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    # The app is macOS-only (LaunchDaemons, /etc/hosts, System keychain,
+    # Homebrew), so CI runs where the code actually has to work.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { echo "gofmt needed:"; gofmt -l .; exit 1; }
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build -o agent-local .
+
+      # Cheap smoke test: the binary must start and answer. Anything that needs
+      # PHP, MariaDB or root belongs in a manual run, not in CI.
+      - name: smoke
+        run: |
+          ./agent-local version
+          ./agent-local help | grep -q "agent-local create"
+          ./agent-local doctor || true   # findings are expected on a bare runner
+
+      - name: goreleaser config is valid
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: check

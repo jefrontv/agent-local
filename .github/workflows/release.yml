@@ -1,0 +1,41 @@
+name: release
+
+# Publishing is tag-driven: `git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0`.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # GoReleaser creates the release and uploads assets
+
+jobs:
+  goreleaser:
+    # macOS, not Linux: the build ad-hoc signs the universal binary with
+    # codesign, and lipo/codesign only exist here. Unsigned arm64 binaries are
+    # killed by macOS on some machines, so this is not optional.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # changelog needs history, not just the tag
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Sanity check before publishing
+        run: |
+          test -z "$(gofmt -l .)" || { echo "gofmt needed:"; gofmt -l .; exit 1; }
+          go vet ./...
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: set this repo secret to a token with write access to
+          # jefrontv/homebrew-tap and every release also updates the cask.
+          # Absent, the release still succeeds and only the cask is skipped.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

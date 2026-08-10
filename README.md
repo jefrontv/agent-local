@@ -24,19 +24,29 @@ missing — Homebrew, PHP, MariaDB, Apache, wp-cli — the app detects and insta
 - [Create a site](#create-a-site) · [Import an existing site](#import-an-existing-site) · [Domains](#domains)
 - [PHP versions](#php-versions) · [Databases](#databases) · [Branch previews](#branch-previews-git-worktrees)
 - [For agents](#for-agents) · [HTTP fronts](#http-fronts) · [CLI reference](#cli-reference)
-- [Layout & ports](#layout--ports) · [How it works](#how-it-works) · [Troubleshooting](#troubleshooting) · [Uninstall](#uninstall)
+- [Layout & ports](#layout--ports) · [How it works](#how-it-works) · [Troubleshooting](#troubleshooting) · [Releasing](#releasing) · [Uninstall](#uninstall)
 
 ---
 
 ## Install
 
 ```sh
-git clone git@bitbucket.org:efront_au/agent-local.git
-cd agent-local
-./install.sh          # builds with Go if present, installs to ~/.local/bin
+brew install jefrontv/tap/agent-local
 ```
 
-No prerequisites. Then:
+No Homebrew:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jefrontv/agent-local/main/install.sh | bash
+```
+
+From a checkout (builds with Go if present, else downloads the latest release):
+
+```sh
+git clone git@github.com:jefrontv/agent-local.git && cd agent-local && ./install.sh
+```
+
+No prerequisites either way. Then:
 
 ```sh
 agent-local doctor        # what's present, what's missing
@@ -46,6 +56,20 @@ agent-local doctor --fix  # install/repair everything fixable
 Root is needed for exactly two things — `/etc/hosts` entries and trusting the
 per-domain TLS cert — and the app asks (macOS password dialog) at the moment it
 needs them. [Zero prompts](#zero-prompts-recommended-one-time) removes even that.
+
+### Updating
+
+```sh
+agent-local update            # download + verify + swap the binary
+agent-local update --check    # just report what is published
+agent-local restart-daemon    # let the new build take over the running daemon
+```
+
+`update` verifies the download against the release `checksums.txt` before it
+replaces anything, and refuses to touch a Homebrew-managed install — use
+`brew upgrade agent-local` there. Releases are cut by GoReleaser from a tag
+(`.goreleaser.yaml`, `.github/workflows/release.yml`) as one universal binary
+for Apple Silicon and Intel.
 
 ## Quick start
 
@@ -416,7 +440,40 @@ Common cases:
   domain; `agent-local db <slug> tables` then re-import, or
   `agent-local wp <slug> -- search-replace old.host <slug>.test --all-tables`.
 
+## Releasing
+
+```sh
+git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
+```
+
+That is the whole process. `.github/workflows/release.yml` runs GoReleaser on a
+macOS runner (needed: `lipo` and `codesign`), which builds one universal binary,
+ad-hoc signs it, archives it with the README and docs, publishes checksums, and
+writes release notes grouped from the commit subjects.
+
+Dry-run any change to the pipeline without tagging or uploading:
+
+```sh
+goreleaser check                        # config valid?
+goreleaser release --snapshot --clean   # full build into dist/
+```
+
+**Homebrew cask** publishing is opt-in: set a repo secret `HOMEBREW_TAP_TOKEN`
+to a token with write access to [`jefrontv/homebrew-tap`](https://github.com/jefrontv/homebrew-tap)
+and every release also updates `Casks/agent-local.rb`. Without the secret the
+release still succeeds and only the cask step is skipped.
+
+```sh
+gh secret set HOMEBREW_TAP_TOKEN --repo jefrontv/agent-local
+```
+
 ## Uninstall
+
+```sh
+brew uninstall --zap agent-local        # Homebrew installs: also removes ~/.agent-local
+```
+
+Manual installs:
 
 ```sh
 agent-local alias --off                 # remove the root front daemon + alias

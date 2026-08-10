@@ -1,0 +1,163 @@
+# GoReleaser builds, signs, archives and publishes agent-local.
+#
+# Release:      git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
+# Dry run:      goreleaser release --snapshot --clean   (no tag, no upload)
+# Validate:     goreleaser check
+#
+# macOS only by design: the app installs LaunchDaemons, writes /etc/hosts,
+# trusts certs in the System keychain and drives Homebrew. A Linux build would
+# compile and then fail at runtime, so it is not offered.
+version: 2
+
+project_name: agent-local
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: agent-local
+    main: .
+    binary: agent-local
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin]
+    goarch: [arm64, amd64]
+    # Version is read back by `agent-local version` and by the self-updater, so
+    # it must match the tag exactly. Commit and date make a stray build
+    # traceable to a source state.
+    ldflags:
+      - -s -w
+      - -X main.Version={{ .Version }}
+      - -X main.buildCommit={{ .FullCommit }}
+      - -X main.buildDate={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+# One binary that runs on both Apple Silicon and Intel: fewer assets, and no
+# way for a user to download the wrong one.
+universal_binaries:
+  - id: agent-local
+    ids: [agent-local]
+    replace: true
+    name_template: agent-local
+    hooks:
+      # Ad-hoc signature. Without it macOS kills the binary on some machines
+      # (AMFI rejects an unsigned arm64 Mach-O), and `lipo` output is unsigned
+      # by construction. Requires a macOS runner — see .github/workflows/release.yml.
+      post: codesign -f -s - "{{ .Path }}"
+
+archives:
+  - id: default
+    ids: [agent-local]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_darwin_universal"
+    files:
+      - README.md
+      - LICENSE
+      - install.sh
+      - src: docs/*.md
+        dst: docs
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev+{{ .ShortCommit }}"
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Fixes and changes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 0
+    - title: Refactors
+      regexp: '^.*?refactor(\(.+\))??!?:.+$'
+      order: 1
+    - title: Other
+      order: 99
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: jefrontv
+    name: agent-local
+  name_template: "v{{ .Version }}"
+  footer: |
+    ## Install
+
+    ```sh
+    brew install jefrontv/tap/agent-local
+    # or, no Homebrew:
+    curl -fsSL https://raw.githubusercontent.com/jefrontv/agent-local/main/install.sh | bash
+    ```
+
+    Already installed? `agent-local update`
+
+    ## First run
+
+    ```sh
+    agent-local doctor --fix   # installs whatever is missing (PHP, MariaDB…)
+    agent-local sudo           # one-time: no more password prompts
+    agent-local create mysite
+    ```
+
+# Homebrew is the easy path: `brew install jefrontv/tap/agent-local`.
+# Needs a tap repo (jefrontv/homebrew-tap) and a token with write access to it,
+# exported as HOMEBREW_TAP_TOKEN. Without that token the release still
+# succeeds — the cask upload is skipped instead of failing the run.
+#
+# A cask, not a formula: Homebrew wants casks for pre-built binaries, and only a
+# cask can clear the Gatekeeper quarantine flag and tear our LaunchDaemon down
+# on uninstall.
+homebrew_casks:
+  - name: agent-local
+    ids: [default]
+    repository:
+      owner: jefrontv
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_TOKEN" "") "" }}true{{ else }}false{{ end }}'
+    directory: Casks
+    homepage: https://github.com/jefrontv/agent-local
+    description: Local WordPress for humans and agents — sites, PHP versions, MariaDB and branch previews from one binary
+    license: MIT
+    binaries:
+      - agent-local
+    commit_author:
+      name: goreleaser
+      email: noreply@github.com
+    url:
+      # Marks the download host as intentional for this cask.
+      verified: github.com/jefrontv/agent-local/
+    hooks:
+      post:
+        # The binary is ad-hoc signed, not notarized, so a downloaded copy
+        # carries com.apple.quarantine and macOS refuses to run it. Clearing it
+        # here avoids a first-run "developer cannot be verified" death.
+        install: |
+          if OS.mac?
+            system "xattr", "-dr", "com.apple.quarantine", "#{staged_path}/agent-local"
+          end
+    uninstall:
+      # Stop the root front daemon before the binary disappears, or launchd
+      # keeps respawning a path that no longer exists.
+      launchctl:
+        - local.agent-local.front
+    zap:
+      # Only on `brew uninstall --zap`: this is every managed site and database.
+      trash:
+        - ~/.agent-local
+    caveats: |
+      agent-local installs the rest of the stack on demand:
+        agent-local doctor --fix    # PHP, MariaDB, wp-cli as needed
+        agent-local sudo            # one-time, removes every password prompt
+        agent-local create mysite
+      Root is used only for /etc/hosts entries and trusting local TLS certs.

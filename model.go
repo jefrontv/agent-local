@@ -12,8 +12,17 @@ import (
 // AppName is the product name used across binaries, plists, hosts markers.
 const AppName = "agent-local"
 
-// Version is the release stamp baked into the binary.
-var Version = "0.1.0"
+// Version is the release stamp. The release pipeline overrides it with
+// `-ldflags "-X main.Version=…"`; a plain `go build` reports "dev" so a
+// hand-built binary is never mistaken for a published one.
+var Version = "dev"
+
+// buildCommit and buildDate are stamped by the release pipeline alongside
+// Version, so a bug report from a published binary is traceable to a commit.
+var (
+	buildCommit string
+	buildDate   string
+)
 
 // SiteState is the lifecycle state of a site row.
 type SiteState string

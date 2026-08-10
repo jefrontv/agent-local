@@ -43,6 +43,8 @@ USAGE
   agent-local daemon --background run daemon detached
   agent-local mcp                MCP server (stdio, JSON-RPC)
   agent-local api-token          print agent API token
+  agent-local update [--check]   install the latest release
+  agent-local restart-daemon     reload the daemon after an update
   agent-local version
 
 CREATE OPTIONS
@@ -128,6 +130,13 @@ func main() {
 		err = cmdLogs(rest)
 	case "version", "--version":
 		fmt.Printf("agent-local %s\n", Version)
+		if buildCommit != "" {
+			fmt.Printf("  commit %s  built %s\n", buildCommit, buildDate)
+		}
+	case "update", "upgrade":
+		err = cmdUpdate(rest)
+	case "restart-daemon":
+		err = cmdRestartDaemon()
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:
@@ -577,6 +586,46 @@ func cmdCert(args []string) error {
 	}
 	st := InspectCert(domain)
 	fmt.Printf("%s  exists=%t trusted=%t expires=%s\n  %s\n", st.Domain, st.Exists, st.Trusted, st.NotAfter, st.CertPath)
+	return nil
+}
+
+// cmdUpdate checks GitHub for a newer release and installs it. `--check` only
+// reports, for a shell prompt or a CI guard.
+func cmdUpdate(args []string) error {
+	rel, err := LatestRelease()
+	if err != nil {
+		return err
+	}
+	if !UpdateAvailable(Version, rel) {
+		fmt.Printf("up to date (%s)\n", Version)
+		return nil
+	}
+	fmt.Printf("%s available (running %s)\n", rel.TagName, Version)
+	if hasFlag(args, "--check") {
+		fmt.Println(rel.HTMLURL)
+		return nil
+	}
+	installed, err := SelfUpdate(func(stage string) { fmt.Println("  " + stage) })
+	if err != nil {
+		return err
+	}
+	fmt.Printf("updated to %s — restart the daemon to run it: agent-local restart-daemon\n", installed)
+	return nil
+}
+
+// cmdRestartDaemon replaces the running daemon with the binary on disk. After
+// an update the old process is still serving, so this is how the new build
+// takes over without a reboot.
+func cmdRestartDaemon() error {
+	store, _, err := openEnv()
+	if err != nil {
+		return err
+	}
+	StopDaemons()
+	if err := EnsureHTTPFront(store); err != nil {
+		return err
+	}
+	fmt.Println("daemon restarted on " + Version)
 	return nil
 }
 
