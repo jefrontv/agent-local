@@ -51,8 +51,14 @@ type Site struct {
 	HTTPSPort  int       `json:"https_port"`
 	CreatedAt  time.Time `json:"created_at"`
 	State      SiteState `json:"state"` // persisted last known state
-	AdminUser  string    `json:"admin_user,omitempty"`
-	AdminPass  string    `json:"admin_pass,omitempty"`
+	// Attached marks a site whose files are the user's own: the directory is
+	// never removed on delete, and a wp-config.php we did not write is left alone.
+	Attached bool `json:"attached,omitempty"`
+	// Installed marks files this app put on disk. Delete may clean those up even
+	// outside our own tree; anything without it is treated as the user's.
+	Installed bool   `json:"installed,omitempty"`
+	AdminUser string `json:"admin_user,omitempty"`
+	AdminPass string `json:"admin_pass,omitempty"`
 }
 
 // SiteID is the stable identity of a site: the slug.

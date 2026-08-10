@@ -104,6 +104,30 @@ Admin credentials are printed at the end of `create` and stored in state
   n new · s start · x stop · R restart · o open · p php · d domain · D delete    ⇥ tab · q quit
 ```
 
+Press `n` and it asks where the site should live, completing paths with `⇥`:
+
+```
+where should the site live? › ~/Documents/Sites/my-site
+                             ~/Documents/Sites/my-site does not exist yet
+                             enter or y → installs into ~/Documents/Sites/my-site/wp
+                             n → serve the folder as-is with an empty database
+```
+
+An empty or missing directory is offered a fresh install. A directory that already
+has files skips that question — nothing is ever installed on top of your work — and
+is attached instead: served as it is, with an empty database of its own. The prompt
+tells you which directory will be served (`app/public`, `wp`, `public`, `web`,
+`htdocs` and the path itself are all understood) before you commit to anything.
+
+Attaching never touches your files. An existing `wp-config.php` is kept as it is;
+one is written only when WordPress core is sitting there with no config at all, and
+deleting the site removes that config again. The same two paths are on every surface:
+
+```sh
+agent-local create mysite --dir ~/Sites/mysite   # fresh install, your directory
+agent-local attach ~/Sites/existing-thing        # serve what is there + empty DB
+```
+
 One dot per row, green when that thing is serving and grey when it is parked —
 the same lamp on Runtimes for which PHP is actually in use, and on Doctor for
 each check. The header keeps one word for the whole stack: `● ready` when
@@ -316,7 +340,7 @@ Same database both sides — the difference between them is code.
 }
 ```
 
-41 tools — everything the CLI can do, no shell required:
+42 tools — everything the CLI can do, no shell required:
 
 | Area | Tools |
 |---|---|

@@ -18,6 +18,7 @@ import (
 // CreateOpts configures a new site.
 type CreateOpts struct {
 	Name       string
+	Dir        string // where the site lives; empty → ~/.agent-local/sites/<slug>
 	Domain     string // empty → slug.test
 	PHPVersion string // empty → highest installed
 	WPVersion  string // empty → "latest"
@@ -43,7 +44,21 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 		return nil, fmt.Errorf("site %q already exists", slug)
 	}
 	p := P()
-	wpdir := filepath.Join(p.Sites(), slug, "wp")
+	// The site root is ours by default, but the caller can put it anywhere. The
+	// docroot stays one level in (<root>/wp) either way: branch previews live at
+	// <root>/@/<branch> and must not sit inside the served directory.
+	root := filepath.Join(p.Sites(), slug)
+	if o.Dir != "" {
+		abs, err := ResolveDir(o.Dir)
+		if err != nil {
+			return nil, err
+		}
+		if !DirUsable(abs) {
+			return nil, fmt.Errorf("%s is not empty — attach it instead of installing into it", shortHome(abs))
+		}
+		root = abs
+	}
+	wpdir := filepath.Join(root, "wp")
 	if fileExists(wpdir) {
 		return nil, fmt.Errorf("directory already exists: %s", wpdir)
 	}
@@ -80,7 +95,7 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 	site := &Site{
 		Name:       o.Name,
 		Slug:       slug,
-		WorkDir:    filepath.Join(p.Sites(), slug),
+		WorkDir:    root,
 		WPDir:      wpdir,
 		Branch:     "main",
 		Repo:       o.Repo,
@@ -93,6 +108,7 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 		HTTPSPort:  DefaultHTTPSPort,
 		CreatedAt:  time.Now(),
 		State:      StateStopped,
+		Installed:  true,
 	}
 
 	cb("database", "provisioning "+site.DBName)
@@ -180,6 +196,178 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 	return site, nil
 }
 
+// AttachOpts points a site at a directory that already exists on disk. Nothing
+// is downloaded and no installer runs: the directory is served as it is and gets
+// its own empty database to use.
+type AttachOpts struct {
+	Dir      string // required: the directory to serve
+	Name     string // default: the directory's own name
+	Domain   string // default: <slug><suffix>
+	PHPVer   string // default: highest installed
+	Progress func(stage, detail string)
+}
+
+// AttachSite registers an existing directory as a site. It is the counterpart to
+// CreateSite for the case where the files are the user's: their wp-config.php is
+// never overwritten, and the only thing provisioned is a database.
+func (e *Engine) AttachSite(o AttachOpts) (*Site, error) {
+	cb := o.Progress
+	if cb == nil {
+		cb = func(string, string) {}
+	}
+	dir, err := ResolveDir(o.Dir)
+	if err != nil {
+		return nil, err
+	}
+	// An absent directory is created rather than refused: picking a path that
+	// does not exist yet is a normal way to say "put it here".
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	name := o.Name
+	if name == "" {
+		name = filepath.Base(dir)
+	}
+	slug, err := SanitizeName(name)
+	if err != nil {
+		return nil, err
+	}
+	if e.Store.Site(slug) != nil {
+		return nil, fmt.Errorf("site %q already exists", slug)
+	}
+	if o.PHPVer == "" {
+		rts := e.Store.Inventory().Runtimes()
+		if len(rts) == 0 {
+			return nil, fmt.Errorf("no PHP installed; run: agent-local install php 8.3")
+		}
+		o.PHPVer = rts[len(rts)-1]
+	}
+	if e.Store.Inventory().FindPHP(o.PHPVer) == nil {
+		return nil, fmt.Errorf("php %s not installed; run: agent-local install php %s", o.PHPVer, o.PHPVer)
+	}
+	domain := o.Domain
+	if domain == "" {
+		domain = e.Store.DefaultDomain(slug)
+	}
+	if !ValidDomain(domain) {
+		return nil, fmt.Errorf("invalid domain %q", domain)
+	}
+	if !e.Store.DomainFree(domain) {
+		return nil, fmt.Errorf("domain %q already in use", domain)
+	}
+	docroot := DocrootFor(dir)
+	branch := "main"
+	if b, err := runCmdOut("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+		if b = strings.TrimSpace(b); b != "" && b != "HEAD" {
+			branch = b
+		}
+	}
+	site := &Site{
+		Name:       name,
+		Slug:       slug,
+		WorkDir:    dir,
+		WPDir:      docroot,
+		Branch:     branch,
+		PHPVersion: o.PHPVer,
+		DBName:     "al_" + slug,
+		DBUser:     "al_" + slug,
+		DBPass:     randomPass(20),
+		Domain:     domain,
+		HTTPPort:   DefaultHTTPPort,
+		HTTPSPort:  DefaultHTTPSPort,
+		CreatedAt:  time.Now(),
+		State:      StateStopped,
+		Attached:   true,
+	}
+	cb("database", "provisioning empty "+site.DBName)
+	if err := e.CreateSiteDB(site); err != nil {
+		return nil, fmt.Errorf("database: %w", err)
+	}
+	// Their config is theirs. Only write one when WordPress core is sitting
+	// there with nothing to connect to, which is the one case where a missing
+	// wp-config.php is the only thing between them and a working install.
+	cfg := filepath.Join(docroot, "wp-config.php")
+	switch {
+	case fileExists(cfg):
+		cb("config", "keeping the existing wp-config.php")
+	case fileExists(filepath.Join(docroot, "wp-load.php")):
+		cb("config", "writing wp-config.php for "+site.DBName)
+		if err := writeWPConfig(site, docroot); err != nil {
+			e.DropSiteDB(site)
+			return nil, err
+		}
+	default:
+		cb("config", "no wordpress here yet — database is ready when you are")
+	}
+	site.State = StateRunning
+	e.Store.PutSite(site)
+	if err := e.Store.Save(); err != nil {
+		return nil, err
+	}
+	cb("dns", "registering "+domain)
+	if n, err := EnsureHosts(e.HostsInteractive, []string{domain}); err != nil {
+		cb("warn", "hosts entry failed (need root): "+err.Error())
+	} else if n > 0 {
+		cb("dns", "added /etc/hosts entry")
+	}
+	if cert, _, created, err := EnsureCert(domain); err == nil && created {
+		_ = TrustCert(cert, false)
+	}
+	if err := e.StartSite(slug); err != nil {
+		return site, fmt.Errorf("start: %w", err)
+	}
+	cb("done", BareURL(site))
+	return site, nil
+}
+
+// authoredByUs reports whether a wp-config.php is one we generated, by the
+// header writeWPConfig stamps on it. Used so deleting an attached site removes
+// only the config it added.
+func authoredByUs(path string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(b), "Generated by agent-local")
+}
+
+// ResolveDir turns user input into an absolute path, expanding ~ and $HOME.
+func ResolveDir(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", fmt.Errorf("directory required")
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		p = filepath.Join(os.Getenv("HOME"), strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
+	}
+	return filepath.Abs(p)
+}
+
+// DirUsable reports whether a fresh install can go here: the path is missing, or
+// it is an empty directory. Dotfiles count as content — a git checkout is not
+// empty just because everything in it is hidden.
+func DirUsable(dir string) bool {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return os.IsNotExist(err)
+	}
+	return len(ents) == 0
+}
+
+// DocrootFor finds the directory that should be served for a checkout: the path
+// itself when WordPress is right there, else the usual nesting conventions.
+func DocrootFor(dir string) string {
+	if fileExists(filepath.Join(dir, "wp-load.php")) {
+		return dir
+	}
+	for _, sub := range []string{"wp", filepath.Join("app", "public"), "public", "web", "www", "htdocs", "public_html"} {
+		if fileExists(filepath.Join(dir, sub, "wp-load.php")) {
+			return filepath.Join(dir, sub)
+		}
+	}
+	return dir
+}
+
 // DeleteOpts controls how much of a site goes away.
 type DeleteOpts struct {
 	// KeepFiles leaves the checkout on disk (an imported external directory is
@@ -219,18 +407,38 @@ func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 		fmt.Fprintf(os.Stderr, "warning: could not remove /etc/hosts entries: %v\n", err)
 	}
 	if withFiles {
-		// Only remove files that live inside our managed sites dir. An
-		// imported external directory (user's own checkout) is left intact —
-		// we merely detach the wp-config we pointed at our DB.
-		if strings.HasPrefix(site.WorkDir, P().Sites()+string(os.PathSeparator)) {
+		switch {
+		case strings.HasPrefix(site.WorkDir, P().Sites()+string(os.PathSeparator)):
+			// Our own tree: all of it goes.
 			if err := os.RemoveAll(site.WorkDir); err != nil {
 				return fmt.Errorf("remove files: %w", err)
 			}
-		} else {
+		case site.Installed:
+			// A site we installed into a directory the user picked. It was empty
+			// when we took it, so everything we put there can go — and only
+			// that. Leaving a whole WordPress install behind is a nasty surprise;
+			// deleting a folder we never filled is worse, so the root itself goes
+			// only when nothing else is left in it.
+			for _, ours := range []string{site.WPDir, filepath.Join(site.WorkDir, "@"),
+				filepath.Join(site.WorkDir, ".git"), filepath.Join(site.WorkDir, ".gitignore")} {
+				os.RemoveAll(ours)
+			}
+			if ents, err := os.ReadDir(site.WorkDir); err == nil && len(ents) == 0 {
+				os.Remove(site.WorkDir)
+			}
+		default:
+			// Imported or attached: the files are the user's. Undo only the
+			// wp-config we pointed at our database — never their content. Sites
+			// predating the Installed flag land here, which is the safe side.
 			cfg := filepath.Join(site.WPDir, "wp-config.php")
-			if fileExists(cfg + ".agent-local.bak") {
+			switch {
+			case fileExists(cfg + ".agent-local.bak"):
 				// restore the config we overwrote, then drop our copy
 				os.Rename(cfg+".agent-local.bak", cfg)
+			case authoredByUs(cfg):
+				// An attached directory that had none: we wrote it, so removing
+				// it leaves the folder exactly as it was found.
+				os.Remove(cfg)
 			}
 		}
 	}

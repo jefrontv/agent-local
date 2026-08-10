@@ -103,6 +103,7 @@ func mcpTools() []mcpTool {
 		{"get_site", "Full detail for one site incl. worktrees + credentials", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},
 		{"create_site", "Create, install and serve a WordPress site end-to-end", schema(map[string]interface{}{
 			"name":        prop("string", "site name"),
+			"dir":         prop("string", "where the site lives; must be empty or absent (default: ~/.agent-local/sites/<slug>). WordPress is installed into <dir>/wp"),
 			"domain":      prop("string", "local domain (default: slug + configured suffix, see set_domain_suffix)"),
 			"php_version": prop("string", "php version e.g. 8.3"),
 			"wp_version":  prop("string", "wordpress version or 'latest'"),
@@ -111,6 +112,12 @@ func mcpTools() []mcpTool {
 			"admin_pass":  prop("string", "admin password"),
 			"title":       prop("string", "site title"),
 		}, "name")},
+		{"attach_site", "Serve a directory that already exists as a site, with its own empty database. The caller's files are left alone: an existing wp-config.php is kept, and one is written only when WordPress core is present with no config at all. Use create_site for a fresh install, import_site when a database should be copied too.", schema(map[string]interface{}{
+			"dir":         prop("string", "absolute path to the directory to serve; created if missing"),
+			"name":        prop("string", "site name (default: the directory's own name)"),
+			"domain":      prop("string", "local domain (default: slug + configured suffix)"),
+			"php_version": prop("string", "php version e.g. 8.3"),
+		}, "dir")},
 		{"import_site", "Import a LocalWP site or any WordPress directory into agent-local. Copies the database (or loads a .sql dump, or serves with its existing DB), points wp-config at the embedded MariaDB, serves it.", schema(map[string]interface{}{
 			"source":      prop("string", "LocalWP site name OR absolute path to a WordPress docroot"),
 			"name":        prop("string", "site name (default: source name)"),
@@ -241,6 +248,11 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		return apiGet("/sites/" + get("slug"))
 	case "create_site":
 		return apiPost("/sites", args)
+	case "attach_site":
+		return apiPost("/attach", map[string]interface{}{
+			"dir": get("dir"), "name": get("name"), "domain": get("domain"),
+			"php_version": get("php_version"),
+		})
 	case "import_site":
 		body := map[string]interface{}{
 			"source": get("source"), "name": get("name"), "domain": get("domain"),

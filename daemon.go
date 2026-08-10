@@ -161,6 +161,7 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { ok(w, "alive") })
 	mux.HandleFunc("GET /status", a.handleStatus)
 	mux.HandleFunc("POST /sites", a.handleCreate)
+	mux.HandleFunc("POST /attach", a.handleAttach)
 	mux.HandleFunc("GET /sites", a.handleList)
 	mux.HandleFunc("GET /sites/{slug}", a.handleGet)
 	mux.HandleFunc("POST /sites/{slug}/start", a.handleStart)
@@ -204,6 +205,7 @@ func (a *APIServer) routes() *http.ServeMux {
 }
 
 type createReq struct {
+	Dir        string `json:"dir"`
 	Name       string `json:"name"`
 	Domain     string `json:"domain"`
 	PHPVersion string `json:"php_version"`
@@ -228,6 +230,33 @@ func (a *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	ok(w, st)
 }
 
+// handleAttach serves a directory the caller already has, with an empty database
+// and their files untouched. The counterpart to /import, which copies a database.
+func (a *APIServer) handleAttach(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Dir        string `json:"dir"`
+		Name       string `json:"name"`
+		Domain     string `json:"domain"`
+		PHPVersion string `json:"php_version"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, 400, "bad json: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Dir) == "" {
+		fail(w, 400, "dir required")
+		return
+	}
+	site, err := a.engine.AttachSite(AttachOpts{
+		Dir: req.Dir, Name: req.Name, Domain: req.Domain, PHPVer: req.PHPVersion,
+	})
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	ok(w, site)
+}
+
 func (a *APIServer) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var req createReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -239,7 +268,7 @@ func (a *APIServer) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	site, err := a.engine.CreateSite(CreateOpts{
-		Name: req.Name, Domain: req.Domain, PHPVersion: req.PHPVersion,
+		Name: req.Name, Dir: req.Dir, Domain: req.Domain, PHPVersion: req.PHPVersion,
 		WPVersion: req.WPVersion, Repo: req.Repo,
 		AdminUser: req.AdminUser, AdminPass: req.AdminPass, AdminEmail: req.AdminEmail,
 		Title: req.Title,

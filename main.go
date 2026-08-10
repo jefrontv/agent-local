@@ -16,6 +16,7 @@ USAGE
   agent-local tui                open TUI
   agent-local create NAME [opts] create + install a WordPress site
   agent-local list               list sites
+  agent-local attach DIR [opts]    serve a directory you already have + an empty DB
   agent-local import SOURCE [opts] import a LocalWP site or docroot
   agent-local localwp-sites    list importable LocalWP sites
   agent-local start SLUG         start site stack
@@ -70,6 +71,8 @@ func main() {
 		}
 	case "create":
 		err = cmdCreate(rest)
+	case "attach":
+		err = cmdAttach(rest)
 	case "list", "ls":
 		err = cmdList()
 	case "start":
@@ -230,7 +233,7 @@ func openEnv() (*Store, *Engine, error) {
 func cmdCreate(args []string) error {
 	pos := positional(args)
 	if len(pos) < 1 {
-		return fmt.Errorf("usage: agent-local create NAME [--domain d] [--php v] [--repo url]")
+		return fmt.Errorf("usage: agent-local create NAME [--dir path] [--domain d] [--php v] [--repo url]")
 	}
 	_, e, err := openEnv()
 	if err != nil {
@@ -238,6 +241,7 @@ func cmdCreate(args []string) error {
 	}
 	site, err := e.CreateSite(CreateOpts{
 		Name:       pos[0],
+		Dir:        flagValue(args, "--dir"),
 		Domain:     flagValue(args, "--domain"),
 		PHPVersion: flagValue(args, "--php"),
 		WPVersion:  flagValue(args, "--wp-version"),
@@ -257,6 +261,36 @@ func cmdCreate(args []string) error {
 	fmt.Printf("  https:  %s\n", site.SURL())
 	fmt.Printf("  admin:  %s/wp-admin  user=%s pass=%s\n", BareURL(site), site.AdminUser, site.AdminPass)
 	fmt.Printf("  php:    %s   db: %s\n", site.PHPVersion, site.DBName)
+	return nil
+}
+
+// cmdAttach serves a directory the user already has. Unlike import it copies no
+// database: the site gets an empty one and their files are left alone.
+func cmdAttach(args []string) error {
+	pos := positional(args)
+	if len(pos) < 1 {
+		return fmt.Errorf("usage: agent-local attach DIR [--name n] [--domain d] [--php v]")
+	}
+	_, e, err := openEnv()
+	if err != nil {
+		return err
+	}
+	site, err := e.AttachSite(AttachOpts{
+		Dir:    pos[0],
+		Name:   flagValue(args, "--name"),
+		Domain: flagValue(args, "--domain"),
+		PHPVer: flagValue(args, "--php"),
+		Progress: func(stage, detail string) {
+			fmt.Printf("  [%s] %s\n", stage, detail)
+		},
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\nAttached: %s\n", BareURL(site))
+	fmt.Printf("  docroot: %s\n", site.WPDir)
+	fmt.Printf("  db:      %s user=%s pass=%s host=127.0.0.1:%d\n", site.DBName, site.DBUser, site.DBPass, DefaultDBPort)
+	fmt.Printf("  php:     %s\n", site.PHPVersion)
 	return nil
 }
 

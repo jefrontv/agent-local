@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -97,7 +99,11 @@ const (
 type inputTarget int
 
 const (
-	inputNone inputTarget = iota
+	inputNone     inputTarget = iota
+	inputNewDir               // step 1: where the site lives (tab-completes)
+	inputNewFresh             // step 2: install WordPress here, or just point at it
+	inputNewName              // step 3: name/slug
+	inputNewDomain
 	inputCreateName
 	inputCreateDomain
 	inputCreatePHP
@@ -115,13 +121,22 @@ type inputSpec struct {
 	pos    int
 	hint   string
 	slug   string // site context when relevant
+	// wizard state, carried across the steps of "new site"
+	dir   string
+	fresh bool
+	name  string
+	// note is shown under the prompt: what we found at the path, what will happen
+	note string
 }
 
 type model struct {
 	store    *Store
 	engine   *Engine
 	tab      tab
-	cursor   int
+	siteCur  int
+	wtCur    int
+	rtCur    int
+	docCur   int
 	mode     mode
 	input    inputSpec
 	confirm  string
@@ -166,9 +181,20 @@ func initialModel() model {
 // computed in View: a render happens on every keypress, and dialling four ports
 // per frame turns typing into stutter.
 func (m *model) refresh() {
+	// Pick up writes from other processes first: the CLI, the daemon and any
+	// agent all share sites.json, and the TUI is usually the long-lived reader.
+	m.store.ReloadIfChanged()
 	m.sites = m.store.Sites()
-	if m.cursor >= len(m.sites) && m.cursor > 0 {
-		m.cursor = len(m.sites) - 1
+	// Clamp each cursor to its own list: deleting the last row otherwise leaves
+	// a cursor pointing past the end.
+	for _, t := range []tab{tabSites, tabWorktrees, tabRuntimes, tabDoctor} {
+		c, n := m.cursorFor(t), m.rowsFor(t)
+		if *c >= n {
+			*c = n - 1
+		}
+		if *c < 0 {
+			*c = 0
+		}
 	}
 	m.health = healthSnapshot{
 		db:    m.engine.DBRunning(),
@@ -212,10 +238,67 @@ func (m model) Init() tea.Cmd { return nil }
 func (m *model) setMsg(s string, isErr bool) { m.msg = s; m.msgErr = isErr }
 
 func (m model) currentSite() *Site {
-	if len(m.sites) == 0 {
+	if len(m.sites) == 0 || m.siteCur >= len(m.sites) {
 		return nil
 	}
-	return m.sites[m.cursor]
+	return m.sites[m.siteCur]
+}
+
+// cursorFor hands out the cursor belonging to a tab. One shared index used to
+// do three jobs at once — it selected a site, scoped the Worktrees tab, and
+// indexed the worktree rows — so moving it on Worktrees re-scoped the list and
+// left every action pointing past the end of it.
+func (m *model) cursorFor(t tab) *int {
+	switch t {
+	case tabWorktrees:
+		return &m.wtCur
+	case tabRuntimes:
+		return &m.rtCur
+	case tabDoctor:
+		return &m.docCur
+	default:
+		return &m.siteCur
+	}
+}
+
+// rowsFor is how many selectable rows a tab has, so a cursor cannot run past
+// its own list.
+func (m model) rowsFor(t tab) int {
+	switch t {
+	case tabWorktrees:
+		return len(m.allWorktrees())
+	case tabRuntimes:
+		return len(m.store.Inventory().PHPs)
+	case tabDoctor:
+		if m.doctor != nil {
+			return len(m.doctor.Findings)
+		}
+		return 0
+	default:
+		return len(m.sites)
+	}
+}
+
+// allWorktrees lists every preview across every site, ordered site then branch.
+// The tab used to show only the site highlighted on another tab, which meant the
+// list changed under you and nothing on screen said why.
+func (m model) allWorktrees() []*Worktree {
+	out := make([]*Worktree, 0, len(m.store.Data.Worktrees))
+	for _, s := range m.sites {
+		for _, w := range m.store.WorktreesFor(s.Slug) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// currentWorktree is the highlighted preview row, nil when the list is empty.
+func (m model) currentWorktree() *Worktree {
+	wts := m.allWorktrees()
+	if m.wtCur >= len(wts) {
+		return nil
+	}
+	return wts[m.wtCur]
 }
 
 // ---------- update ----------
@@ -271,16 +354,21 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tab = tab((int(m.tab) + 3) % 4)
 		return m, nil
 	case "up", "k":
-		if m.cursor > 0 {
-			m.cursor--
+		if c := m.cursorFor(m.tab); *c > 0 {
+			*c--
 		}
 		return m, nil
 	case "down", "j":
-		m.moveDown()
+		if c, n := m.cursorFor(m.tab), m.rowsFor(m.tab); *c < n-1 {
+			*c++
+		}
 		return m, nil
 	case "r":
+		// Refreshing is a read. This used to Save() as well, which wrote the
+		// TUI's in-memory snapshot back over the file and silently erased
+		// anything the CLI, the daemon or an agent had changed since the TUI
+		// opened — sites turning up "stopped" for no reason was this.
 		m.refresh()
-		m.store.Save()
 		m.setMsg("refreshed", false)
 		return m, nil
 	}
@@ -296,27 +384,6 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDoctorKey(k)
 	}
 	return m, nil
-}
-
-func (m *model) moveDown() {
-	max := len(m.sites) - 1
-	switch m.tab {
-	case tabRuntimes:
-		max = len(m.store.Inventory().PHPs) - 1
-	case tabDoctor:
-		if m.doctor != nil {
-			max = len(m.doctor.Findings) - 1
-		}
-	case tabWorktrees:
-		if s := m.currentSite(); s != nil {
-			max = len(m.store.WorktreesFor(s.Slug)) - 1
-		} else {
-			max = -1
-		}
-	}
-	if m.cursor < max {
-		m.cursor++
-	}
 }
 
 func (m model) startInput(t inputTarget, prompt, hint, slug string) model {
@@ -340,17 +407,35 @@ func (m model) handleInputKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.refresh()
 		return m, nil
+	case "tab":
+		// Completion only means something for a path. Elsewhere tab would
+		// otherwise leak through to the tab bar and abandon a half-typed answer.
+		if m.input.target == inputNewDir {
+			v, note := completeDir(m.input.value)
+			m.input.value, m.input.note = v, note
+		}
+		return m, nil
 	case "backspace":
 		if len(m.input.value) > 0 {
 			m.input.value = m.input.value[:len(m.input.value)-1]
+			if m.input.target == inputNewDir {
+				m.input.note = ""
+			}
 		}
 		return m, nil
 	case "space":
 		m.input.value += " "
 		return m, nil
 	default:
-		if len(k.String()) == 1 {
-			m.input.value += k.String()
+		// Take the runes, not the key name: a paste or a fast typist arrives as
+		// one multi-rune message, and matching on len(String())==1 silently threw
+		// the whole thing away — pasting a path is the obvious way to answer a
+		// "which directory" prompt.
+		if k.Type == tea.KeyRunes && !k.Alt {
+			m.input.value += string(k.Runes)
+			if m.input.target == inputNewDir {
+				m.input.note = ""
+			}
 		}
 		return m, nil
 	}
@@ -359,6 +444,123 @@ func (m model) handleInputKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *model) applyInput(spec inputSpec) error {
 	val := strings.TrimSpace(spec.value)
 	switch spec.target {
+	case inputNewDir:
+		dir, err := ResolveDir(val)
+		if err != nil {
+			return err
+		}
+		if st, err := os.Stat(dir); err == nil && !st.IsDir() {
+			return fmt.Errorf("%s is a file, not a directory", shortHome(dir))
+		}
+		// The shared resolver, not the narrow one: SiteForPath alone missed a
+		// directory that *contains* sites, which let you attach a second site on
+		// top of one you already had.
+		if s, how, _, below := m.engine.ResolvePath(dir); s != nil {
+			return fmt.Errorf("%s already serves that directory (%s)", s.Slug, how)
+		} else if len(below) > 1 {
+			names := make([]string, 0, len(below))
+			for _, b := range below {
+				names = append(names, b.Slug)
+			}
+			return fmt.Errorf("%s holds several sites: %s", shortHome(dir), strings.Join(names, " "))
+		}
+		spec.dir = dir
+		// What is already there decides which questions are worth asking.
+		switch {
+		case DirUsable(dir):
+			// Empty or absent: a fresh install is possible, so offer it.
+			what := "is empty"
+			if _, err := os.Stat(dir); err != nil {
+				what = "does not exist yet"
+			}
+			next := m.startInput(inputNewFresh, "install WordPress into it?",
+				"enter or y → installs into "+shortHome(filepath.Join(dir, "wp"))+
+					" · n → serve the folder as-is with an empty database", "")
+			next.input.dir, next.input.note = dir, shortHome(dir)+" "+what
+			*m = next
+			return nil
+		default:
+			// Files are already there: installing over them is not on offer.
+			docroot := DocrootFor(dir)
+			note := "serving " + shortHome(docroot)
+			if docroot == dir && !fileExists(filepath.Join(dir, "wp-load.php")) {
+				note = "no WordPress found — serving " + shortHome(dir) + " as-is"
+			}
+			next := m.startInput(inputNewName, "name for this site",
+				"becomes the slug and the default domain", "")
+			next.input.dir, next.input.fresh, next.input.note = dir, false, note
+			next.input.value = defaultSiteName(dir)
+			*m = next
+			return nil
+		}
+	case inputNewFresh:
+		fresh := !strings.HasPrefix(strings.ToLower(val), "n")
+		next := m.startInput(inputNewName, "name for this site",
+			"becomes the slug and the default domain", "")
+		next.input.dir, next.input.fresh = spec.dir, fresh
+		if fresh {
+			next.input.note = "fresh WordPress into " + shortHome(filepath.Join(spec.dir, "wp"))
+		} else {
+			next.input.note = "serving " + shortHome(spec.dir) + " with an empty database"
+		}
+		next.input.value = defaultSiteName(spec.dir)
+		*m = next
+		return nil
+	case inputNewName:
+		if val == "" {
+			return fmt.Errorf("name required")
+		}
+		slug, err := SanitizeName(val)
+		if err != nil {
+			return err
+		}
+		next := m.startInput(inputNewDomain, "domain for "+slug, "must resolve locally — /etc/hosts is updated for you", "")
+		next.input.dir, next.input.fresh, next.input.name = spec.dir, spec.fresh, val
+		next.input.note = spec.note
+		next.input.value = m.store.DefaultDomain(slug)
+		*m = next
+		return nil
+	case inputNewDomain:
+		if val == "" {
+			return fmt.Errorf("domain required")
+		}
+		if spec.fresh {
+			m.busyStart("installing WordPress into " + shortHome(spec.dir))
+			site, err := m.engine.CreateSite(CreateOpts{
+				Name:     spec.name,
+				Dir:      spec.dir,
+				Domain:   val,
+				Progress: func(s, d string) {},
+			})
+			m.busyEnd()
+			if err != nil {
+				return err
+			}
+			m.setMsg("created "+BareURL(site)+"  admin="+site.AdminUser+"/"+site.AdminPass, false)
+			return nil
+		}
+		m.busyStart("attaching " + shortHome(spec.dir))
+		var config string
+		site, err := m.engine.AttachSite(AttachOpts{
+			Name:   spec.name,
+			Dir:    spec.dir,
+			Domain: val,
+			Progress: func(stage, detail string) {
+				if stage == "config" {
+					config = detail
+				}
+			},
+		})
+		m.busyEnd()
+		if err != nil {
+			return err
+		}
+		msg := "attached " + BareURL(site) + "  db " + site.DBName + " / " + site.DBUser
+		if config != "" {
+			msg += "  — " + config
+		}
+		m.setMsg(msg, false)
+		return nil
 	case inputCreateName:
 		if val == "" {
 			return fmt.Errorf("name required")
@@ -436,7 +638,8 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	site := m.currentSite()
 	switch k.String() {
 	case "n":
-		return m.startInput(inputCreateName, "new site name", "lowercase, becomes slug"+m.store.Suffix(), ""), nil
+		return m.startInput(inputNewDir, "where should the site live?",
+			"⇥ completes · ~/Sites/my-site", ""), nil
 	case "s":
 		if site == nil {
 			return m, nil
@@ -465,11 +668,20 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.busyStart("restarting " + site.Slug)
-		_ = m.engine.StopSite(site.Slug)
+		stopErr := m.engine.StopSite(site.Slug)
+		// A failed stop used to be discarded: the following start then found the
+		// pool still up, returned nil, and the restart reported nothing at all.
+		if stopErr != nil && m.engine.FPMRunning(site.Slug) {
+			m.busyEnd()
+			m.setMsg("restart failed: "+stopErr.Error(), true)
+			return m, nil
+		}
 		err := m.engine.StartSite(site.Slug)
 		m.busyEnd()
 		if err != nil {
 			m.setMsg(err.Error(), true)
+		} else {
+			m.setMsg("restarted "+site.Slug, false)
 		}
 		return m, nil
 	case "p":
@@ -492,6 +704,12 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirmA = func() error { return m.engine.DeleteSite(slug, DeleteOpts{}) }
 		m.mode = modeConfirm
 		return m, nil
+	case "a":
+		if site == nil {
+			return m, nil
+		}
+		return m.startInput(inputWorktreeBranch, "branch to preview for "+site.Slug,
+			"served on its own domain", site.Slug), nil
 	case "Q":
 		return m.startInput(inputSQL, "SQL on shared db", "e.g. SHOW DATABASES", ""), nil
 	case "o":
@@ -508,37 +726,69 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleWorktreesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	site := m.currentSite()
-	if site == nil {
-		m.setMsg("create a site first (tab Sites, press n)", true)
-		return m, nil
-	}
-	wts := m.store.WorktreesFor(site.Slug)
+	wt := m.currentWorktree()
 	switch k.String() {
 	case "a":
-		return m.startInput(inputWorktreeBranch, "branch for worktree of "+site.Slug, "creates + serves on own domain", site.Slug), nil
+		// Attach to the highlighted row's site, or to the Sites selection when
+		// there is nothing highlighted yet.
+		site := m.currentSite()
+		if wt != nil {
+			site = m.store.Site(wt.Site)
+		}
+		if site == nil {
+			m.setMsg("create a site first — Sites tab, press n", true)
+			return m, nil
+		}
+		return m.startInput(inputWorktreeBranch, "branch to preview for "+site.Slug,
+			"served on its own domain", site.Slug), nil
 	case "s":
-		if m.cursor < len(wts) {
-			if err := m.engine.StartWorktree(wts[m.cursor].ID); err != nil {
-				m.setMsg(err.Error(), true)
-			} else {
-				m.setMsg("worktree running: http://"+wts[m.cursor].Domain+fmt.Sprintf(":%d", DefaultHTTPPort), false)
-			}
+		if wt == nil {
+			return m, nil
+		}
+		if err := m.engine.StartWorktree(wt.ID); err != nil {
+			m.setMsg(err.Error(), true)
+		} else {
+			m.setMsg("preview running: "+BareDomainURL(wt.Domain), false)
 		}
 		return m, nil
 	case "x":
-		if m.cursor < len(wts) {
-			m.engine.StopWorktree(wts[m.cursor].ID)
-			m.setMsg("stopped", false)
+		if wt == nil {
+			return m, nil
+		}
+		m.engine.StopWorktree(wt.ID)
+		m.setMsg("stopped "+wt.Branch, false)
+		return m, nil
+	case "R":
+		if wt == nil {
+			return m, nil
+		}
+		m.busyStart("restarting " + wt.Branch)
+		m.engine.StopWorktree(wt.ID)
+		err := m.engine.StartWorktree(wt.ID)
+		m.busyEnd()
+		if err != nil {
+			m.setMsg(err.Error(), true)
+		} else {
+			m.setMsg("restarted "+wt.Branch, false)
 		}
 		return m, nil
-	case "D":
-		if m.cursor < len(wts) {
-			id := wts[m.cursor].ID
-			m.confirm = "remove worktree " + id + "?"
-			m.confirmA = func() error { return m.engine.RemoveWorktree(id) }
-			m.mode = modeConfirm
+	case "o":
+		if wt == nil {
+			return m, nil
 		}
+		if !m.engine.FPMRunning(wt.ID) {
+			_ = m.engine.StartWorktree(wt.ID)
+		}
+		runCmdQuiet("open", BareDomainURL(wt.Domain))
+		return m, nil
+	case "D":
+		if wt == nil {
+			return m, nil
+		}
+		id, branch := wt.ID, wt.Branch
+		m.confirm = "remove preview " + branch + " (" + id + ")? the branch itself is kept"
+		m.confirmA = func() error { return m.engine.RemoveWorktree(id) }
+		m.mode = modeConfirm
 		return m, nil
 	}
 	return m, nil
@@ -639,8 +889,15 @@ func (m model) View() string {
 	if m.mode == modeInput {
 		b.WriteString("\n\n" + stKey.Render(m.input.prompt) + stDim.Render(" › ") +
 			stSelRow.Render(m.input.value) + stSelBar.Render("▏"))
+		indent := strings.Repeat(" ", lipgloss.Width(m.input.prompt)+3)
+		// The note is what is actually on disk and what the answer will do with
+		// it: asking about a directory without saying what is in it is asking
+		// the user to guess.
+		if m.input.note != "" {
+			b.WriteString("\n" + indent + stOK.Render(m.input.note))
+		}
 		if m.input.hint != "" {
-			b.WriteString("\n" + stDim.Render(strings.Repeat(" ", lipgloss.Width(m.input.prompt)+3)+m.input.hint))
+			b.WriteString("\n" + indent + stDim.Render(m.input.hint))
 		}
 	}
 	return b.String()
@@ -783,7 +1040,7 @@ func (m *model) viewSites() string {
 		body := fmt.Sprintf("%-20s %-5s %-30s %8s",
 			trunc(s.Slug, 20), s.PHPVersion, trunc(s.Domain, 30), previews)
 		live := m.engine.FPMRunning(s.Slug)
-		b.WriteString(rowFor(live, i == m.cursor, lamp(live)+" ", body) + "\n")
+		b.WriteString(rowFor(live, i == m.siteCur, lamp(live)+" ", body) + "\n")
 	}
 	if s := m.currentSite(); s != nil {
 		b.WriteString("\n" + m.sitePanel(s))
@@ -824,21 +1081,46 @@ func (m *model) sitePanel(s *Site) string {
 }
 
 func (m model) viewWorktrees() string {
-	site := m.currentSite()
-	if site == nil {
+	if len(m.sites) == 0 {
 		return stDim.Render("  No sites yet — create one on the Sites tab first.")
 	}
-	wts := m.store.WorktreesFor(site.Slug)
-	var b strings.Builder
-	b.WriteString("  " + stDim.Render("branch previews of ") + stRow.Render(site.Slug) + "\n\n")
+	wts := m.allWorktrees()
 	if len(wts) == 0 {
-		return b.String() + stDim.Render("  None. Press ") + stKey.Render("a") + stDim.Render(" to serve a branch on its own domain.")
+		return stDim.Render("  No branch previews. Press ") + stKey.Render("a") +
+			stDim.Render(" to serve a branch of a site on its own domain.")
 	}
-	b.WriteString("    " + stHead.Render(fmt.Sprintf("%-24s %-34s %s", "BRANCH", "DOMAIN", "CHECKOUT")) + "\n")
+	var b strings.Builder
+	b.WriteString("    " + stHead.Render(fmt.Sprintf("%-16s %-20s %-30s", "SITE", "BRANCH", "DOMAIN")) + "\n")
 	for i, w := range wts {
-		body := fmt.Sprintf("%-24s %-34s", trunc(w.Branch, 24), trunc(w.Domain, 34)) + " " + stDim.Render(shortHome(w.Path))
+		body := fmt.Sprintf("%-16s %-20s %-30s", trunc(w.Site, 16), trunc(w.Branch, 20), trunc(w.Domain, 30))
 		live := m.engine.FPMRunning(w.ID)
-		b.WriteString(rowFor(live, i == m.cursor, lamp(live)+" ", body) + "\n")
+		gutter := lamp(live) + " "
+		// A row whose checkout is gone can never serve: a grey lamp would read as
+		// "stopped", which is a lie the user only discovers via a dead connection.
+		if !fileExists(w.Path) {
+			gutter = lampFor("fail") + " "
+			body += stErr.Render("  checkout missing")
+		}
+		b.WriteString(rowFor(live, i == m.wtCur, gutter, body) + "\n")
+	}
+	if wt := m.currentWorktree(); wt != nil {
+		files := shortHome(wt.Path)
+		if !fileExists(wt.Path) {
+			files += stErr.Render("  — gone")
+		}
+		rows := [][2]string{
+			{"open", BareDomainURL(wt.Domain)},
+			{"branch", wt.Branch + stDim.Render("  of ") + wt.Site},
+			{"files", files},
+		}
+		var body strings.Builder
+		for i, r := range rows {
+			if i > 0 {
+				body.WriteString("\n")
+			}
+			body.WriteString(stLabel.Render(r[0]) + "  " + r[1])
+		}
+		b.WriteString("\n" + stPanel.Width(tableWidth).Render(body.String()))
 	}
 	return b.String()
 }
@@ -859,7 +1141,7 @@ func (m model) viewRuntimes() string {
 			note = "serving"
 		}
 		body := fmt.Sprintf("%-8s %-10s", rt.Version, note) + " " + stDim.Render(shortHome(rt.Bin))
-		b.WriteString(rowFor(inUse[rt.Version], i == m.cursor, lamp(inUse[rt.Version])+" ", body) + "\n")
+		b.WriteString(rowFor(inUse[rt.Version], i == m.rtCur, lamp(inUse[rt.Version])+" ", body) + "\n")
 	}
 	b.WriteString("\n  " + stHead.Render("SERVICES") + "\n")
 	svc := func(on bool, name, detail string) {
@@ -939,9 +1221,9 @@ func (m model) viewFooter(w int) string {
 	switch m.tab {
 	case tabSites:
 		keys = [][2]string{{"n", "new"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"},
-			{"o", "open"}, {"p", "php"}, {"d", "domain"}, {"D", "delete"}}
+			{"o", "open"}, {"a", "preview"}, {"p", "php"}, {"d", "domain"}, {"D", "delete"}}
 	case tabWorktrees:
-		keys = [][2]string{{"a", "add branch"}, {"s", "start"}, {"x", "stop"}, {"D", "remove"}}
+		keys = [][2]string{{"a", "add preview"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"}, {"o", "open"}, {"D", "remove"}}
 	case tabRuntimes:
 		keys = [][2]string{{"i", "install php"}, {"m", "mariadb"}, {"h", "apache"}, {"b", "homebrew"}}
 	case tabDoctor:
@@ -1024,4 +1306,93 @@ func renderFrame(args []string) error {
 	}
 	fmt.Println(m.View())
 	return nil
+}
+
+// completeDir completes a directory path the way a shell would: unique match
+// completes and opens, several matches complete the shared prefix and list what
+// is left. Directories only — a site lives in one.
+func completeDir(v string) (string, string) {
+	raw := strings.TrimSpace(v)
+	if raw == "" {
+		raw = "~/"
+	}
+	expanded, err := ResolveDir(raw)
+	if err != nil {
+		return v, ""
+	}
+	// A trailing separator means "inside this directory", not "complete its name".
+	dir, base := filepath.Dir(expanded), filepath.Base(expanded)
+	if strings.HasSuffix(raw, string(os.PathSeparator)) || raw == "~" {
+		dir, base = expanded, ""
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return v, "no such directory: " + shortHome(dir)
+	}
+	var names []string
+	for _, e := range ents {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(e.Name()), strings.ToLower(base)) {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	switch len(names) {
+	case 0:
+		if base == "" {
+			return shortHome(dir) + string(os.PathSeparator), "empty — nothing to complete"
+		}
+		return v, "nothing matches " + base
+	case 1:
+		return shortHome(filepath.Join(dir, names[0])) + string(os.PathSeparator), ""
+	default:
+		completed := commonPrefix(names)
+		out := shortHome(filepath.Join(dir, completed))
+		if completed == base {
+			// Already at the branch point: showing the options is the only
+			// useful thing left to do.
+			return out, strings.Join(trimList(names, 6), "  ")
+		}
+		return out, strings.Join(trimList(names, 6), "  ")
+	}
+}
+
+// commonPrefix is the longest prefix shared by every candidate, which is how far
+// a completion can go without guessing.
+func commonPrefix(in []string) string {
+	if len(in) == 0 {
+		return ""
+	}
+	p := in[0]
+	for _, s := range in[1:] {
+		for !strings.HasPrefix(strings.ToLower(s), strings.ToLower(p)) {
+			p = p[:len(p)-1]
+			if p == "" {
+				return ""
+			}
+		}
+	}
+	return p
+}
+
+// trimList caps a candidate list so a wide directory cannot push the layout off
+// the screen.
+func trimList(in []string, max int) []string {
+	if len(in) <= max {
+		return in
+	}
+	return append(in[:max:max], fmt.Sprintf("+%d more", len(in)-max))
+}
+
+// defaultSiteName reads a sensible site name out of a path, skipping the
+// container directories that carry no meaning of their own.
+func defaultSiteName(dir string) string {
+	base := filepath.Base(dir)
+	switch base {
+	case "public", "web", "www", "htdocs", "public_html", "app", "wp":
+		return filepath.Base(filepath.Dir(dir))
+	}
+	return base
 }

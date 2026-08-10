@@ -223,7 +223,12 @@ GET|POST /front                      // "router" | "apache"
 POST|DELETE /hosts                   {"domains":["a.test"]}
 ```
 
-`POST /import` matters for the switch: `source` is a LocalWP site name, a
+`POST /attach {"dir":"/path","name?":"x","domain?":"x.test","php_version?":"8.3"}
+   → serve a directory as-is with an empty database. No files are written except a
+     wp-config.php when WordPress core is present with none; delete removes that again.
+     Use this when there is no database to copy. MCP: attach_site.
+
+POST /import` matters for the switch: `source` is a LocalWP site name, a
 LocalWP site **path**, or any docroot. Database modes:
 
 | Mode | How |

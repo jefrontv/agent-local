@@ -137,6 +137,16 @@ func Doctor(store *Store) *DoctorReport {
 		}
 	}
 
+	// A preview whose checkout was removed behind our back sits in the catalogue
+	// looking merely stopped, then refuses every connection. Name it instead.
+	for _, wt := range store.Data.Worktrees {
+		if !fileExists(wt.Path) {
+			add(Finding{Check: "preview:" + wt.ID, Status: "warn",
+				Detail:  "checkout gone from " + shortHome(wt.Path),
+				FixHint: "remove the stale row with D on the Worktrees tab"})
+		}
+	}
+
 	// stale pidfiles
 	for _, f := range []string{"mysql.pid", "apache.pid"} {
 		pidf := filepath.Join(P().Run(), f)
