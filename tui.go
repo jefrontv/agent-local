@@ -889,15 +889,20 @@ func (m model) View() string {
 	if m.mode == modeInput {
 		b.WriteString("\n\n" + stKey.Render(m.input.prompt) + stDim.Render(" › ") +
 			stSelRow.Render(m.input.value) + stSelBar.Render("▏"))
-		indent := strings.Repeat(" ", lipgloss.Width(m.input.prompt)+3)
+		indent := lipgloss.Width(m.input.prompt) + 3
+		pad := strings.Repeat(" ", indent)
+		// Both lines are answers to "what am I choosing between", so they are
+		// trimmed to the window rather than left to wrap and break candidate
+		// names in half.
+		avail := w - indent - 2
 		// The note is what is actually on disk and what the answer will do with
 		// it: asking about a directory without saying what is in it is asking
 		// the user to guess.
 		if m.input.note != "" {
-			b.WriteString("\n" + indent + stOK.Render(m.input.note))
+			b.WriteString("\n" + pad + stOK.Render(trunc(m.input.note, avail)))
 		}
 		if m.input.hint != "" {
-			b.WriteString("\n" + indent + stDim.Render(m.input.hint))
+			b.WriteString("\n" + pad + stDim.Render(trunc(m.input.hint, avail)))
 		}
 	}
 	return b.String()
@@ -1316,13 +1321,22 @@ func renderFrame(args []string) error {
 	return nil
 }
 
-// completeDir completes a directory path the way a shell would: unique match
-// completes and opens, several matches complete the shared prefix and list what
-// is left. Directories only — a site lives in one.
+// completeDir completes a directory path the way a shell does, and — unlike the
+// first version of this — writes the answer back in the notation the user chose.
+// Collapsing a typed "/Users/jakevarrese" to "~" is a correct path and a useless
+// answer: it reads as though the input was thrown away.
 func completeDir(v string) (string, string) {
 	raw := strings.TrimSpace(v)
 	if raw == "" {
 		raw = "~/"
+	}
+	tilde := raw == "~" || strings.HasPrefix(raw, "~"+string(os.PathSeparator))
+	// render puts a resolved path back into the user's own notation.
+	render := func(p string) string {
+		if tilde {
+			return shortHome(p)
+		}
+		return p
 	}
 	expanded, err := ResolveDir(raw)
 	if err != nil {
@@ -1337,33 +1351,52 @@ func completeDir(v string) (string, string) {
 	if err != nil {
 		return v, "no such directory: " + shortHome(dir)
 	}
-	var names []string
+	// Hidden directories are noise until they are asked for by name.
+	wantHidden := strings.HasPrefix(base, ".")
+	var exact, insensitive []string
 	for _, e := range ents {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+		name := e.Name()
+		if !e.IsDir() || (!wantHidden && strings.HasPrefix(name, ".")) {
 			continue
 		}
-		if strings.HasPrefix(strings.ToLower(e.Name()), strings.ToLower(base)) {
-			names = append(names, e.Name())
+		switch {
+		case strings.HasPrefix(name, base):
+			exact = append(exact, name)
+		case strings.HasPrefix(strings.ToLower(name), strings.ToLower(base)):
+			insensitive = append(insensitive, name)
 		}
 	}
+	// Case-sensitive matches win; typing "doc" still finds "Documents" when
+	// nothing matches exactly.
+	names := exact
+	if len(names) == 0 {
+		names = insensitive
+	}
 	sort.Strings(names)
+	sep := string(os.PathSeparator)
 	switch len(names) {
 	case 0:
 		if base == "" {
-			return shortHome(dir) + string(os.PathSeparator), "empty — nothing to complete"
+			return render(dir) + sep, "no sub-directories here"
 		}
 		return v, "nothing matches " + base
 	case 1:
-		return shortHome(filepath.Join(dir, names[0])) + string(os.PathSeparator), ""
+		return render(filepath.Join(dir, names[0])) + sep, ""
 	default:
-		completed := commonPrefix(names)
-		out := shortHome(filepath.Join(dir, completed))
-		if completed == base {
-			// Already at the branch point: showing the options is the only
-			// useful thing left to do.
-			return out, strings.Join(trimList(names, 6), "  ")
+		// Count first: the line gets trimmed to the window, and "how many" is the
+		// part that must survive.
+		list := fmt.Sprintf("%d dirs: %s", len(names), strings.Join(trimList(names, 6), "  "))
+		if cp := commonPrefix(names); cp != base {
+			return render(filepath.Join(dir, cp)), list
 		}
-		return out, strings.Join(trimList(names, 6), "  ")
+		// The prefix cannot grow. If what is typed is itself a directory, step
+		// into it so a second tab makes progress instead of stalling.
+		for _, n := range names {
+			if n == base {
+				return render(filepath.Join(dir, base)) + sep, list
+			}
+		}
+		return v, list
 	}
 }
 
