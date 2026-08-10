@@ -1033,6 +1033,7 @@ func (m *model) viewSites() string {
 		// Deliberately no size column: it costs a directory walk per row per
 		// render, and an imported checkout cannot report one anyway. Size lives
 		// in the panel, for the selected site only.
+		gone := !fileExists(s.WPDir)
 		previews := ""
 		if n := len(m.store.WorktreesFor(s.Slug)); n > 0 {
 			previews = fmt.Sprint(n)
@@ -1040,7 +1041,14 @@ func (m *model) viewSites() string {
 		body := fmt.Sprintf("%-20s %-5s %-30s %8s",
 			trunc(s.Slug, 20), s.PHPVersion, trunc(s.Domain, 30), previews)
 		live := m.engine.FPMRunning(s.Slug)
-		b.WriteString(rowFor(live, i == m.siteCur, lamp(live)+" ", body) + "\n")
+		gutter := lamp(live) + " "
+		if gone {
+			// Files removed behind our back: the pool may still be up, so a green
+			// lamp would promise a site that answers nothing but 404.
+			gutter = lampFor("fail") + " "
+			body += stErr.Render("  docroot missing")
+		}
+		b.WriteString(rowFor(live, i == m.siteCur, gutter, body) + "\n")
 	}
 	if s := m.currentSite(); s != nil {
 		b.WriteString("\n" + m.sitePanel(s))

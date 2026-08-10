@@ -137,6 +137,16 @@ func Doctor(store *Store) *DoctorReport {
 		}
 	}
 
+	// Same for a site: a docroot removed behind our back leaves a row that looks
+	// healthy and answers 404. Say so rather than let it be discovered by hand.
+	for _, site := range store.Sites() {
+		if !fileExists(site.WPDir) {
+			add(Finding{Check: "site:" + site.Slug, Status: "warn",
+				Detail:  "docroot gone from " + shortHome(site.WPDir),
+				FixHint: "delete the stale row: agent-local delete " + site.Slug + " --yes"})
+		}
+	}
+
 	// A preview whose checkout was removed behind our back sits in the catalogue
 	// looking merely stopped, then refuses every connection. Name it instead.
 	for _, wt := range store.Data.Worktrees {
