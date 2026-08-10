@@ -44,7 +44,7 @@ type Site struct {
 	PHPVersion string    `json:"php_version"` // e.g. "8.2"
 	DBName     string    `json:"db_name"`
 	DBUser     string    `json:"db_user"`
-	DBPass     string    `json:"db_pass"`
+	DBPass     string    `json:"db_pass,omitempty"`
 	Domain     string    `json:"domain"` // primary host, e.g. mysite.test
 	Aliases    []string  `json:"aliases,omitempty"`
 	HTTPPort   int       `json:"http_port"`

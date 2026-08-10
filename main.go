@@ -560,8 +560,15 @@ func cmdResolve(args []string) error {
 	if err != nil {
 		return err
 	}
-	site, matched, wt := e.SiteForPath(target)
+	site, matched, wt, candidates := e.ResolvePath(target)
 	if site == nil {
+		if len(candidates) > 1 {
+			slugs := make([]string, 0, len(candidates))
+			for _, s := range candidates {
+				slugs = append(slugs, s.Slug)
+			}
+			return fmt.Errorf("%s contains %d sites: %s — name one of them", target, len(candidates), strings.Join(slugs, ", "))
+		}
 		return fmt.Errorf("no site manages %s", target)
 	}
 	if wt != nil {
@@ -613,7 +620,15 @@ func cmdUpdate(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("updated to %s — restart the daemon to run it: agent-local restart-daemon\n", installed)
+	fmt.Println("updated to " + installed)
+	// The daemon in memory is still the old binary, and an old daemon can be
+	// actively broken against new state (the root password migration is one such
+	// change), so hand over now instead of leaving it to the user.
+	if portOpen(DefaultAPIPort) {
+		if err := cmdRestartDaemon(); err != nil {
+			fmt.Println("  finish with: agent-local restart-daemon")
+		}
+	}
 	return nil
 }
 

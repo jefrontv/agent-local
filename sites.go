@@ -204,6 +204,9 @@ func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 	for _, w := range e.Store.WorktreesFor(slug) {
 		_ = e.RemoveWorktree(w.ID)
 	}
+	// Drop the generated pool config too, or php-fpm keeps parsing a pool whose
+	// work_dir no longer exists on every later start.
+	e.RemovePool(slug)
 	if !o.KeepDB {
 		if err := e.DropSiteDB(site); err != nil {
 			return fmt.Errorf("drop db: %w", err)
@@ -574,6 +577,25 @@ func (e *Engine) SitesUnderPath(path string) []*Site {
 	return out
 }
 
+// ResolvePath is the one path→site resolution every surface uses: exact match
+// or inside a site first, then a directory containing exactly one site.
+// Ambiguity is returned rather than guessed, so the caller decides whether that
+// is a 409, a prompt, or an error.
+//
+// Both the HTTP route and the CLI go through this. When the ancestor case lived
+// only in the handler, `agent-local resolve <repo root>` failed while
+// `GET /resolve` on the same path succeeded — surfaces must not disagree.
+func (e *Engine) ResolvePath(path string) (site *Site, matched string, wt *Worktree, candidates []*Site) {
+	if s, m, w := e.SiteForPath(path); s != nil {
+		return s, m, w, nil
+	}
+	below := e.SitesUnderPath(path)
+	if len(below) == 1 {
+		return below[0], "contains", nil, nil
+	}
+	return nil, "", nil, below
+}
+
 // Branches lists the site repo's branches (local + remote-only), marking the
 // one checked out at the base docroot, so agents can pick a preview target.
 func (e *Engine) Branches(slug string) (map[string]interface{}, error) {
@@ -735,6 +757,7 @@ func (e *Engine) RemoveWorktree(id string) error {
 		return fmt.Errorf("no such worktree: %s", id)
 	}
 	_ = e.StopWorktree(id)
+	e.RemovePool(id) // same reason as DeleteSite: don't leave a dead pool config
 	site := e.Store.Site(w.Site)
 	if site != nil {
 		repoDir := siteRepoDir(site)

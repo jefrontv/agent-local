@@ -235,3 +235,277 @@ carrying no passwords while `?include=secrets` does; `POST /yield` releasing
 
 Anything else, keep it coming — a report this specific is worth more than a
 patch.
+
+---
+
+# Round 2 — independent verification of v0.2.0, plus four new items
+
+**From:** the Muster side again (branch `agent-local-provider`).
+**Against:** agent-local **v0.2.0**, commit `50b7c81`, macOS, daemon `127.0.0.1:10809`,
+MariaDB `127.0.0.1:10360`.
+**Date:** 10 Aug 2026.
+
+All six items re-tested against the running daemon rather than taken on the
+resolution note. **All six confirmed fixed.** Muster's adoption flow —
+detect → preview → runMigration → detect — now completes end to end through its
+own IPC, and live credentials still parse after the `db` block changed shape.
+
+| # | Re-tested result |
+|---|---|
+| 1 | tables really copy (see below — my first attempt proved nothing) |
+| 2 | `db{host,name,pass,port,socket,user}` identical on `/resolve`, `/start`, `/sites/{slug}/db` |
+| 3 | repo root → `200 matched=contains`; 3-site dir → `409` naming candidates; `/tmp` → `404` |
+| 4 | `db_pass` empty in the list; `?include=secrets` returns different data |
+| 5 | `?files=keep&db=keep` → files, schema, user and all 72 tables survive |
+| 6 | `POST /yield` → `200`, "released :80/:443 … sites stay reachable on :1080" |
+
+## A note on how item 1 was verified, for your regression suite
+
+My first re-test looked like a pass and was worthless: I re-imported
+`muster-demo`, whose source schema was the **empty** one left behind by the
+original failure. Copying nothing into nothing returns 200. "Copied correctly"
+and "did nothing at all" are indistinguishable when the source is empty — worth
+guarding against in a fixture.
+
+The test that actually proves it needs a source whose database has rows:
+
+```sh
+# a WordPress folder whose wp-config points at a schema with 72 tables
+POST /import {"source":"…/al-copytest/wp","name":"al-copytest","domain":"al-copytest.test"}
+
+source db al_muster-import-test tables: 72
+POST /import -> 200
+new site db al_al-copytest on 127.0.0.1:10360
+tables copied: 72                      # <- the assertion that matters
+wp-config now: al_al-copytest @ 127.0.0.1:10360
+```
+
+---
+
+## 7. SECURITY — the MariaDB pool has passwordless `root` on TCP
+
+This is the one worth doing first. It is a strictly larger hole than the
+cleartext `db_pass` you just closed in item 4.
+
+```sh
+$ mariadb -h127.0.0.1 -P10360 -uroot -e "show databases"     # no password, connects
+$ mariadb -h127.0.0.1 -P10360 -uroot -e "drop database \`al_somesite\`"   # works
+```
+
+```
+select user, host, length(authentication_string) from mysql.user where user='root';
+root  localhost                   0
+root  127.0.0.1                   0
+root  ::1                         0
+root  jakes-macbook-air-2.local   0
+```
+
+I hit this while cleaning up my own test schema, and it worked on the first try
+with no credentials of any kind.
+
+**Why it matters:** the control API is properly defended — a bearer token in a
+`0600` file. The database underneath it is not defended at all. Any process
+running as the user — a random `npm install` postinstall script, a VS Code
+extension, anything a browser launches — can read or drop **every** site's
+database without ever touching the token. The token is not a security boundary
+for the data while this is true.
+
+Mitigating, and the reason this is high and not critical: the listener is bound
+to `127.0.0.1` only (confirmed via `lsof`), so it is local processes, not the
+network.
+
+**Ask:** give `root` a generated password stored alongside the API token at
+`0600`, and drop the `root@jakes-macbook-air-2.local` host entry (a hostname-based
+root account is a surprise on a laptop that changes networks). Per-site users are
+already scoped correctly — this is only about the superuser.
+
+## 8. Deleting a site leaves its PHP-FPM pool config behind
+
+Schemas are cleaned up correctly. Pool configs are not, and they accumulate
+forever:
+
+```
+live sites:  freshdemo, muster-demo, muster-import-test, orleton-om, sulo   (5)
+fpm confs:   27   ->   22 orphaned
+orphans: agentdemo, agentdemo--preview, customtld, dbtarget, dirimported,
+         dirtest, final, final--wt1, mcpfull, mjazz-probe, promptfree, regress,
+         regress--feat-x, regress2, silenttest, smoke1,
+         smoke1--feature-test-branch, suffixtest, sulo--disktest,
+         sulo--no-footer, suloclone, wipeprobe
+```
+
+Each one names a `work_dir` that no longer exists. Every FPM start parses all 27.
+Two of them (`sulo--disktest`, `sulo--no-footer`) are worktree-suffixed siblings
+of a live site, which is the case most likely to collide on a future re-create.
+
+**Ask:** remove `conf/fpm-<slug>.conf` in the same teardown that drops the schema,
+and sweep orphans on daemon start. Compare against `sites.json`, since that is
+already the authority for what exists.
+
+## 9. Unknown slug answers `500`, except on `/db` where it answers `404`
+
+```
+DELETE /sites/definitely-not-a-site        -> 500 {"ok":false,"error":"no such site: …"}
+POST   /sites/definitely-not-a-site/start  -> 500 {"ok":false,"error":"no such site: …"}
+POST   /sites/definitely-not-a-site/stop   -> 500 {"ok":false,"error":"no such site: …"}
+POST   /sites/definitely-not-a-site/db     -> 404 {"ok":false,"error":"no such site"}
+```
+
+`/db` has it right and the other three do not. This matters to us because a
+`5xx` is what our client retries and reports as "agent-local is broken", while a
+`404` is a fact about the site that we surface to the user as-is. "You asked for
+a site that does not exist" should never read as a daemon fault.
+
+**Ask:** `404` for an unknown slug across all four. Keep `500` for a site that
+exists but whose operation failed — that distinction is the useful one.
+
+## 10. `GET /sites` still carries a `db_pass` key, now always empty
+
+Item 4 is functionally fixed — the value is gone and `?include=secrets` opts back
+in. But the empty key is still in the payload, and an empty string reads as
+"this site has no database password" rather than "ask elsewhere". We handle it,
+but a caller that trusts the field will build a broken connection string and get
+a confusing `1045` rather than an obvious failure.
+
+**Ask:** omit the key entirely unless `?include=secrets` is set. Same for
+`admin_pass`.
+
+---
+
+## Two questions, not complaints
+
+1. **`db.socket` is always `""` in everything I have seen.** Is it ever
+   populated? Muster deliberately sends an empty socket path to force its MySQL
+   layer down the TCP branch, so an empty value is what we want — but if the
+   field can become non-empty on some setup, we would rather know now than
+   discover it when a user's connection silently changes transport. If it is
+   vestigial, dropping it is cleaner than leaving a field that means nothing.
+
+2. **`GET /status` reports `version` — is that a contract we can rely on?**
+
+   ```json
+   {"db":{"port":10360,"running":true},"http":{"front":"router","listening":true,"port":1080},
+    "runtimes":["8.0","8.1","8.2","8.3","8.4"],"sites":5,"version":"0.2.0","worktrees":1}
+   ```
+
+   Muster has to support users still on 0.1.x, where the `db` block is spelled
+   differently and `/resolve` does not match ancestors. If `version` in `/status`
+   is stable we will negotiate on it and take the fast paths only when they
+   exist. There is no `GET /version` route, which is fine — `/status` is a better
+   home for it.
+
+   Related: we are keeping the `GET /sites` prefix-match fallback from item 3
+   rather than deleting it as your note 2 suggests, precisely because of 0.1.x.
+   `/resolve` is the fast path now; the fallback only runs if it 404s.
+
+## Still right, and now provably so
+
+- Adopting an existing folder works through Muster's IPC with no hand-holding:
+  `runMigration` → `"Site registered with agent-local as 'muster-demo'"`, and a
+  follow-up detect reports `registered: true, socketReady: true, phpVersion: 8.2`.
+- The reshaped `db` block did not break our parser, because we read credentials
+  from `/sites/{slug}/db` and `/start` and never from the list — your breaking
+  change in note 1 cost us nothing.
+- `wp option get siteurl` against an adopted site returns
+  `https://muster-import-test.test` through the live credentials, and
+  `activeTheme` reads `sulo` from `local-database`. That is the whole point of
+  the integration working.
+
+## Reproducing items 7–10
+
+```sh
+TOKEN=$(cat ~/.agent-local/token)
+
+# 7 — no password, full access
+mariadb -h127.0.0.1 -P10360 -uroot -e "select schema_name from information_schema.schemata"
+
+# 8 — orphaned pool configs vs live sites
+ls ~/.agent-local/conf/fpm-*.conf | wc -l
+curl -sH "Authorization: Bearer $TOKEN" http://127.0.0.1:10809/sites | jq '.data | length'
+
+# 9 — status codes for a slug that does not exist
+for p in "" /start /stop /db; do
+  curl -so /dev/null -w "%{http_code} $p\n" -H "Authorization: Bearer $TOKEN" \
+    -X POST "http://127.0.0.1:10809/sites/definitely-not-a-site$p"
+done
+
+# 10 — the empty key
+curl -sH "Authorization: Bearer $TOKEN" http://127.0.0.1:10809/sites | jq '.data[0] | keys'
+```
+
+---
+
+# Resolution — agent-local v0.3.0
+
+Items 7–10 fixed, both questions answered. Item 7 was the right call to put
+first; it was a real hole and the fix touched every root connection in the app.
+
+| # | Status | What changed |
+|---|---|---|
+| 7 | **fixed** | root now has a generated password at `~/.agent-local/db-root-pass` (`0600`), and the hostname-based root account is dropped |
+| 8 | **fixed** | pool configs are deleted with the site/worktree, and orphans are swept on daemon start — 21 were removed on this machine |
+| 9 | **fixed** | `404` for an unknown slug on every `/sites/{slug}/…` route |
+| 10 | **fixed** | `db_pass`/`admin_pass` keys are omitted entirely unless `?include=secrets` |
+
+## 7 — what the fix does
+
+On the first database call after upgrading, root gets a generated 32-char
+password, stored beside the API token at `0600`. Verified on this machine:
+
+```
+before:  mariadb -uroot -e "SELECT 1"            → 1
+after :  mariadb -uroot -e "SELECT 1"            → ERROR 1045 … (using password: NO)
+         mariadb -uroot --password="$(cat …)"    → 1
+root accounts: 127.0.0.1, ::1, localhost         (jakes-macbook-air-2.local dropped)
+```
+
+The migration handles all three states: already ours (no-op), still
+passwordless (set it — this is the upgrade path), or protected by a password we
+do not have (explicit error naming the file and the recovery, instead of a
+confusing 1045 on every later call). Fresh data directories are secured
+immediately after first boot, so the passwordless window does not exist for new
+installs.
+
+Every root client in the app now authenticates: the SQL runner, both dump/load
+pipes, `db export`, and the own-server import branch. Per-site users are
+untouched, so nothing an integrator holds changes.
+
+**One upgrade hazard you may hit before this note reaches you:** a daemon still
+in memory from ≤0.2.0 connects without a password and will fail every DB call
+after the migration runs. `agent-local update` now restarts the daemon itself
+for exactly this reason; if you upgrade some other way, run
+`agent-local restart-daemon`.
+
+## 8 — including the ones your report listed
+
+All 22 orphans you named are gone; `conf/` now holds exactly one config per live
+site and worktree (6 for 5 sites + 1 worktree). Teardown removes the config, pid
+and socket; the daemon sweeps anything left over on start, skipping pools that
+are still serving so it cannot pull a config out from under a running process.
+
+## Your two questions
+
+**1. `db.socket` — always `""`, permanently.** One TCP server on
+`127.0.0.1:10360`; there is no per-site socket and no setup where that changes.
+I kept the field rather than dropping it precisely because your MySQL layer
+chooses transport by socket-emptiness — it lets you pass our block straight
+through with no special case. It will not become non-empty.
+
+**2. `/status.version` is a contract.** Release semver, stamped from the tag at
+build time. A source build reports `"dev"` — read that as "newest, assume
+everything". Feature floors: `/resolve` + `/certs` from 0.1.1; nested `db`,
+ancestor resolve, `?db=keep`, `POST /yield` from 0.2.0; `404` for unknown slug,
+omitted secret keys, and password-protected root from 0.3.0. Both are now
+documented in `MUSTER-INTEGRATION.md` §2 so they are not just an answer in a
+thread.
+
+Keeping the `GET /sites` prefix-match fallback for 0.1.x is the right call — I
+withdraw note 2 from the previous round.
+
+## On your empty-source warning
+
+Worth more than the bug reports: "copying nothing into nothing returns 200" is
+exactly the failure a green test suite hides. The fixture I now use for item 1 is
+a folder whose schema has rows, asserting the table count on the far side — same
+shape as your `al-copytest` run. Adopting a live site with 72 tables and 3958
+posts is in the verification set.

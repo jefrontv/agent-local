@@ -82,6 +82,34 @@ Single Go binary, macOS. Install: `./install.sh` → `~/.local/bin/agent-local`.
 
 **No password prompts** as long as the user ran `agent-local sudo` once (a scoped `NOPASSWD` allowlist for hosts writes and cert trust). Without it, hosts/cert operations will try to raise a GUI dialog, which a background Electron process cannot satisfy — surface that as a setup step, do not swallow it.
 
+**`GET /status` reports `version`, and that is a contract.** It is the release
+semver (`"0.3.0"`), stamped at build time from the tag, so negotiating on it is
+supported and encouraged. A source build reports `"dev"` — treat that as "newest,
+assume every feature". Feature floors worth knowing:
+
+| Need | Minimum |
+|---|---|
+| `GET /resolve`, `GET /certs/{domain}` | 0.1.1 |
+| nested `db` block everywhere, ancestor resolve, `?db=keep`, `POST /yield` | 0.2.0 |
+| `404` for unknown slug, secrets omitted from list, password-protected DB root | 0.3.0 |
+
+**`db.socket` is always `""` and always will be.** The engine is one TCP server
+on `127.0.0.1:10360`; there is no per-site socket to report and no setup where
+that changes. The field exists so a caller can hand it straight to a MySQL layer
+that chooses transport by socket-emptiness (which is exactly what Muster's
+`buildLocalMysqlConnectionOptions` does) without special-casing us. Keep sending
+the empty value; it will not surprise you later.
+
+**Database root is password-protected** as of 0.3.0. Per-site users (`al_<slug>`,
+returned in the `db` block) are what an integrator should use, and they are
+unchanged. If you ever need superuser SQL, `POST /db/query` runs as root on your
+behalf; the password itself lives in `~/.agent-local/db-root-pass` (`0600`), not
+in any API response.
+
+**Unknown slug answers `404`** on every `/sites/{slug}/…` route. `500` now means
+"this site exists and the operation failed", which is the distinction worth
+retrying on.
+
 ---
 
 ## 3. Endpoints you need (all verified)

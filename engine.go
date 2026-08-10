@@ -38,7 +38,9 @@ func (e *Engine) EnsureDB() error {
 		return fmt.Errorf("no MySQL/MariaDB engine found; run: agent-local install mariadb")
 	}
 	if e.DBRunning() {
-		return nil
+		// Cheap and idempotent: an install created before root had a password
+		// gets migrated the first time anything touches the database.
+		return e.secureRoot()
 	}
 	datadir := e.dbDir()
 	if !fileExists(filepath.Join(datadir, "mysql")) {
@@ -67,7 +69,12 @@ func (e *Engine) EnsureDB() error {
 	if _, err := proc.Start(); err != nil {
 		return err
 	}
-	return waitPort(DefaultDBPort, 20*time.Second)
+	if err := waitPort(DefaultDBPort, 20*time.Second); err != nil {
+		return err
+	}
+	// Freshly initialised data dirs start with a passwordless root; close that
+	// before anything else can connect.
+	return e.secureRoot()
 }
 
 func (e *Engine) initDB(datadir string) error {
@@ -107,10 +114,19 @@ func (e *Engine) emptyDefaults() string {
 func (e *Engine) DB(sql string) (string, error) { return e.DBIn("", sql) }
 
 // DBIn runs SQL with an optional default database selected, returning the
-// client's stdout as TSV with a header row. The MariaDB client warns about
-// passwordless logins on every invocation; that noise is dropped from
-// results and only surfaced when the statement actually fails.
+// client's stdout as TSV with a header row.
 func (e *Engine) DBIn(db, sql string) (string, error) {
+	return e.dbExecIn(DBRootPassword(), db, sql)
+}
+
+// dbExec runs SQL as root with an explicit password ("" = no password). Used by
+// the credential migration, which has to try both.
+func (e *Engine) dbExec(pass, sql string) (string, error) { return e.dbExecIn(pass, "", sql) }
+
+// dbExecIn is the one place a mysql client is spawned. The MariaDB client warns
+// about passwordless logins on every invocation; that noise is dropped from
+// results and only surfaced when the statement actually fails.
+func (e *Engine) dbExecIn(pass, db, sql string) (string, error) {
 	inv := e.Store.Inventory()
 	bindir := filepath.Dir(inv.MySQL.Bin)
 	client := filepath.Join(bindir, "mariadb")
@@ -121,6 +137,12 @@ func (e *Engine) DBIn(db, sql string) (string, error) {
 		client = "mysql"
 	}
 	args := []string{"--no-defaults", "-uroot", "-h127.0.0.1", "-P", fmt.Sprint(DefaultDBPort), "--batch"}
+	if pass != "" {
+		// Passed as an argument, not on stdin: the port is loopback-only and the
+		// process list is already visible to this user, who owns the password
+		// file anyway.
+		args = append(args, "--password="+pass)
+	}
 	if db != "" {
 		args = append(args, "-D", db)
 	}
@@ -129,8 +151,7 @@ func (e *Engine) DBIn(db, sql string) (string, error) {
 	cmd.Env = append(os.Environ(), "PATH="+bindir+":"+os.Getenv("PATH"))
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		return stdout.String(), fmt.Errorf("mysql: %v: %s", err, tail(dropClientNoise(stderr.String()), 400))
 	}
 	return stdout.String(), nil
@@ -315,12 +336,61 @@ func (e *Engine) ensurePool(id string) error {
 	return fmt.Errorf("unknown pool %s", id)
 }
 
-// StopFPM stops a pool.
+// StopFPM stops a pool. The generated config is left in place so a restart
+// reuses it; RemovePool is the teardown that deletes it.
 func (e *Engine) StopFPM(id string) error {
 	proc := &Proc{Name: FPMName(id), PidTo: e.fpmPid(id)}
 	err := proc.Stop()
 	os.Remove(e.fpmSock(id))
 	return err
+}
+
+// RemovePool deletes a pool's generated config and runtime files. Without this
+// every deleted site left conf/fpm-<slug>.conf behind, so php-fpm parsed a
+// growing pile of pools naming directories that no longer exist.
+func (e *Engine) RemovePool(id string) {
+	_ = e.StopFPM(id)
+	os.Remove(e.fpmConf(id))
+	os.Remove(e.fpmPid(id))
+	os.Remove(e.fpmSock(id))
+}
+
+// SweepOrphanPools deletes pool configs with no matching site or worktree.
+// sites.json is the authority for what exists, so anything else is residue from
+// a delete that predates RemovePool.
+func (e *Engine) SweepOrphanPools() int {
+	live := map[string]bool{}
+	for _, s := range e.Store.Sites() {
+		live[s.Slug] = true
+	}
+	for id := range e.Store.Data.Worktrees {
+		live[id] = true
+	}
+	entries, err := os.ReadDir(P().Conf())
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	for _, ent := range entries {
+		name := ent.Name()
+		if !strings.HasPrefix(name, "fpm-") || !strings.HasSuffix(name, ".conf") {
+			continue
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(name, "fpm-"), ".conf")
+		if live[id] {
+			continue
+		}
+		// A pool still serving is not an orphan: leave it and let its owner
+		// stop it, rather than pulling the config out from under it.
+		if e.FPMRunning(id) {
+			continue
+		}
+		os.Remove(filepath.Join(P().Conf(), name))
+		os.Remove(e.fpmPid(id))
+		os.Remove(e.fpmSock(id))
+		removed++
+	}
+	return removed
 }
 
 // FPMRunning reports pool liveness.

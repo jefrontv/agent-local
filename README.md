@@ -202,9 +202,12 @@ one site on 7.4 next to one on 8.4 is normal.
 
 ## Databases
 
-One embedded MariaDB on port 10360 backs every site. Each site gets its own
-database (`al_<slug>`) and user; queries run as root, so there are no
-restrictions.
+One embedded MariaDB on port 10360 backs every site, bound to `127.0.0.1` only.
+Each site gets its own database (`al_<slug>`) and user. `root` is
+password-protected — the password is generated on first use and kept in
+`~/.agent-local/db-root-pass` (`0600`), so another process running as you cannot
+read or drop your data just by connecting to the port. Commands below run as
+root on your behalf, so there are no restrictions on what you can do.
 
 ```sh
 agent-local db mysite                             # host/port/db/user/pass
@@ -394,7 +397,7 @@ agent-local api-token | version
 | Generated config (fpm pools, apache, pf) | `~/.agent-local/conf/` |
 | Logs | `~/.agent-local/logs/` |
 | Dumps from `db export` | `~/.agent-local/dumps/` |
-| State + API token | `~/.agent-local/sites.json`, `~/.agent-local/token` |
+| State, API token, DB root password | `~/.agent-local/sites.json`, `~/.agent-local/token`, `~/.agent-local/db-root-pass` (all `0600` where secret) |
 
 | Port | Service |
 |---|---|

@@ -299,9 +299,9 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 			}
 			user, pass := srcUser, srcPass
 			if e.ownDatabase(srcHost, srcPort, srcSocket) {
-				// We own this server, so use root: the wp-config credentials
-				// for a site we just provisioned are already stale.
-				user, pass = "root", ""
+				// We own this server, so authenticate as root: the wp-config
+				// credentials for a site we just provisioned are already stale.
+				user, pass = "root", DBRootPassword()
 			}
 			cb("database", fmt.Sprintf("dumping %s from %s", srcDBName, from))
 			if err := e.copyDatabase(site, srcDBName, srcSocket, srcHost, srcPort, user, pass, cb); err != nil {
@@ -425,7 +425,7 @@ func (e *Engine) copyDatabase(site *Site, srcDB, srcSocket, srcHost string, srcP
 	dumpArgs = append(dumpArgs, srcDB)
 	dump := exec.Command(dumpBin, dumpArgs...)
 	load := exec.Command(clientBin, "--no-defaults",
-		"-uroot", "-h127.0.0.1", "-P", fmt.Sprint(DefaultDBPort), site.DBName)
+		"-uroot", "--password="+DBRootPassword(), "-h127.0.0.1", "-P", fmt.Sprint(DefaultDBPort), site.DBName)
 
 	dumpOut, err := dump.StdoutPipe()
 	if err != nil {
@@ -517,7 +517,7 @@ func (e *Engine) loadSQLFile(site *Site, path string) error {
 		clientBin = filepath.Join(bindir, "mysql")
 	}
 	load := exec.Command(clientBin, "--no-defaults",
-		"-uroot", "-h127.0.0.1", "-P", fmt.Sprint(DefaultDBPort), site.DBName)
+		"-uroot", "--password="+DBRootPassword(), "-h127.0.0.1", "-P", fmt.Sprint(DefaultDBPort), site.DBName)
 	loadIn, err := load.StdinPipe()
 	if err != nil {
 		return err
@@ -698,7 +698,7 @@ func (e *Engine) ExportSQL(slug, path string) (string, error) {
 		return "", err
 	}
 	defer f.Close()
-	cmd := exec.Command(dump, "--no-defaults", "-uroot", "-h127.0.0.1",
+	cmd := exec.Command(dump, "--no-defaults", "-uroot", "--password="+DBRootPassword(), "-h127.0.0.1",
 		"-P", fmt.Sprint(DefaultDBPort), "--single-transaction", "--quick",
 		"--default-character-set=utf8mb4", site.DBName)
 	var errb strings.Builder

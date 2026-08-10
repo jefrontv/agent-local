@@ -63,6 +63,12 @@ func RunDaemon(background bool) error {
 		// worktrees don't persist state; leave stopped
 	}
 
+	// Residue from deletes that predate pool cleanup: sweep before starting
+	// pools, so php-fpm never parses a config naming a directory that is gone.
+	if n := e.SweepOrphanPools(); n > 0 {
+		log.Printf("swept %d orphaned php-fpm pool config(s)", n)
+	}
+
 	// HTTP front: router serves in-process; apache is a child process. The API
 	// below runs under both fronts so agents never lose control.
 	router := NewRouter(e)
@@ -293,24 +299,19 @@ func (a *APIServer) handleResolvePath(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "path required")
 		return
 	}
-	site, matched, wt := a.engine.SiteForPath(path)
+	site, matched, wt, candidates := a.engine.ResolvePath(path)
 	if site == nil {
-		below := a.engine.SitesUnderPath(path)
-		switch len(below) {
-		case 0:
-			fail(w, 404, "no site manages "+path)
-			return
-		case 1:
-			site, matched, wt = below[0], "contains", nil
-		default:
-			slugs := make([]string, 0, len(below))
-			for _, s := range below {
+		if len(candidates) > 1 {
+			slugs := make([]string, 0, len(candidates))
+			for _, s := range candidates {
 				slugs = append(slugs, s.Slug)
 			}
 			writeJSON(w, 409, apiResp{Error: fmt.Sprintf("%s contains %d sites: %s — pass one of their paths",
-				path, len(below), strings.Join(slugs, ", "))})
+				path, len(candidates), strings.Join(slugs, ", "))})
 			return
 		}
+		fail(w, 404, "no site manages "+path)
+		return
 	}
 	out := a.runtimeInfo(site)
 	out["matched"] = matched
@@ -405,6 +406,9 @@ func (a *APIServer) handleCertTrust(w http.ResponseWriter, r *http.Request) {
 // it: URL, docroot, PHP version and live DB connection details. One call, so a
 // provider integration never has to guess or follow up.
 func (a *APIServer) handleStart(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
 	if err := a.engine.StartSite(r.PathValue("slug")); err != nil {
 		fail(w, 500, err.Error())
 		return
@@ -444,6 +448,18 @@ func publicSite(site *Site) *Site {
 	return &copy
 }
 
+// requireSite resolves the {slug} path value or answers 404. "You asked for a
+// site that does not exist" is a fact about the request, not a daemon fault:
+// a 500 there made integrators retry and report agent-local as broken.
+func (a *APIServer) requireSite(w http.ResponseWriter, r *http.Request) *Site {
+	site := a.store.Site(r.PathValue("slug"))
+	if site == nil {
+		fail(w, 404, "no such site: "+r.PathValue("slug"))
+		return nil
+	}
+	return site
+}
+
 // publicSites redacts a whole list.
 func publicSites(sites []*Site) []*Site {
 	out := make([]*Site, 0, len(sites))
@@ -459,6 +475,9 @@ func wantSecrets(r *http.Request) bool {
 }
 
 func (a *APIServer) handleStop(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
 	if err := a.engine.StopSite(r.PathValue("slug")); err != nil {
 		fail(w, 500, err.Error())
 		return
@@ -467,6 +486,9 @@ func (a *APIServer) handleStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *APIServer) handleRestart(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
 	slug := r.PathValue("slug")
 	_ = a.engine.StopSite(slug)
 	if err := a.engine.StartSite(slug); err != nil {
@@ -479,6 +501,9 @@ func (a *APIServer) handleRestart(w http.ResponseWriter, r *http.Request) {
 // handleDelete removes a site. `?files=keep` leaves the checkout, `?db=keep`
 // leaves the schema and user so the folder can be re-adopted later.
 func (a *APIServer) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
 	q := r.URL.Query()
 	if err := a.engine.DeleteSite(r.PathValue("slug"), DeleteOpts{
 		KeepFiles: q.Get("files") == "keep",
@@ -495,6 +520,9 @@ type phpReq struct {
 }
 
 func (a *APIServer) handleSwitchPHP(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
 	var req phpReq
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.Version == "" {
@@ -513,6 +541,9 @@ type domainReq struct {
 }
 
 func (a *APIServer) handleDomain(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
 	var req domainReq
 	json.NewDecoder(r.Body).Decode(&req)
 	if err := a.engine.SetDomain(r.PathValue("slug"), req.Domain); err != nil {
@@ -591,6 +622,9 @@ type sqlFileReq struct {
 
 // handleDBImport replaces a site's database contents with a .sql/.sql.gz dump.
 func (a *APIServer) handleDBImport(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
 	var req sqlFileReq
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.Path == "" {
@@ -605,6 +639,9 @@ func (a *APIServer) handleDBImport(w http.ResponseWriter, r *http.Request) {
 	ok(w, msg)
 }
 func (a *APIServer) handleDBExport(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
 	var req sqlFileReq
 	json.NewDecoder(r.Body).Decode(&req)
 	msg, err := a.engine.ExportSQL(r.PathValue("slug"), req.Path)
@@ -616,6 +653,9 @@ func (a *APIServer) handleDBExport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *APIServer) handleDBReset(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
 	if err := a.engine.ResetDB(r.PathValue("slug")); err != nil {
 		fail(w, 500, err.Error())
 		return
@@ -685,6 +725,9 @@ func (a *APIServer) handleWorktreeWPCLI(w http.ResponseWriter, r *http.Request) 
 }
 
 func (a *APIServer) handleBranches(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
 	res, err := a.engine.Branches(r.PathValue("slug"))
 	if err != nil {
 		fail(w, 400, err.Error())
