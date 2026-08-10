@@ -104,27 +104,50 @@ Admin credentials are printed at the end of `create` and stored in state
   n new · s start · x stop · R restart · o open · p php · d domain · D delete    ⇥ tab · q quit
 ```
 
-Press `n` and it asks where the site should live, completing paths with `⇥`:
+Press `n` and it asks one question:
 
 ```
-where should the site live? › ~/Documents/Sites/my-site
-                             ~/Documents/Sites/my-site does not exist yet
-                             enter or y → installs into ~/Documents/Sites/my-site/wp
+new site in ~/Sites? › 
+                       ~/Sites — holds 4 directories
+                       enter or y → keep them together · n → a path for this one · d → change this directory
+```
+
+Answer it with `enter`, give the site a name, take the offered domain, and that is
+the whole flow: the site is installed at `~/Sites/<name>/wp` and served. Where that
+shared directory points is a setting, changed from this prompt with `d` or from
+anywhere else:
+
+```sh
+agent-local sites-dir ~/Sites        # new sites go here from now on
+agent-local sites-dir                # show it
+agent-local sites-dir --default      # back to ~/.agent-local/sites
+```
+
+Existing sites never move. `create` on any surface honours the setting, so an agent
+calling `create_site` with no `dir` puts the checkout where you would have.
+
+Answer `n` instead and you pick the path yourself, completing as you go with `⇥`:
+
+```
+where should the site live? › ~/Documents/client/their-site
+                             ~/Documents/client/their-site does not exist yet
+                             enter or y → installs into …/their-site/wp
                              n → serve the folder as-is with an empty database
 ```
 
 An empty or missing directory is offered a fresh install. A directory that already
 has files skips that question — nothing is ever installed on top of your work — and
 is attached instead: served as it is, with an empty database of its own. The prompt
-tells you which directory will be served (`app/public`, `wp`, `public`, `web`,
+names the directory that will be served (`app/public`, `wp`, `public`, `web`,
 `htdocs` and the path itself are all understood) before you commit to anything.
 
 Attaching never touches your files. An existing `wp-config.php` is kept as it is;
 one is written only when WordPress core is sitting there with no config at all, and
-deleting the site removes that config again. The same two paths are on every surface:
+deleting the site removes that config again. Both paths exist on every surface:
 
 ```sh
-agent-local create mysite --dir ~/Sites/mysite   # fresh install, your directory
+agent-local create mysite                        # into the shared sites directory
+agent-local create mysite --dir ~/one-off/here   # fresh install, exact path
 agent-local attach ~/Sites/existing-thing        # serve what is there + empty DB
 ```
 
@@ -340,7 +363,7 @@ Same database both sides — the difference between them is code.
 }
 ```
 
-42 tools — everything the CLI can do, no shell required:
+44 tools — everything the CLI can do, no shell required:
 
 | Area | Tools |
 |---|---|

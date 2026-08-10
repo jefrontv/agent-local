@@ -43,11 +43,10 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 	if e.Store.Site(slug) != nil {
 		return nil, fmt.Errorf("site %q already exists", slug)
 	}
-	p := P()
-	// The site root is ours by default, but the caller can put it anywhere. The
-	// docroot stays one level in (<root>/wp) either way: branch previews live at
-	// <root>/@/<branch> and must not sit inside the served directory.
-	root := filepath.Join(p.Sites(), slug)
+	// The site root comes from the configured sites directory unless the caller
+	// names one. The docroot stays one level in (<root>/wp) either way: branch
+	// previews live at <root>/@/<branch> and must not sit inside what is served.
+	root := e.Store.SiteDirFor(slug)
 	if o.Dir != "" {
 		abs, err := ResolveDir(o.Dir)
 		if err != nil {
@@ -320,6 +319,18 @@ func (e *Engine) AttachSite(o AttachOpts) (*Site, error) {
 	return site, nil
 }
 
+// managedDir reports whether a path is one of ours to remove wholesale: inside
+// the app's own tree, or inside the configured sites directory. Anything else is
+// the user's, and only what we added to it may be undone.
+func (e *Engine) managedDir(path string) bool {
+	for _, root := range []string{P().Sites(), e.Store.SitesDir()} {
+		if strings.HasPrefix(path, root+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
 // authoredByUs reports whether a wp-config.php is one we generated, by the
 // header writeWPConfig stamps on it. Used so deleting an attached site removes
 // only the config it added.
@@ -408,8 +419,9 @@ func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 	}
 	if withFiles {
 		switch {
-		case strings.HasPrefix(site.WorkDir, P().Sites()+string(os.PathSeparator)):
-			// Our own tree: all of it goes.
+		case e.managedDir(site.WorkDir):
+			// A directory this app owns — our own tree, or the sites directory the
+			// user pointed us at. All of it goes.
 			if err := os.RemoveAll(site.WorkDir); err != nil {
 				return fmt.Errorf("remove files: %w", err)
 			}

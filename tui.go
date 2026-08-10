@@ -100,7 +100,9 @@ type inputTarget int
 
 const (
 	inputNone     inputTarget = iota
-	inputNewDir               // step 1: where the site lives (tab-completes)
+	inputNewWhere             // step 1: the shared directory, or a path of your own
+	inputSitesDir             // change the shared directory itself
+	inputNewDir               // step 1b: where the site lives (tab-completes)
 	inputNewFresh             // step 2: install WordPress here, or just point at it
 	inputNewName              // step 3: name/slug
 	inputNewDomain
@@ -410,7 +412,7 @@ func (m model) handleInputKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		// Completion only means something for a path. Elsewhere tab would
 		// otherwise leak through to the tab bar and abandon a half-typed answer.
-		if m.input.target == inputNewDir {
+		if m.input.target == inputNewDir || m.input.target == inputSitesDir {
 			v, note := completeDir(m.input.value)
 			m.input.value, m.input.note = v, note
 		}
@@ -418,7 +420,7 @@ func (m model) handleInputKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "backspace":
 		if len(m.input.value) > 0 {
 			m.input.value = m.input.value[:len(m.input.value)-1]
-			if m.input.target == inputNewDir {
+			if m.input.target == inputNewDir || m.input.target == inputSitesDir {
 				m.input.note = ""
 			}
 		}
@@ -444,6 +446,34 @@ func (m model) handleInputKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *model) applyInput(spec inputSpec) error {
 	val := strings.TrimSpace(spec.value)
 	switch spec.target {
+	case inputNewWhere:
+		if strings.HasPrefix(strings.ToLower(val), "d") {
+			// Change the shared directory itself, then come back to this question.
+			next := m.startInput(inputSitesDir, "keep sites in", "⇥ completes · applies to new sites only", "")
+			next.input.value = shortHome(m.store.SitesDir())
+			*m = next
+			return nil
+		}
+		if strings.HasPrefix(strings.ToLower(val), "n") {
+			*m = m.startInput(inputNewDir, "where should the site live?",
+				"⇥ completes · absolute or ~ paths both work", "")
+			return nil
+		}
+		// The shared directory: the site is named, and the path follows from it.
+		next := m.startInput(inputNewName, "name for this site",
+			"becomes the slug, the folder and the default domain", "")
+		next.input.fresh, next.input.note = true, m.newSiteNote()
+		*m = next
+		return nil
+	case inputSitesDir:
+		if err := m.store.SetSitesDir(val); err != nil {
+			return err
+		}
+		next := m.startInput(inputNewWhere, "new site in "+shortHome(m.store.SitesDir())+"?",
+			"enter or y → keep them together · n → a path for this one · d → change this directory", "")
+		next.input.note = m.newSiteNote()
+		*m = next
+		return nil
 	case inputNewDir:
 		dir, err := ResolveDir(val)
 		if err != nil {
@@ -514,9 +544,18 @@ func (m *model) applyInput(spec inputSpec) error {
 		if err != nil {
 			return err
 		}
+		dir, note := spec.dir, spec.note
+		if dir == "" {
+			// Came in via the shared directory: the name decides the folder.
+			dir = m.store.SiteDirFor(slug)
+			if !DirUsable(dir) {
+				return fmt.Errorf("%s already exists — pick another name, or answer n to choose a path", shortHome(dir))
+			}
+			note = "fresh WordPress into " + shortHome(filepath.Join(dir, "wp"))
+		}
 		next := m.startInput(inputNewDomain, "domain for "+slug, "must resolve locally — /etc/hosts is updated for you", "")
-		next.input.dir, next.input.fresh, next.input.name = spec.dir, spec.fresh, val
-		next.input.note = spec.note
+		next.input.dir, next.input.fresh, next.input.name = dir, spec.fresh, val
+		next.input.note = note
 		next.input.value = m.store.DefaultDomain(slug)
 		*m = next
 		return nil
@@ -638,8 +677,10 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	site := m.currentSite()
 	switch k.String() {
 	case "n":
-		return m.startInput(inputNewDir, "where should the site live?",
-			"⇥ completes · ~/Sites/my-site", ""), nil
+		next := m.startInput(inputNewWhere, "new site in "+shortHome(m.store.SitesDir())+"?",
+			"enter or y → keep them together · n → a path for this one · d → change this directory", "")
+		next.input.note = m.newSiteNote()
+		return next, nil
 	case "s":
 		if site == nil {
 			return m, nil
@@ -1436,4 +1477,26 @@ func defaultSiteName(dir string) string {
 		return filepath.Base(filepath.Dir(dir))
 	}
 	return base
+}
+
+// newSiteNote says what the shared sites directory is and what is already in it,
+// so the first question can be answered without going to look.
+func (m model) newSiteNote() string {
+	dir := m.store.SitesDir()
+	n := 0
+	if ents, err := os.ReadDir(dir); err == nil {
+		for _, e := range ents {
+			if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+				n++
+			}
+		}
+	}
+	switch n {
+	case 0:
+		return shortHome(dir) + " — empty so far"
+	case 1:
+		return shortHome(dir) + " — holds 1 directory"
+	default:
+		return fmt.Sprintf("%s — holds %d directories", shortHome(dir), n)
+	}
 }

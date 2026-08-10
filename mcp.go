@@ -133,6 +133,9 @@ func mcpTools() []mcpTool {
 			"db_name":     prop("string", "explicit source DB name"),
 		}, "source")},
 		{"localwp_sites", "List LocalWP sites available for import", schema(nil)},
+		{"set_sites_dir", "Set the parent directory new sites are created in. Existing sites stay where they are; pass an empty string to restore the default (~/.agent-local/sites)", schema(map[string]interface{}{
+			"dir": prop("string", "e.g. ~/Sites — created if missing")}, "dir")},
+		{"get_sites_dir", "Where new sites are created when create_site is called without a dir", schema(nil)},
 		{"set_domain_suffix", "Set the default suffix for new sites/worktrees domains (default .test)", schema(map[string]interface{}{
 			"suffix": prop("string", "e.g. .test, .localhost, .local, .dev.local")}, "suffix")},
 		{"start_site", "Start a site (db + php-fpm + http)", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},
@@ -271,6 +274,10 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 			return map[string]string{"error": err.Error()}, true
 		}
 		return sites, false
+	case "set_sites_dir":
+		return apiPost("/sites-dir", map[string]string{"dir": get("dir")})
+	case "get_sites_dir":
+		return apiGet("/sites-dir")
 	case "set_domain_suffix":
 		return apiPost("/suffix", map[string]string{"suffix": get("suffix")})
 	case "start_site":

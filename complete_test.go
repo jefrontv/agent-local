@@ -158,3 +158,62 @@ func TestDocrootFor(t *testing.T) {
 		}
 	}
 }
+
+// The sites directory decides where every create without an explicit path goes,
+// so its resolution and its effect on delete are pinned here.
+func TestSitesDirSetting(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	store, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := store.SitesDir(), P().Sites(); got != want {
+		t.Errorf("unset SitesDir = %q, want the app's own tree %q", got, want)
+	}
+	if err := store.SetSitesDir("~/Sites"); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, "Sites")
+	if got := store.SitesDir(); got != want {
+		t.Errorf("SitesDir = %q, want %q (tilde expanded)", got, want)
+	}
+	if st, err := os.Stat(want); err != nil || !st.IsDir() {
+		t.Errorf("SetSitesDir should create the directory it accepts: %v", err)
+	}
+	if got, want := store.SiteDirFor("blog"), filepath.Join(home, "Sites", "blog"); got != want {
+		t.Errorf("SiteDirFor = %q, want %q", got, want)
+	}
+	// A file cannot be a sites directory.
+	f := filepath.Join(home, "afile")
+	os.WriteFile(f, []byte("x"), 0o644)
+	if err := store.SetSitesDir(f); err == nil {
+		t.Error("SetSitesDir accepted a file")
+	}
+	// Empty restores the default rather than leaving an unusable value behind.
+	if err := store.SetSitesDir(""); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := store.SitesDir(), P().Sites(); got != want {
+		t.Errorf("after reset SitesDir = %q, want %q", got, want)
+	}
+
+	// Delete may wipe a whole directory only inside a tree we manage: our own,
+	// or the configured sites directory. Everything else is the user's.
+	store.SetSitesDir(filepath.Join(home, "Sites"))
+	e := NewEngine(store)
+	for _, c := range []struct {
+		path string
+		want bool
+	}{
+		{filepath.Join(P().Sites(), "x"), true},
+		{filepath.Join(home, "Sites", "x"), true},
+		{filepath.Join(home, "Documents", "client-work"), false},
+		{filepath.Join(home, "Sites"), false}, // the parent itself is never ours to remove
+	} {
+		if got := e.managedDir(c.path); got != c.want {
+			t.Errorf("managedDir(%s) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}

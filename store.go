@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ type storeData struct {
 	Worktrees map[string]*Worktree `json:"worktrees"`
 	Front     string               `json:"http_front,omitempty"`    // router (default) | apache
 	Suffix    string               `json:"domain_suffix,omitempty"` // default TLD for new domains
+	SitesDir  string               `json:"sites_dir,omitempty"`     // parent dir for new sites
 	Inv       Inventory            `json:"inventory"`
 	UpdatedAt time.Time            `json:"updated_at"`
 }
@@ -261,6 +263,41 @@ func (s *Store) SetSuffix(sfx string) error {
 
 // DefaultDomain builds a domain for a slug using the configured suffix.
 func (s *Store) DefaultDomain(slug string) string { return slug + s.Suffix() }
+
+// SitesDir is where new sites are created when no path is given. Default is our
+// own tree; pointing it at somewhere like ~/Sites is the common case, so that
+// checkouts sit where the rest of a person's work already lives.
+func (s *Store) SitesDir() string {
+	if strings.TrimSpace(s.Data.SitesDir) == "" {
+		return P().Sites()
+	}
+	return s.Data.SitesDir
+}
+
+// SetSitesDir stores the default parent directory for new sites. It is created
+// if missing so the setting cannot be accepted and then fail on first use. An
+// empty value restores the default.
+func (s *Store) SetSitesDir(dir string) error {
+	if strings.TrimSpace(dir) == "" {
+		s.Data.SitesDir = ""
+		return s.Save()
+	}
+	abs, err := ResolveDir(dir)
+	if err != nil {
+		return err
+	}
+	if st, err := os.Stat(abs); err == nil && !st.IsDir() {
+		return fmt.Errorf("%s is a file, not a directory", abs)
+	}
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		return err
+	}
+	s.Data.SitesDir = abs
+	return s.Save()
+}
+
+// SiteDirFor is where a slug's checkout goes by default.
+func (s *Store) SiteDirFor(slug string) string { return filepath.Join(s.SitesDir(), slug) }
 
 // SanitizeName validates a site name for slug/domain use.
 func SanitizeName(name string) (string, error) {

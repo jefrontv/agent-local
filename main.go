@@ -31,6 +31,7 @@ USAGE
   agent-local resolve [PATH]     which site owns a path (default: cwd)
   agent-local cert DOMAIN [--trust]   TLS state for a domain
   agent-local db SLUG [sql|import F|export [F]|reset|tables]   database ops
+  agent-local sites-dir [PATH]       show/set where new sites are created
   agent-local suffix [.test]         show/set default domain suffix
   agent-local domain SLUG NAME   change site domain
   agent-local worktree SLUG BRANCH [--remove]   branch worktree on its own URL
@@ -125,6 +126,8 @@ func main() {
 		err = cmdSudoSetup()
 	case "front-daemon":
 		err = RunFrontDaemon(rest)
+	case "sites-dir":
+		err = cmdSitesDir(rest)
 	case "suffix":
 		err = cmdSuffix(rest)
 	case "api-token":
@@ -197,6 +200,38 @@ func atoi0(s string) int {
 	var n int
 	fmt.Sscanf(s, "%d", &n)
 	return n
+}
+
+// cmdSitesDir shows or sets the parent directory new sites are created in.
+func cmdSitesDir(args []string) error {
+	store, _, err := openEnv()
+	if err != nil {
+		return err
+	}
+	pos := positional(args)
+	if hasFlag(args, "--default") {
+		if err := store.SetSitesDir(""); err != nil {
+			return err
+		}
+		fmt.Println("new sites will be created in " + store.SitesDir())
+		return nil
+	}
+	if len(pos) == 0 {
+		fmt.Println("sites directory: " + store.SitesDir())
+		fmt.Println("change it: agent-local sites-dir ~/Sites      (new sites only)")
+		fmt.Println("reset it:  agent-local sites-dir --default")
+		return nil
+	}
+	dir := pos[0]
+	if hasFlag(args, "--default") {
+		dir = ""
+	}
+	if err := store.SetSitesDir(dir); err != nil {
+		return err
+	}
+	fmt.Println("new sites will be created in " + store.SitesDir())
+	fmt.Println("existing sites stay where they are")
+	return nil
 }
 
 func cmdSuffix(args []string) error {

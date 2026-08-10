@@ -223,7 +223,13 @@ GET|POST /front                      // "router" | "apache"
 POST|DELETE /hosts                   {"domains":["a.test"]}
 ```
 
-`POST /attach {"dir":"/path","name?":"x","domain?":"x.test","php_version?":"8.3"}
+`GET  /sites-dir  -> {"dir":"…","default":"…"}
+POST /sites-dir {"dir":"~/Sites"}
+   → parent directory for sites created without an explicit path. POST /sites with
+     no "dir" lands in <sites-dir>/<slug>. Empty string restores the default.
+     MCP: get_sites_dir / set_sites_dir.
+
+POST /attach {"dir":"/path","name?":"x","domain?":"x.test","php_version?":"8.3"}
    → serve a directory as-is with an empty database. No files are written except a
      wp-config.php when WordPress core is present with none; delete removes that again.
      Use this when there is no database to copy. MCP: attach_site.

@@ -162,6 +162,8 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("GET /status", a.handleStatus)
 	mux.HandleFunc("POST /sites", a.handleCreate)
 	mux.HandleFunc("POST /attach", a.handleAttach)
+	mux.HandleFunc("GET /sites-dir", a.handleSitesDir)
+	mux.HandleFunc("POST /sites-dir", a.handleSitesDir)
 	mux.HandleFunc("GET /sites", a.handleList)
 	mux.HandleFunc("GET /sites/{slug}", a.handleGet)
 	mux.HandleFunc("POST /sites/{slug}/start", a.handleStart)
@@ -228,6 +230,24 @@ func (a *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"worktrees": len(a.store.Data.Worktrees),
 	}
 	ok(w, st)
+}
+
+// handleSitesDir reads or sets the parent directory new sites are created in.
+func (a *APIServer) handleSitesDir(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var req struct {
+			Dir string `json:"dir"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			fail(w, 400, "bad json: "+err.Error())
+			return
+		}
+		if err := a.store.SetSitesDir(req.Dir); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+	}
+	ok(w, map[string]interface{}{"dir": a.store.SitesDir(), "default": P().Sites()})
 }
 
 // handleAttach serves a directory the caller already has, with an empty database
