@@ -115,20 +115,28 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 
 	if sites, err := ListLocalWPSites(); err == nil {
 		for _, s := range sites {
-			if s.Name == o.Source || s.ID == o.Source {
-				lwName = s.Name
-				docroot = filepath.Join(s.Path, "app", "public")
-				srcUser, srcPass = s.MySQL.User, s.MySQL.Password
-				if srcUser == "" {
-					srcUser, srcPass = "root", "root"
-				}
-				srcSocket = s.Socket()
-				if len(s.Services.MySQL.Ports.MYSQL) > 0 {
-					srcPort = s.Services.MySQL.Ports.MYSQL[0]
-				}
-				srcHost = "127.0.0.1"
-				break
+			// Match by name/id, or by path: an integrator hands us the docroot
+			// it already knows, and LocalWP's wp-config says DB_HOST=localhost
+			// while its mysqld actually listens on a per-site socket. Without
+			// the registry we would aim at the default socket and fail.
+			sitePath := normalizePath(s.Path)
+			want := normalizePath(o.Source)
+			byPath := sitePath != "" && want != "" && (pathWithin(want, sitePath) || pathWithin(sitePath, want))
+			if s.Name != o.Source && s.ID != o.Source && !byPath {
+				continue
 			}
+			lwName = s.Name
+			docroot = filepath.Join(s.Path, "app", "public")
+			srcUser, srcPass = s.MySQL.User, s.MySQL.Password
+			if srcUser == "" {
+				srcUser, srcPass = "root", "root"
+			}
+			srcSocket = s.Socket()
+			if len(s.Services.MySQL.Ports.MYSQL) > 0 {
+				srcPort = s.Services.MySQL.Ports.MYSQL[0]
+			}
+			srcHost = "127.0.0.1"
+			break
 		}
 	}
 	if docroot == "" {
@@ -151,12 +159,30 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 		return nil, fmt.Errorf("no WordPress at %s (missing wp-load.php)", docroot)
 	}
 
-	// Source DB name: explicit flag → wp-config.php.
+	// Source connection: explicit flags win, else read the docroot's own
+	// wp-config.php. Reading only DB_NAME (as this did) left host, user and
+	// password empty, so the dump fell back to a unix socket on "localhost"
+	// and failed with 2002 before it ever reached the real server.
+	cfgPath := filepath.Join(docroot, "wp-config.php")
+	if srcDBName == "" {
+		srcDBName = readWPConfigConst(cfgPath, "DB_NAME")
+	}
+	if srcUser == "" {
+		srcUser = readWPConfigConst(cfgPath, "DB_USER")
+	}
+	if srcPass == "" {
+		srcPass = readWPConfigConst(cfgPath, "DB_PASSWORD")
+	}
+	if srcHost == "" && srcSocket == "" {
+		// DB_HOST carries three shapes: "host", "host:port", "host:/path/sock".
+		host, port, socket := parseWPDBHost(readWPConfigConst(cfgPath, "DB_HOST"))
+		srcHost, srcSocket = host, socket
+		if port != 0 && srcPort == 0 {
+			srcPort = port
+		}
+	}
 	if o.DBName != "" {
 		srcDBName = o.DBName
-	}
-	if srcDBName == "" {
-		srcDBName = readWPConfigConst(filepath.Join(docroot, "wp-config.php"), "DB_NAME")
 	}
 	if o.DBHost != "" {
 		srcHost = o.DBHost
@@ -173,6 +199,9 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 	}
 	if srcDBName == "" {
 		return nil, fmt.Errorf("could not determine the source database name (set --db-name, or add a wp-config.php)")
+	}
+	if srcHost == "" && srcSocket == "" {
+		srcHost = "127.0.0.1"
 	}
 	if srcPort == 0 {
 		srcPort = 3306
@@ -251,17 +280,33 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 		if err := e.CreateSiteDB(site); err != nil {
 			return nil, fmt.Errorf("provision db: %w", err)
 		}
-		if o.SQLDump != "" {
+		switch {
+		case o.SQLDump != "":
 			cb("database", "loading "+o.SQLDump)
 			if err := e.loadSQLFile(site, o.SQLDump); err != nil {
 				e.DropSiteDB(site)
 				return nil, fmt.Errorf("load sql: %w", err)
 			}
-		} else {
-			cb("database", fmt.Sprintf("dumping %s@%s:%d", srcDBName, srcHost, srcPort))
-			if err := e.copyDatabase(site, srcDBName, srcSocket, srcHost, srcPort, srcUser, srcPass, cb); err != nil {
+		case e.ownDatabase(srcHost, srcPort, srcSocket) && srcDBName == site.DBName:
+			// The folder already lives on our MariaDB, in the schema this site
+			// will use: the data is where it needs to be. Copying it onto
+			// itself would drop the tables it is reading from.
+			cb("database", "already on the local engine as "+srcDBName+" — keeping it")
+		default:
+			from := srcSocket
+			if from == "" {
+				from = fmt.Sprintf("%s:%d", srcHost, srcPort)
+			}
+			user, pass := srcUser, srcPass
+			if e.ownDatabase(srcHost, srcPort, srcSocket) {
+				// We own this server, so use root: the wp-config credentials
+				// for a site we just provisioned are already stale.
+				user, pass = "root", ""
+			}
+			cb("database", fmt.Sprintf("dumping %s from %s", srcDBName, from))
+			if err := e.copyDatabase(site, srcDBName, srcSocket, srcHost, srcPort, user, pass, cb); err != nil {
 				e.DropSiteDB(site)
-				return nil, fmt.Errorf("copy database: %w", err)
+				return nil, fmt.Errorf("copy database %s from %s as %s: %w", srcDBName, from, user, err)
 			}
 		}
 		cb("config", "rewriting wp-config.php")
@@ -363,8 +408,10 @@ func (e *Engine) copyDatabase(site *Site, srcDB, srcSocket, srcHost string, srcP
 		clientBin = filepath.Join(bindir, "mysql")
 	}
 
-	// prefer the unix socket (LocalWP binds root@localhost there)
+	// --no-defaults: a my.cnf carrying `socket=` or `protocol=socket` would
+	// otherwise override the transport chosen below.
 	dumpArgs := []string{
+		"--no-defaults",
 		"--user=" + srcUser, "--password=" + srcPass,
 		"--single-transaction", "--quick", "--add-drop-table",
 		"--skip-lock-tables", "--no-tablespaces",
@@ -712,6 +759,52 @@ func rewriteWPConfigDB(path string, site *Site) error {
 	return os.WriteFile(path, []byte(src), 0o644)
 }
 
+// parseWPDBHost splits a WordPress DB_HOST value. WordPress accepts three
+// shapes and they are not interchangeable at the client level:
+//
+//	"127.0.0.1"                 → TCP, default port
+//	"127.0.0.1:10360"           → TCP, explicit port
+//	"localhost:/tmp/mysql.sock" → unix socket (a colon then an absolute path)
+//
+// Returning the socket separately matters: a client given --host=localhost
+// silently prefers a socket, which is how an import aimed at a TCP server ends
+// up reporting "Can't connect to server on 'localhost'".
+func parseWPDBHost(v string) (host string, port int, socket string) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", 0, ""
+	}
+	h, rest, found := strings.Cut(v, ":")
+	if !found {
+		return h, 0, ""
+	}
+	if strings.HasPrefix(rest, "/") {
+		return h, 0, rest
+	}
+	if n, err := strconv.Atoi(rest); err == nil {
+		return h, n, ""
+	}
+	return h, 0, ""
+}
+
+// ownDatabase reports whether a source connection points at the MariaDB this
+// app runs. Adopting a folder whose wp-config already targets us is the common
+// case, and it must not be dumped through stale credentials: provisioning the
+// site rotates that user's password moments earlier, so the old wp-config
+// values are guaranteed wrong ("Access denied … using password: YES").
+func (e *Engine) ownDatabase(host string, port int, socket string) bool {
+	if socket != "" {
+		return normalizePath(socket) == normalizePath(e.dbSock())
+	}
+	if port != DefaultDBPort {
+		return false
+	}
+	switch host {
+	case "127.0.0.1", "localhost", "::1", "0.0.0.0":
+		return true
+	}
+	return false
+}
 func setWPConst(src, name, val string) string {
 	re := regexp.MustCompile(`(?m)(define\(\s*['"]` + name + `['"]\s*,\s*)['"][^'"]*['"]`)
 	return re.ReplaceAllString(src, `${1}'`+val+`'`)

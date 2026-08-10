@@ -278,7 +278,7 @@ Same database both sides — the difference between them is code.
 }
 ```
 
-40 tools — everything the CLI can do, no shell required:
+41 tools — everything the CLI can do, no shell required:
 
 | Area | Tools |
 |---|---|
@@ -290,7 +290,7 @@ Same database both sides — the difference between them is code.
 | wordpress | `wp_cli`, `worktree_wp_cli` |
 | previews | `add_worktree`, `list_worktrees`, `start_worktree`, `stop_worktree`, `remove_worktree` |
 | ops | `get_logs`, `doctor`, `doctor_fix` |
-| integration | `resolve_path`, `cert_status`, `cert_trust` |
+| integration | `resolve_path`, `cert_status`, `cert_trust`, `yield_ports` |
 
 Design notes that matter when driving this from an agent:
 
@@ -314,12 +314,12 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 
 | Group | Endpoints |
 |---|---|
-| sites | `GET /status`, `GET\|POST /sites`, `GET /sites/{slug}`, `DELETE /sites/{slug}`, `POST /sites/{slug}/{start,stop,restart,php,domain,wp-cli}` |
+| sites | `GET /status`, `GET\|POST /sites`, `GET /sites/{slug}`, `DELETE /sites/{slug}[?files=keep&db=keep]`, `POST /sites/{slug}/{start,stop,restart,php,domain,wp-cli}` |
 | import | `POST /import` |
 | database | `POST /sites/{slug}/db`, `POST /sites/{slug}/db/query`, `POST /sites/{slug}/db/{import,export,reset}`, `GET /sites/{slug}/db/tables`, `POST /db/query` |
 | previews | `GET /sites/{slug}/branches`, `GET\|POST /sites/{slug}/worktrees`, `POST /sites/{slug}/worktrees/{id}/{start,stop,wp-cli}`, `DELETE /sites/{slug}/worktrees/{id}` |
 | platform | `GET /runtimes`, `POST /install`, `GET\|POST /front`, `GET\|POST /suffix`, `GET /doctor`, `POST /doctor/fix`, `GET /logs/{name}?lines=N`, `POST\|DELETE /hosts` |
-| integration | `GET /resolve?path=…`, `GET /certs/{domain}`, `POST /certs/{domain}/trust` |
+| integration | `GET /resolve?path=…`, `GET /certs/{domain}`, `POST /certs/{domain}/trust`, `POST /yield` |
 
 ### Embedding agent-local in another app
 
@@ -357,7 +357,7 @@ agent-local                            TUI
 agent-local create NAME [--domain d] [--php v] [--repo url]
                        [--admin-user u] [--admin-pass p] [--admin-email e] [--title t]
 agent-local list | start SLUG | stop SLUG | restart SLUG | open SLUG
-agent-local delete SLUG [--yes]
+agent-local delete SLUG [--yes] [--keep-files] [--keep-db]
 agent-local import SOURCE [--name n] [--domain d] [--php v] [--copy]
                          [--sql file] [--serve-only]
                          [--db-host h] [--db-port p] [--db-user u] [--db-pass p] [--db-name n]

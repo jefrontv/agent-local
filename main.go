@@ -21,7 +21,7 @@ USAGE
   agent-local start SLUG         start site stack
   agent-local stop SLUG          stop site
   agent-local restart SLUG       restart site
-  agent-local delete SLUG        delete site (db + files)
+  agent-local delete SLUG [--yes] [--keep-files] [--keep-db]   remove a site
   agent-local open SLUG          open site in browser
   agent-local db SLUG [sql]      print DB creds or run SQL
   agent-local logs NAME [lines] tail a log (mysql, apache, daemon, fpm-SLUG…)
@@ -351,7 +351,11 @@ func cmdDelete(args []string) error {
 			return fmt.Errorf("aborted")
 		}
 	}
-	if err := e.DeleteSite(slug, true, false); err != nil {
+	if err := e.DeleteSite(slug, DeleteOpts{
+		KeepFiles:        hasFlag(args, "--keep-files"),
+		KeepDB:           hasFlag(args, "--keep-db"),
+		InteractiveHosts: true,
+	}); err != nil {
 		return err
 	}
 	fmt.Println("deleted " + slug)

@@ -180,7 +180,22 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 	return site, nil
 }
 
-func (e *Engine) DeleteSite(slug string, withFiles bool, interactiveHosts bool) error {
+// DeleteOpts controls how much of a site goes away.
+type DeleteOpts struct {
+	// KeepFiles leaves the checkout on disk (an imported external directory is
+	// never removed regardless; its wp-config is restored from our backup).
+	KeepFiles bool
+	// KeepDB leaves the schema and user in place, so a detached folder whose
+	// wp-config still points here can be re-adopted without recreating it.
+	KeepDB bool
+	// InteractiveHosts allows a password prompt for the /etc/hosts edit.
+	InteractiveHosts bool
+}
+
+// DeleteSite removes a site. Files and database are independently keepable:
+// dropping the schema while keeping files left a wp-config pointing at nothing,
+// and re-adopting that folder then failed in the copy step.
+func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 	site := e.Store.Site(slug)
 	if site == nil {
 		return fmt.Errorf("no such site: %s", slug)
@@ -189,9 +204,13 @@ func (e *Engine) DeleteSite(slug string, withFiles bool, interactiveHosts bool) 
 	for _, w := range e.Store.WorktreesFor(slug) {
 		_ = e.RemoveWorktree(w.ID)
 	}
-	if err := e.DropSiteDB(site); err != nil {
-		return fmt.Errorf("drop db: %w", err)
+	if !o.KeepDB {
+		if err := e.DropSiteDB(site); err != nil {
+			return fmt.Errorf("drop db: %w", err)
+		}
 	}
+	interactiveHosts := o.InteractiveHosts
+	withFiles := !o.KeepFiles
 	domains := append([]string{site.Domain}, site.Aliases...)
 	if err := RemoveHosts(interactiveHosts, domains); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not remove /etc/hosts entries: %v\n", err)
@@ -531,6 +550,28 @@ func normalizePath(p string) string {
 // already be normalized; a prefix test alone would match /a/bc against /a/b.
 func pathWithin(want, root string) bool {
 	return want == root || strings.HasPrefix(want, root+string(filepath.Separator))
+}
+
+// SitesUnderPath lists sites whose roots sit beneath a directory. Used when a
+// caller hands us a repo root that contains a site rather than a path inside
+// one; the caller decides what a multi-site answer means.
+func (e *Engine) SitesUnderPath(path string) []*Site {
+	want := normalizePath(path)
+	if want == "" {
+		return nil
+	}
+	var out []*Site
+	for _, s := range e.Store.Sites() {
+		for _, root := range []string{s.WPDir, s.WorkDir} {
+			p := normalizePath(root)
+			if p == "" || !pathWithin(p, want) {
+				continue
+			}
+			out = append(out, s)
+			break
+		}
+	}
+	return out
 }
 
 // Branches lists the site repo's branches (local + remote-only), marking the

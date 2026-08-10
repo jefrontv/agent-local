@@ -131,7 +131,10 @@ func mcpTools() []mcpTool {
 		{"start_site", "Start a site (db + php-fpm + http)", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},
 		{"stop_site", "Stop a site", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},
 		{"restart_site", "Restart a site", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},
-		{"delete_site", "Delete a site (db + files)", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},
+		{"delete_site", "Delete a site. By default drops its database and removes files we created (an imported external checkout is only detached). keep_files/keep_db leave those behind so the folder can be re-adopted.", schema(map[string]interface{}{
+			"slug":       prop("string", "site slug"),
+			"keep_files": prop("boolean", "leave the checkout on disk"),
+			"keep_db":    prop("boolean", "leave the schema and user in place")}, "slug")},
 		{"switch_php", "Switch a site to another installed PHP version", schema(map[string]interface{}{
 			"slug": prop("string", "site slug"), "version": prop("string", "php version")}, "slug", "version")},
 		{"set_domain", "Change a site's local domain (hosts + cert follow)", schema(map[string]interface{}{
@@ -156,6 +159,8 @@ func mcpTools() []mcpTool {
 			"domain": prop("string", "e.g. mysite.test")}, "domain")},
 		{"cert_trust", "Issue (if needed) and trust a domain's TLS cert in the system keychain", schema(map[string]interface{}{
 			"domain": prop("string", "e.g. mysite.test")}, "domain")},
+		{"yield_ports", "Free the bare-URL ports (:80/:443) for a window so another local-dev app (LocalWP) can start, then reclaim them automatically. Sites stay reachable on :1080 throughout.", schema(map[string]interface{}{
+			"seconds": prop("number", "hand-off window, default 45, max 600")})},
 		{"wp_cli", "Run wp-cli against a site", schema(map[string]interface{}{
 			"slug": prop("string", "site slug"), "args": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "wp-cli args"}}, "slug")},
 		{"add_worktree", "Create a git worktree branch served on its own domain", schema(map[string]interface{}{
@@ -263,7 +268,18 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 	case "restart_site":
 		return apiPost("/sites/"+get("slug")+"/restart", nil)
 	case "delete_site":
-		return apiDelete("/sites/" + get("slug"))
+		q := []string{}
+		if args["keep_files"] == true {
+			q = append(q, "files=keep")
+		}
+		if args["keep_db"] == true {
+			q = append(q, "db=keep")
+		}
+		path := "/sites/" + get("slug")
+		if len(q) > 0 {
+			path += "?" + strings.Join(q, "&")
+		}
+		return apiDelete(path)
 	case "switch_php":
 		return apiPost("/sites/"+get("slug")+"/php", map[string]string{"version": get("version")})
 	case "set_domain":
@@ -292,6 +308,12 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		return apiGet("/sites/" + get("slug") + "/db/tables")
 	case "wp_cli":
 		return apiPost("/sites/"+get("slug")+"/wp-cli", map[string]interface{}{"args": strArgs(args["args"])})
+	case "yield_ports":
+		body := map[string]interface{}{}
+		if n, okn := args["seconds"].(float64); okn {
+			body["seconds"] = int(n)
+		}
+		return apiPost("/yield", body)
 	case "add_worktree":
 		return apiPost("/sites/"+get("slug")+"/worktrees", map[string]string{"branch": get("branch")})
 	case "list_worktrees":

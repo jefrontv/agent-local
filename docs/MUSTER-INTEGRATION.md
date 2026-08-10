@@ -88,50 +88,80 @@ Single Go binary, macOS. Install: `./install.sh` → `~/.local/bin/agent-local`.
 
 ### Resolve a checkout path → site  *(added for this integration)*
 
-Muster keys sites by `path`; agent-local keys by slug. This bridges them, and accepts any path **inside** the site.
+Muster keys sites by `path`; agent-local keys by slug. This bridges them.
 
 ```
 GET /resolve?path=<url-encoded absolute path>
 ```
 
+Three ways it matches, reported in `matched`:
+
+| `matched` | When |
+|---|---|
+| `wp_dir` / `work_dir` | the path **is** a site root, or sits inside one |
+| `contains` | the path is a directory **above** exactly one site — a repo root over `app/public` |
+| `worktree` | the path is a branch preview; `url`/`domain`/`wp_dir` then describe the preview |
+
+A directory holding several sites answers `409` naming the candidates instead of
+guessing. An unmanaged path answers `404` — your "not on agent-local" signal.
+
 ```jsonc
 {"ok":true,"data":{
-  "slug":"sulo", "matched":"wp_dir",          // wp_dir | work_dir | worktree
+  "slug":"sulo", "matched":"wp_dir",
   "url":"http://sulo.pact", "https_url":"https://sulo.pact:10443",
   "domain":"sulo.pact",
   "wp_dir":"/Users/j/Documents/Sites/sulo/app/public",
   "php_version":"8.2", "running":true,
   "db":{"host":"127.0.0.1","port":10360,"socket":"","name":"al_sulo","user":"al_sulo","pass":"…"},
   "cert":{"domain":"sulo.pact","exists":true,"trusted":true,"not_after":"2036-08-05T18:13:17Z"},
-  "site":{ /* full record */ }
+  "site":{ /* full record, secrets redacted — credentials live in `db` */ }
 }}
 ```
-
-`404 {"ok":false,"error":"no site manages /tmp"}` when unmanaged — that is your "this site is not on agent-local" signal. A worktree path resolves to its parent site with `matched:"worktree"`, and `url`/`domain`/`wp_dir` describe the **preview**.
 
 ### Start / stop
 
 ```
-POST /sites/{slug}/start     → same shape as /resolve minus site/cert/matched
+POST /sites/{slug}/start     → runtime block (slug, url, wp_dir, php_version, running, db)
 POST /sites/{slug}/stop      → {"ok":true,"data":"stopped"}
 POST /sites/{slug}/restart
 ```
 
-`start` is idempotent and returns live DB details, so it is the direct analogue of `ensureLocalWpSiteRunning` — one call, no follow-up.
+`start` is idempotent and returns live DB details, so it is the direct analogue
+of `ensureLocalWpSiteRunning` — one call, no follow-up.
+
+### One DB shape, no secrets in site records
+
+`/resolve`, `POST /sites/{slug}/start`, `GET /sites/{slug}` and
+`POST /sites/{slug}/db` all return the **same** nested `db` object:
+
+```jsonc
+"db": {"host":"127.0.0.1","port":10360,"socket":"","name":"al_x","user":"al_x","pass":"…"}
+```
+
+`socket` is always `""` — one shared MariaDB on TCP, so never carry a socket
+path. The older flat spelling on `/sites/{slug}/db` (`database`, `password`) was
+removed in v0.2.0.
+
+`GET /sites` and every embedded `site` record omit `db_pass` and `admin_pass`,
+so logging a response cannot leak every local credential at once. Read the `db`
+block of a single-site call, or pass `?include=secrets` on the list when you
+genuinely need them in bulk.
 
 ### Database
 
 ```
 POST /sites/{slug}/db                → connection params (starts MariaDB if needed)
-POST /sites/{slug}/db/query          {"sql":"…"}          → TSV with header row, site's schema is default
-POST /db/query                       {"sql":"…"}          → server-wide (CREATE DATABASE, information_schema)
-GET  /sites/{slug}/db/tables                              → name, rows, KB
+POST /sites/{slug}/db/query          {"sql":"…"}   → TSV + header row, site schema is default
+POST /db/query                       {"sql":"…"}   → server-wide (CREATE DATABASE, information_schema)
+GET  /sites/{slug}/db/tables                       → name, rows, KB
 POST /sites/{slug}/db/import         {"path":"/abs/x.sql.gz","keep_urls":false}
 POST /sites/{slug}/db/export         {"path":"/abs/out.sql"}   // path optional
 POST /sites/{slug}/db/reset
 ```
 
-`db/import` streams (gzip auto-detected by magic bytes) and **replaces** the database, rewriting the dump's domains to the site's domain unless `keep_urls` is true.
+`db/import` streams (gzip auto-detected by magic bytes) and **replaces** the
+database, rewriting the dump's domains to the site's domain unless `keep_urls`
+is true.
 
 > Muster may prefer its own `importLocalDatabase` (`src/main/sites/local-database-import.ts`) since it already handles progress and the option file. Both work; agent-local's is a streaming shortcut if you want it.
 
@@ -152,7 +182,7 @@ GET    /sites                        // all sites
 GET    /sites/{slug}                 // detail + worktrees + urls
 POST   /sites                        {"name","domain?","php_version?","admin_user?","admin_pass?","admin_email?","title?","repo?","wp_version?"}
 POST   /import                       {"source","name?","domain?","php_version?","copy?","sql_dump?","serve_only?","db_host?","db_port?","db_user?","db_pass?","db_name?"}
-DELETE /sites/{slug}[?files=keep]
+DELETE /sites/{slug}[?files=keep][?db=keep]
 POST   /sites/{slug}/php             {"version":"8.3"}
 POST   /sites/{slug}/domain          {"domain":"new.test"}
 POST   /sites/{slug}/wp-cli          {"args":["option","get","home"]}
@@ -165,7 +195,28 @@ GET|POST /front                      // "router" | "apache"
 POST|DELETE /hosts                   {"domains":["a.test"]}
 ```
 
-`POST /import` matters for the switch: `source` is a LocalWP site name **or** any docroot path, and it covers four database modes — live DB read from the docroot's `wp-config.php` (default), explicit `db_*`, `sql_dump`, or `serve_only` (touch no database). Default is serve-in-place; `copy: true` copies files under `~/.agent-local`.
+`POST /import` matters for the switch: `source` is a LocalWP site name, a
+LocalWP site **path**, or any docroot. Database modes:
+
+| Mode | How |
+|---|---|
+| live DB from the folder's own `wp-config.php` | default — `DB_HOST` (incl. `host:port` and `host:/socket`), `DB_USER`, `DB_PASSWORD`, `DB_NAME` are all read |
+| explicit source | `db_host`, `db_port`, `db_user`, `db_pass`, `db_name` override any of the above |
+| from a dump | `sql_dump: "/abs/path.sql"` (`.gz` fine) |
+| leave the database alone | `serve_only: true` |
+
+Adopting a folder that already points at agent-local's own MariaDB is a
+first-class case: if the target schema is the one the folder already uses, the
+data stays put and nothing is copied; if a copy is needed, it runs as `root`
+rather than the folder's credentials, which provisioning has just rotated.
+A LocalWP path resolves through Local's registry, so its per-site socket is used
+even though its `wp-config` says `DB_HOST=localhost`.
+
+`copy: true` copies files under `~/.agent-local`; the default serves in place.
+
+`DELETE` keeps files with `?files=keep` and the schema with `?db=keep`. Use both
+to detach a folder that you intend to re-adopt: keeping files while dropping the
+database leaves a `wp-config.php` pointing at nothing.
 
 An MCP server (`agent-local mcp`, 40 tools) mirrors all of the above if you would rather drive it that way than over HTTP.
 
@@ -323,10 +374,13 @@ If Muster surfaces mail, Xdebug or backups for LocalWP sites, gate those afforda
 The kernel is happy for agent-local's `127.0.0.2:80` listener to coexist with LocalWP's wildcard `*:80` in either order — verified. But **LocalWP pre-checks port 80 and refuses to start when anything is listening**. So when Muster is about to start a LocalWP site and agent-local's bare-URL daemon holds the port, run:
 
 ```
-agent-local yield 60        # frees :80/:443 for 60s, then re-binds automatically
+POST /yield {"seconds":60}
 ```
 
-agent-local sites stay reachable on `:1080` throughout, and the specific-address bind is reclaimed afterwards. Worth wiring into the LocalWP start path as a pre-step when `agent-local` is installed; there is no HTTP route for it yet (CLI only) — ask if you want one.
+agent-local sites stay reachable on `:1080` throughout, and the specific-address
+bind is reclaimed automatically when the window expires — no second call. The
+window is clamped to 600s. `agent-local yield 60` is the CLI equivalent. Worth
+wiring into the LocalWP start path as a pre-step when agent-local is installed.
 
 ---
 

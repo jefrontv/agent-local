@@ -394,7 +394,7 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		slug := site.Slug
 		m.confirm = "delete site " + slug + " (database + files)?"
-		m.confirmA = func() error { return m.engine.DeleteSite(slug, true, false) }
+		m.confirmA = func() error { return m.engine.DeleteSite(slug, DeleteOpts{}) }
 		m.mode = modeConfirm
 		return m, nil
 	case "Q":

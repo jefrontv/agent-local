@@ -193,6 +193,7 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("GET /resolve", a.handleResolvePath)
 	mux.HandleFunc("GET /certs/{domain}", a.handleCertStatus)
 	mux.HandleFunc("POST /certs/{domain}/trust", a.handleCertTrust)
+	mux.HandleFunc("POST /yield", a.handleYield)
 	return mux
 }
 
@@ -244,8 +245,14 @@ func (a *APIServer) handleCreate(w http.ResponseWriter, r *http.Request) {
 	ok(w, site)
 }
 
+// handleList never returns secrets by default. `?include=secrets` opts in for
+// a caller that genuinely needs every credential at once.
 func (a *APIServer) handleList(w http.ResponseWriter, r *http.Request) {
-	ok(w, a.store.Sites())
+	if wantSecrets(r) {
+		ok(w, a.store.Sites())
+		return
+	}
+	ok(w, publicSites(a.store.Sites()))
 }
 
 func (a *APIServer) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -254,19 +261,32 @@ func (a *APIServer) handleGet(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "no such site")
 		return
 	}
+	record := publicSite(site)
+	if wantSecrets(r) {
+		record = site
+	}
 	detail := map[string]interface{}{
-		"site":      site,
+		"site":      record,
 		"running":   a.engine.FPMRunning(site.Slug),
 		"url":       BareURL(site),
 		"https_url": site.SURL(),
 		"worktrees": a.store.WorktreesFor(site.Slug),
+		// Credentials live here, not in the site record above.
+		"db": dbBlock(site),
 	}
 	ok(w, detail)
 }
 
 // handleResolvePath answers "which site owns this directory?" — the lookup an
 // integrator needs, because a UI keys sites by the checkout the user picked
-// while we key them by slug. Accepts any path inside the site.
+// while we key them by slug.
+//
+// Matches a path inside a site, the site root itself, or a directory that
+// *contains* exactly one site: a repo root one level above the docroot is the
+// normal shape (`…/sulo` over `…/sulo/app/public`), and 404ing on it forced
+// callers to pull the whole site list and prefix-match by hand. Several sites
+// under one directory is ambiguous, so that answers 409 with the candidates
+// rather than guessing.
 func (a *APIServer) handleResolvePath(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if strings.TrimSpace(path) == "" {
@@ -275,12 +295,26 @@ func (a *APIServer) handleResolvePath(w http.ResponseWriter, r *http.Request) {
 	}
 	site, matched, wt := a.engine.SiteForPath(path)
 	if site == nil {
-		fail(w, 404, "no site manages "+path)
-		return
+		below := a.engine.SitesUnderPath(path)
+		switch len(below) {
+		case 0:
+			fail(w, 404, "no site manages "+path)
+			return
+		case 1:
+			site, matched, wt = below[0], "contains", nil
+		default:
+			slugs := make([]string, 0, len(below))
+			for _, s := range below {
+				slugs = append(slugs, s.Slug)
+			}
+			writeJSON(w, 409, apiResp{Error: fmt.Sprintf("%s contains %d sites: %s — pass one of their paths",
+				path, len(below), strings.Join(slugs, ", "))})
+			return
+		}
 	}
 	out := a.runtimeInfo(site)
 	out["matched"] = matched
-	out["site"] = site
+	out["site"] = publicSite(site) // credentials are in out["db"]
 	out["cert"] = InspectCert(site.Domain)
 	if wt != nil {
 		out["worktree"] = wt
@@ -291,6 +325,50 @@ func (a *APIServer) handleResolvePath(w http.ResponseWriter, r *http.Request) {
 		out["cert"] = InspectCert(wt.Domain)
 	}
 	ok(w, out)
+}
+
+type yieldReq struct {
+	Seconds int `json:"seconds"`
+}
+
+// handleYield frees the bare-URL ports (:80/:443) for a window so another
+// local-dev app can pass its own port pre-check and bind first — LocalWP
+// refuses to start when anything is listening, even on a different address.
+// The front daemon reclaims its specific-address bind automatically, which the
+// kernel allows alongside a wildcard listener, so both end up serving.
+func (a *APIServer) handleYield(w http.ResponseWriter, r *http.Request) {
+	var req yieldReq
+	json.NewDecoder(r.Body).Decode(&req)
+	secs := req.Seconds
+	if secs <= 0 {
+		secs = 45
+	}
+	if secs > 600 {
+		secs = 600 // a longer hand-off is a stuck caller, not a use case
+	}
+	if !AliasActive() {
+		ok(w, map[string]interface{}{
+			"yielded": false,
+			"detail":  "bare URLs are not enabled — nothing holds :80/:443",
+		})
+		return
+	}
+	until := time.Now().Add(time.Duration(secs) * time.Second)
+	if err := os.MkdirAll(P().Run(), 0o755); err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	if err := os.WriteFile(frontYieldPath(), []byte(fmt.Sprint(until.Unix())), 0o644); err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	ok(w, map[string]interface{}{
+		"yielded":  true,
+		"seconds":  secs,
+		"until":    until.Format(time.RFC3339),
+		"detail":   fmt.Sprintf("released :80/:443 for %ds; sites stay reachable on :%d", secs, DefaultHTTPPort),
+		"reclaims": "automatic",
+	})
 }
 
 func (a *APIServer) handleCertStatus(w http.ResponseWriter, r *http.Request) {
@@ -335,8 +413,6 @@ func (a *APIServer) handleStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // runtimeInfo is the serving+connection snapshot shared by start and resolve.
-// The DB socket is always empty: one shared MariaDB on TCP, unlike LocalWP's
-// per-site unix socket, so callers must not carry a stale socket path.
 func (a *APIServer) runtimeInfo(site *Site) map[string]interface{} {
 	if site == nil {
 		return map[string]interface{}{}
@@ -349,11 +425,37 @@ func (a *APIServer) runtimeInfo(site *Site) map[string]interface{} {
 		"wp_dir":      site.WPDir,
 		"php_version": site.PHPVersion,
 		"running":     a.engine.FPMRunning(site.Slug),
-		"db": map[string]interface{}{
-			"host": "127.0.0.1", "port": DefaultDBPort, "socket": "",
-			"name": site.DBName, "user": site.DBUser, "pass": site.DBPass,
-		},
+		"db":          dbBlock(site),
 	}
+}
+
+// publicSite is a site record safe to hand out in bulk: the database and admin
+// passwords are stripped. Listing every site's cleartext credentials meant one
+// logged response leaked all of them, so secrets now travel only in the `db`
+// block of a single-site call (`/resolve`, `/start`, `/sites/{slug}/db`), or
+// when a caller opts in with `?include=secrets`.
+func publicSite(site *Site) *Site {
+	if site == nil {
+		return nil
+	}
+	copy := *site
+	copy.DBPass = ""
+	copy.AdminPass = ""
+	return &copy
+}
+
+// publicSites redacts a whole list.
+func publicSites(sites []*Site) []*Site {
+	out := make([]*Site, 0, len(sites))
+	for _, s := range sites {
+		out = append(out, publicSite(s))
+	}
+	return out
+}
+
+// wantSecrets reports an explicit `?include=secrets` opt-in.
+func wantSecrets(r *http.Request) bool {
+	return strings.Contains(r.URL.Query().Get("include"), "secrets")
 }
 
 func (a *APIServer) handleStop(w http.ResponseWriter, r *http.Request) {
@@ -374,9 +476,14 @@ func (a *APIServer) handleRestart(w http.ResponseWriter, r *http.Request) {
 	ok(w, "restarted")
 }
 
+// handleDelete removes a site. `?files=keep` leaves the checkout, `?db=keep`
+// leaves the schema and user so the folder can be re-adopted later.
 func (a *APIServer) handleDelete(w http.ResponseWriter, r *http.Request) {
-	withFiles := r.URL.Query().Get("files") != "keep"
-	if err := a.engine.DeleteSite(r.PathValue("slug"), withFiles, false); err != nil {
+	q := r.URL.Query()
+	if err := a.engine.DeleteSite(r.PathValue("slug"), DeleteOpts{
+		KeepFiles: q.Get("files") == "keep",
+		KeepDB:    q.Get("db") == "keep",
+	}); err != nil {
 		fail(w, 500, err.Error())
 		return
 	}
@@ -415,17 +522,35 @@ func (a *APIServer) handleDomain(w http.ResponseWriter, r *http.Request) {
 	ok(w, req.Domain)
 }
 
+// handleDB returns the site's connection details, starting MariaDB if needed.
+// Same nested `db` block as /resolve and /start: one spelling everywhere beat
+// keeping a second flat one, which cost an integrator a bug where `pass` read
+// as empty and looked like a credentials failure.
 func (a *APIServer) handleDB(w http.ResponseWriter, r *http.Request) {
-	// open shell-ish: return connection params + ensure server is up
+	site := a.store.Site(r.PathValue("slug"))
+	if site == nil {
+		fail(w, 404, "no such site")
+		return
+	}
 	if err := a.engine.EnsureDB(); err != nil {
 		fail(w, 500, err.Error())
 		return
 	}
-	site := a.store.Site(r.PathValue("slug"))
-	ok(w, map[string]interface{}{
-		"host": "127.0.0.1", "port": DefaultDBPort,
-		"user": site.DBUser, "password": site.DBPass, "database": site.DBName,
-	})
+	ok(w, map[string]interface{}{"slug": site.Slug, "db": dbBlock(site)})
+}
+
+// dbBlock is the one description of how to reach a site's database.
+// The socket is always empty: one shared MariaDB on TCP, unlike LocalWP's
+// per-site unix socket, so callers must not carry a stale socket path.
+func dbBlock(site *Site) map[string]interface{} {
+	return map[string]interface{}{
+		"host":   "127.0.0.1",
+		"port":   DefaultDBPort,
+		"socket": "",
+		"name":   site.DBName,
+		"user":   site.DBUser,
+		"pass":   site.DBPass,
+	}
 }
 
 type queryReq struct {

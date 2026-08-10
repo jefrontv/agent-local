@@ -43,17 +43,31 @@ type frontDaemon struct {
 	paused bool
 }
 
+// autoYieldMax bounds a yield we decided on ourselves. An explicit
+// `agent-local yield` runs as long as it asked for, but a rival router that
+// never binds (crashed, misconfigured) must not keep our ports for good: while
+// we stand aside its wildcard listener answers our domains with its own
+// "site not found", which is worse than taking the ports back.
+const autoYieldMax = 20 * time.Second
+
 // supervise keeps the listeners in the right state forever: bound normally,
 // released while a competing router is starting up.
 func (f *frontDaemon) supervise() {
 	f.bind()
+	var pausedAt time.Time
 	for {
 		time.Sleep(1500 * time.Millisecond)
 		switch {
+		case f.paused && yieldActive():
+			// explicitly requested: wait it out, however long it asked for
 		case f.paused && !rivalStarting():
+			f.bind()
+		case f.paused && time.Since(pausedAt) > autoYieldMax:
+			log.Printf("front-daemon: no rival listener after %s — taking %s:80/443 back", autoYieldMax, LoopbackAlias)
 			f.bind()
 		case !f.paused && rivalStarting():
 			f.release()
+			pausedAt = time.Now()
 		}
 	}
 }
