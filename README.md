@@ -87,9 +87,9 @@ Admin credentials are printed at the end of `create` and stored in state
 `agent-local` with no arguments opens the panel:
 
 ```
-agent-local 0.4.0   6 sites                    db ●:10360  router ●:1080  tls ●:10443  api ●:10809
+  agent-local  0.4.1                                  ● ready   router :1080   6 sites
   Sites   Worktrees   Runtimes   Doctor
-  ─────
+─━━━━━━━────────────────────────────────────────────────────────────────────────────────
 
     SITE                 PHP   DOMAIN                         PREVIEWS
 ▌ ● freshdemo            8.2   freshdemo.test
@@ -105,8 +105,9 @@ agent-local 0.4.0   6 sites                    db ●:10360  router ●:1080  tl
 ```
 
 One dot per row, green when that thing is serving and grey when it is parked —
-the same lamp in the header for the stack itself, on Runtimes for which PHP is
-actually in use, and on Doctor for each check. Parked rows dim so a long list
+the same lamp on Runtimes for which PHP is actually in use, and on Doctor for
+each check. The header keeps one word for the whole stack: `● ready` when
+everything answers, or the parts that don't (`● db, api down`) in red. Parked rows dim so a long list
 reads at a glance. Keys are listed per tab at the bottom; `⇥` cycles tabs.
 
 Rendering one frame without opening the UI (for design work, or to check a layout

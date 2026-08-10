@@ -31,25 +31,27 @@ var (
 	cOff   = lipgloss.Color("240") // parked
 	cAlert = lipgloss.Color("203") // broken
 	cAmber = lipgloss.Color("179") // needs attention / in flight
+	cRule  = lipgloss.AdaptiveColor{Light: "252", Dark: "238"}
 )
 
 var (
-	stName    = lipgloss.NewStyle().Bold(true).Foreground(cInk)
-	stVersion = lipgloss.NewStyle().Foreground(cDim)
-	stTabOn   = lipgloss.NewStyle().Bold(true).Foreground(cInk)
-	stTabOff  = lipgloss.NewStyle().Foreground(cDim)
-	stRail    = lipgloss.NewStyle().Foreground(cSteel)
-	stHead    = lipgloss.NewStyle().Foreground(cDim)
-	stSelBar  = lipgloss.NewStyle().Foreground(cSteel).Bold(true)
-	stSelRow  = lipgloss.NewStyle().Bold(true).Foreground(cInk)
-	stRow     = lipgloss.NewStyle().Foreground(cInk)
-	stDim     = lipgloss.NewStyle().Foreground(cDim)
-	stKey     = lipgloss.NewStyle().Bold(true).Foreground(cSteel)
-	stErr     = lipgloss.NewStyle().Foreground(cAlert)
-	stOK      = lipgloss.NewStyle().Foreground(cLamp)
-	stWarn    = lipgloss.NewStyle().Foreground(cAmber)
-	stPanel   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cSteel).Padding(0, 1)
-	stLabel   = lipgloss.NewStyle().Foreground(cDim).Width(7).Align(lipgloss.Right)
+	stName      = lipgloss.NewStyle().Bold(true).Foreground(cInk)
+	stVersion   = lipgloss.NewStyle().Foreground(cDim)
+	stTabOn     = lipgloss.NewStyle().Bold(true).Foreground(cInk)
+	stTabOff    = lipgloss.NewStyle().Foreground(cDim)
+	stRail      = lipgloss.NewStyle().Foreground(cSteel)
+	stRailFaint = lipgloss.NewStyle().Foreground(cRule)
+	stHead      = lipgloss.NewStyle().Foreground(cDim)
+	stSelBar    = lipgloss.NewStyle().Foreground(cSteel).Bold(true)
+	stSelRow    = lipgloss.NewStyle().Bold(true).Foreground(cInk)
+	stRow       = lipgloss.NewStyle().Foreground(cInk)
+	stDim       = lipgloss.NewStyle().Foreground(cDim)
+	stKey       = lipgloss.NewStyle().Bold(true).Foreground(cSteel)
+	stErr       = lipgloss.NewStyle().Foreground(cAlert)
+	stOK        = lipgloss.NewStyle().Foreground(cLamp)
+	stWarn      = lipgloss.NewStyle().Foreground(cAmber)
+	stPanel     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cSteel).Padding(0, 1)
+	stLabel     = lipgloss.NewStyle().Foreground(cDim).Width(7).Align(lipgloss.Right)
 )
 
 // lamp is the signature element: one dot, three states, same meaning everywhere.
@@ -603,7 +605,7 @@ func (m model) View() string {
 	}
 	var b strings.Builder
 	b.WriteString(m.viewHeader(w) + "\n")
-	b.WriteString(m.viewTabs() + "\n\n")
+	b.WriteString(m.viewTabs(w) + "\n\n")
 
 	switch m.tab {
 	case tabSites:
@@ -644,50 +646,92 @@ func (m model) View() string {
 	return b.String()
 }
 
-// viewHeader puts identity on the left and the stack's lamps on the right, so
-// the two questions a glance asks — "what am I looking at" and "is it up" — are
-// answered on one line.
+// viewHeader is a title bar, not a readout. Four labelled lamps with four port
+// numbers spent the same ink on "everything is fine" as on a real problem, so
+// the normal state is one word — and the exception names itself.
 func (m model) viewHeader(w int) string {
-	left := stName.Render("agent-local") + " " + stVersion.Render(Version)
-	if n := len(m.sites); n > 0 {
-		left += stDim.Render(fmt.Sprintf("   %d sites", n))
-	}
+	left := stName.Render("agent-local") + stDim.Render("  "+Version)
+
 	front := m.health.front
 	if front == "" {
 		front = "router"
 	}
-	right := strings.Join([]string{
-		"db " + lamp(m.health.db) + stDim.Render(fmt.Sprintf(":%d", DefaultDBPort)),
-		front + " " + lamp(m.health.http) + stDim.Render(fmt.Sprintf(":%d", DefaultHTTPPort)),
-		"tls " + lamp(m.health.https) + stDim.Render(fmt.Sprintf(":%d", DefaultHTTPSPort)),
-		"api " + lamp(m.health.api) + stDim.Render(fmt.Sprintf(":%d", DefaultAPIPort)),
-	}, stDim.Render("  "))
-	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 2 {
-		return left + "\n" + right
+	// What is actually worth typing or knowing when all is well: the port you
+	// visit, and how many sites there are.
+	var right string
+	if down := m.stackDown(); len(down) == 0 {
+		right = lamp(true) + stRow.Render(" ready") +
+			stDim.Render("   "+front+" :"+fmt.Sprint(DefaultHTTPPort)) +
+			stDim.Render(fmt.Sprintf("   %d sites", len(m.sites)))
+	} else {
+		st := lipgloss.NewStyle().Foreground(cAmber)
+		if len(down) > 1 {
+			st = lipgloss.NewStyle().Foreground(cAlert)
+		}
+		right = lampFor("fail") + st.Render(" "+strings.Join(down, ", ")+" down") +
+			stDim.Render(fmt.Sprintf("   %d sites", len(m.sites)))
 	}
-	return left + strings.Repeat(" ", gap) + right
+
+	gap := w - lipgloss.Width(left) - lipgloss.Width(right) - 4
+	if gap < 2 {
+		return "  " + left + "\n  " + right
+	}
+	return "  " + left + strings.Repeat(" ", gap) + right + "  "
 }
 
-// viewTabs is a rail, not a set of buttons: the active label is underlined in
-// steel and the rest recede. Nothing is boxed, so the eye goes to the table.
-func (m model) viewTabs() string {
+// stackDown names the pieces that are not answering, in the order a person
+// would care about them. Empty means ready.
+func (m model) stackDown() []string {
+	var down []string
+	if !m.health.db {
+		down = append(down, "db")
+	}
+	if !m.health.http {
+		down = append(down, "http")
+	}
+	if !m.health.https {
+		down = append(down, "tls")
+	}
+	if !m.health.api {
+		down = append(down, "api")
+	}
+	return down
+}
+
+// viewTabs is a rail: labels on one line, and a rule beneath that spans the
+// whole width. The segment under the active tab is lit steel and the rest is
+// barely there, so one line both marks position and closes the header off from
+// the table — instead of a second divider competing with it.
+func (m model) viewTabs(w int) string {
 	tabs := []struct {
 		name string
 		t    tab
 	}{{"Sites", tabSites}, {"Worktrees", tabWorktrees}, {"Runtimes", tabRuntimes}, {"Doctor", tabDoctor}}
-	var labels, rules []string
+	const indent, sep = 2, 3
+	var labels []string
+	activeStart, activeLen := -1, 0
+	pos := indent
 	for _, t := range tabs {
 		if t.t == m.tab {
 			labels = append(labels, stTabOn.Render(t.name))
-			rules = append(rules, stRail.Render(strings.Repeat("─", lipgloss.Width(t.name))))
+			activeStart, activeLen = pos, lipgloss.Width(t.name)
 		} else {
 			labels = append(labels, stTabOff.Render(t.name))
-			rules = append(rules, strings.Repeat(" ", lipgloss.Width(t.name)))
 		}
+		pos += lipgloss.Width(t.name) + sep
 	}
-	sep := "   "
-	return "  " + strings.Join(labels, sep) + "\n  " + strings.Join(rules, sep)
+	// The marker overhangs the label by one cell either side: flush to the text
+	// it reads as an accident of string length, proud of it it reads as a marker.
+	start, length := activeStart-1, activeLen+2
+	if start < 0 {
+		start, length = 0, activeLen+1
+	}
+	rule := stRailFaint.Render(strings.Repeat("─", start))
+	rule += stRail.Render(strings.Repeat("━", length))
+	if rest := w - start - length; rest > 0 {
+		rule += stRailFaint.Render(strings.Repeat("─", rest))
+	}
+	return strings.Repeat(" ", indent) + strings.Join(labels, strings.Repeat(" ", sep)) + "\n" + rule
 }
 
 // row renders one table line with the cursor bar and lamp gutter. Header and
