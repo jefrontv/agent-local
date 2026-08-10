@@ -677,6 +677,10 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	site := m.currentSite()
 	switch k.String() {
 	case "n":
+		// Settings live in a file five processes share. A TUI left open since
+		// before `agent-local sites-dir` ran would otherwise offer the old
+		// directory, which is exactly how this looked like it had not applied.
+		m.store.ReloadIfChanged()
 		next := m.startInput(inputNewWhere, "new site in "+shortHome(m.store.SitesDir())+"?",
 			"enter or y → keep them together · n → a path for this one · d → change this directory", "")
 		next.input.note = m.newSiteNote()

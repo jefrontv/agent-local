@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -19,7 +20,10 @@ type Store struct {
 	mu       sync.Mutex
 	path     string
 	loadedAt time.Time
-	Data     storeData
+	// base is the document as last loaded or written: the common ancestor a save
+	// diffs against, so only this process's own changes are pushed to disk.
+	base []byte
+	Data storeData
 }
 
 type storeData struct {
@@ -59,6 +63,7 @@ func OpenStore() (*Store, error) {
 		return nil, err
 	}
 	s.normalize()
+	s.base = s.snapshot()
 	return s, nil
 }
 
@@ -88,13 +93,20 @@ func (s *Store) lock() func() {
 }
 
 // Save writes the store atomically under the lock (temp + rename).
+//
+// It is a three-way merge, not a blind overwrite. Five processes share this file
+// — CLI, daemon, TUI, MCP server and any agent — and writing a whole in-memory
+// snapshot silently erased whatever another one had changed since load: a
+// setting written by the CLI would vanish the next time the daemon saved a site
+// state. So the write is: re-read the file, apply only the fields this process
+// actually changed, keep everything else as it is on disk.
 func (s *Store) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release := s.lock()
 	defer release()
 	s.Data.UpdatedAt = time.Now()
-	b, err := json.MarshalIndent(s.Data, "", "  ")
+	b, err := s.mergedBytes()
 	if err != nil {
 		return err
 	}
@@ -106,7 +118,119 @@ func (s *Store) Save() error {
 		return err
 	}
 	s.loadedAt = fileModTime(s.path)
+	// What we just wrote is the new common ancestor for the next save.
+	s.base = s.snapshot()
 	return nil
+}
+
+// mergedBytes is the document to write: our changes layered onto whatever is on
+// disk now. Caller holds mu and the file lock.
+func (s *Store) mergedBytes() ([]byte, error) {
+	mine, err := json.Marshal(s.Data)
+	if err != nil {
+		return nil, err
+	}
+	onDisk, err := os.ReadFile(s.path)
+	if err != nil {
+		// Nothing to merge with (first write, or the file went away).
+		return json.MarshalIndent(s.Data, "", "  ")
+	}
+	merged, err := mergeStore(s.base, mine, onDisk)
+	if err != nil {
+		// A merge we cannot reason about must not lose this process's work:
+		// fall back to our own document rather than writing nothing.
+		return json.MarshalIndent(s.Data, "", "  ")
+	}
+	return merged, nil
+}
+
+// snapshot records the document as it stands, to serve as the ancestor a later
+// save diffs against.
+func (s *Store) snapshot() []byte {
+	b, err := json.Marshal(s.Data)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// mergeStore is a field-level three-way merge over the store document.
+// It works on generic JSON so a field added later is covered without anyone
+// having to remember to update the merge.
+//
+//	base = the document this process loaded, mine = its current state,
+//	disk = what is there now (possibly written by another process).
+//
+// A field this process changed wins. Anything else keeps the disk value. The two
+// object maps (sites, worktrees) merge per entry, so one process adding a site
+// while another deletes a different one keeps both intentions.
+func mergeStore(base, mine, disk []byte) ([]byte, error) {
+	var b, m, d map[string]json.RawMessage
+	if err := json.Unmarshal(mine, &m); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(disk, &d); err != nil {
+		return nil, err
+	}
+	if len(base) > 0 {
+		if err := json.Unmarshal(base, &b); err != nil {
+			return nil, err
+		}
+	}
+	out := map[string]json.RawMessage{}
+	// Start from disk: fields we never touched, including ones this build does
+	// not know about, survive untouched.
+	for k, v := range d {
+		out[k] = v
+	}
+	for k, mv := range m {
+		switch k {
+		case "sites", "worktrees":
+			merged, err := mergeEntries(b[k], mv, d[k])
+			if err != nil {
+				return nil, err
+			}
+			out[k] = merged
+		case "updated_at":
+			out[k] = mv
+		default:
+			if !bytes.Equal(mv, b[k]) {
+				out[k] = mv // this process changed it
+			}
+		}
+	}
+	return json.MarshalIndent(out, "", "  ")
+}
+
+// mergeEntries merges one keyed object (sites or worktrees) entry by entry.
+func mergeEntries(base, mine, disk json.RawMessage) (json.RawMessage, error) {
+	b, m, d := map[string]json.RawMessage{}, map[string]json.RawMessage{}, map[string]json.RawMessage{}
+	for raw, dst := range map[*json.RawMessage]*map[string]json.RawMessage{
+		&base: &b, &mine: &m, &disk: &d,
+	} {
+		if len(*raw) == 0 || string(*raw) == "null" {
+			continue
+		}
+		if err := json.Unmarshal(*raw, dst); err != nil {
+			return nil, err
+		}
+	}
+	out := map[string]json.RawMessage{}
+	for k, v := range d {
+		out[k] = v
+	}
+	for k, mv := range m {
+		if bv, had := b[k]; !had || !bytes.Equal(mv, bv) {
+			out[k] = mv // added or changed here
+		}
+	}
+	// Entries this process deleted: present in the ancestor, gone from ours.
+	for k := range b {
+		if _, still := m[k]; !still {
+			delete(out, k)
+		}
+	}
+	return json.Marshal(out)
 }
 
 // ReloadIfChanged re-reads the store file if its mtime advanced. Lets the
@@ -134,6 +258,7 @@ func (s *Store) ReloadIfChanged() {
 	s.Data = d
 	s.normalize()
 	s.loadedAt = fileModTime(s.path)
+	s.base = s.snapshot()
 }
 
 // Site fetches a site by slug.
