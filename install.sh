@@ -31,10 +31,18 @@ else
   exit 1
 fi
 
-# 2. Install into PATH
+# 2. Install into PATH.
+# Copy to a sibling temp file and rename: overwriting the destination in place
+# keeps the inode, and macOS then SIGKILLs the binary (exit 137) because the
+# code signature AMFI cached for that inode no longer matches the new bytes.
 mkdir -p "$DEST"
-cp "$BINARY" "$DEST/$BIN_NAME"
-chmod +x "$DEST/$BIN_NAME"
+STAGED="$DEST/.$BIN_NAME.new.$$"
+cp "$BINARY" "$STAGED"
+chmod +x "$STAGED"
+if command -v codesign >/dev/null 2>&1; then
+  codesign -f -s - "$STAGED" >/dev/null 2>&1 || true
+fi
+mv -f "$STAGED" "$DEST/$BIN_NAME"
 echo "    installed: $DEST/$BIN_NAME"
 
 case ":$PATH:" in

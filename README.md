@@ -254,7 +254,7 @@ Same database both sides — the difference between them is code.
 }
 ```
 
-37 tools — everything the CLI can do, no shell required:
+40 tools — everything the CLI can do, no shell required:
 
 | Area | Tools |
 |---|---|
@@ -266,6 +266,7 @@ Same database both sides — the difference between them is code.
 | wordpress | `wp_cli`, `worktree_wp_cli` |
 | previews | `add_worktree`, `list_worktrees`, `start_worktree`, `stop_worktree`, `remove_worktree` |
 | ops | `get_logs`, `doctor`, `doctor_fix` |
+| integration | `resolve_path`, `cert_status`, `cert_trust` |
 
 Design notes that matter when driving this from an agent:
 
@@ -294,6 +295,21 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 | database | `POST /sites/{slug}/db`, `POST /sites/{slug}/db/query`, `POST /sites/{slug}/db/{import,export,reset}`, `GET /sites/{slug}/db/tables`, `POST /db/query` |
 | previews | `GET /sites/{slug}/branches`, `GET\|POST /sites/{slug}/worktrees`, `POST /sites/{slug}/worktrees/{id}/{start,stop,wp-cli}`, `DELETE /sites/{slug}/worktrees/{id}` |
 | platform | `GET /runtimes`, `POST /install`, `GET\|POST /front`, `GET\|POST /suffix`, `GET /doctor`, `POST /doctor/fix`, `GET /logs/{name}?lines=N`, `POST\|DELETE /hosts` |
+| integration | `GET /resolve?path=…`, `GET /certs/{domain}`, `POST /certs/{domain}/trust` |
+
+### Embedding agent-local in another app
+
+`GET /resolve?path=…` maps a checkout directory (or any file inside it) to a
+slug plus everything needed to talk to the site — URL, docroot, PHP version,
+live DB connection details, cert state. That is the entry point for a host app
+that keys sites by path rather than by slug. `POST /sites/{slug}/start` returns
+the same runtime block, so starting a site and learning how to reach its
+database is a single call.
+
+[docs/MUSTER-INTEGRATION.md](docs/MUSTER-INTEGRATION.md) is a worked example:
+adding agent-local as a selectable local-stack provider alongside LocalWP in an
+Electron app, with the endpoint reference, the provider contract, parity gaps
+and acceptance criteria.
 
 ## HTTP fronts
 
@@ -335,6 +351,8 @@ agent-local front [router|apache]      show / switch HTTP front
 agent-local sudo                       passwordless root allowlist (one-time)
 agent-local alias [--off]              bare URLs on 127.0.0.2:80/443 (one-time)
 agent-local yield [secs]               free :80/:443 briefly, then re-bind
+agent-local resolve [PATH]             which site owns a path (default: cwd)
+agent-local cert DOMAIN [--trust]      TLS state for a domain
 agent-local doctor [--fix]
 agent-local logs NAME [lines]          mysql | apache | daemon | fpm-<slug> | <slug>
 agent-local daemon [--background]      router + agent API

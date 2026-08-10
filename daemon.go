@@ -190,6 +190,9 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("POST /sites/{slug}/db/export", a.handleDBExport)
 	mux.HandleFunc("POST /sites/{slug}/db/reset", a.handleDBReset)
 	mux.HandleFunc("GET /sites/{slug}/db/tables", a.handleDBTables)
+	mux.HandleFunc("GET /resolve", a.handleResolvePath)
+	mux.HandleFunc("GET /certs/{domain}", a.handleCertStatus)
+	mux.HandleFunc("POST /certs/{domain}/trust", a.handleCertTrust)
 	return mux
 }
 
@@ -261,13 +264,96 @@ func (a *APIServer) handleGet(w http.ResponseWriter, r *http.Request) {
 	ok(w, detail)
 }
 
+// handleResolvePath answers "which site owns this directory?" — the lookup an
+// integrator needs, because a UI keys sites by the checkout the user picked
+// while we key them by slug. Accepts any path inside the site.
+func (a *APIServer) handleResolvePath(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if strings.TrimSpace(path) == "" {
+		fail(w, 400, "path required")
+		return
+	}
+	site, matched, wt := a.engine.SiteForPath(path)
+	if site == nil {
+		fail(w, 404, "no site manages "+path)
+		return
+	}
+	out := a.runtimeInfo(site)
+	out["matched"] = matched
+	out["site"] = site
+	out["cert"] = InspectCert(site.Domain)
+	if wt != nil {
+		out["worktree"] = wt
+		out["url"] = BareDomainURL(wt.Domain)
+		out["domain"] = wt.Domain
+		out["wp_dir"] = a.engine.wtServeDir(wt)
+		out["running"] = a.engine.FPMRunning(wt.ID)
+		out["cert"] = InspectCert(wt.Domain)
+	}
+	ok(w, out)
+}
+
+func (a *APIServer) handleCertStatus(w http.ResponseWriter, r *http.Request) {
+	domain := r.PathValue("domain")
+	if !ValidDomain(domain) {
+		fail(w, 400, "invalid domain")
+		return
+	}
+	ok(w, InspectCert(domain))
+}
+
+// handleCertTrust issues the cert if absent, then trusts it. Non-interactive:
+// the sudoers allowlist installed by `agent-local sudo` covers the keychain
+// write, so a daemon-side call cannot land on an invisible password prompt.
+func (a *APIServer) handleCertTrust(w http.ResponseWriter, r *http.Request) {
+	domain := r.PathValue("domain")
+	if !ValidDomain(domain) {
+		fail(w, 400, "invalid domain")
+		return
+	}
+	cert, _, _, err := EnsureCert(domain)
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	if err := TrustCert(cert, false); err != nil {
+		fail(w, 500, "trust failed (run `agent-local sudo` once to allow this without a prompt): "+err.Error())
+		return
+	}
+	ok(w, InspectCert(domain))
+}
+
+// handleStart boots the site and returns everything a caller needs to talk to
+// it: URL, docroot, PHP version and live DB connection details. One call, so a
+// provider integration never has to guess or follow up.
 func (a *APIServer) handleStart(w http.ResponseWriter, r *http.Request) {
 	if err := a.engine.StartSite(r.PathValue("slug")); err != nil {
 		fail(w, 500, err.Error())
 		return
 	}
-	site := a.store.Site(r.PathValue("slug"))
-	ok(w, map[string]interface{}{"url": BareURL(site)})
+	ok(w, a.runtimeInfo(a.store.Site(r.PathValue("slug"))))
+}
+
+// runtimeInfo is the serving+connection snapshot shared by start and resolve.
+// The DB socket is always empty: one shared MariaDB on TCP, unlike LocalWP's
+// per-site unix socket, so callers must not carry a stale socket path.
+func (a *APIServer) runtimeInfo(site *Site) map[string]interface{} {
+	if site == nil {
+		return map[string]interface{}{}
+	}
+	return map[string]interface{}{
+		"slug":        site.Slug,
+		"url":         BareURL(site),
+		"https_url":   site.SURL(),
+		"domain":      site.Domain,
+		"wp_dir":      site.WPDir,
+		"php_version": site.PHPVersion,
+		"running":     a.engine.FPMRunning(site.Slug),
+		"db": map[string]interface{}{
+			"host": "127.0.0.1", "port": DefaultDBPort, "socket": "",
+			"name": site.DBName, "user": site.DBUser, "pass": site.DBPass,
+		},
+	}
 }
 
 func (a *APIServer) handleStop(w http.ResponseWriter, r *http.Request) {

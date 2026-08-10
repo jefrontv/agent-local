@@ -477,6 +477,62 @@ func siteRepoDir(site *Site) string {
 	return ""
 }
 
+// SiteForPath resolves a filesystem path to a managed site. Integrators (a UI,
+// an editor) key sites by the checkout directory a user picked, while we key
+// them by slug — so match the path against every root we know, then walk up:
+// a file deep inside a docroot still identifies its site.
+//
+// The match is reported so a caller can tell an exact hit from an ancestor one.
+func (e *Engine) SiteForPath(path string) (*Site, string, *Worktree) {
+	want := normalizePath(path)
+	if want == "" {
+		return nil, "", nil
+	}
+	// Worktrees first: their paths live inside a site's repo, so a site root
+	// would otherwise shadow the more specific preview.
+	for _, w := range e.Store.Data.Worktrees {
+		if p := normalizePath(w.Path); p != "" && pathWithin(want, p) {
+			return e.Store.Site(w.Site), "worktree", w
+		}
+	}
+	best, bestField, bestLen := (*Site)(nil), "", 0
+	for _, s := range e.Store.Sites() {
+		for field, root := range map[string]string{"wp_dir": s.WPDir, "work_dir": s.WorkDir} {
+			p := normalizePath(root)
+			if p == "" || !pathWithin(want, p) {
+				continue
+			}
+			// Deepest root wins: wp_dir is inside work_dir for our own sites.
+			if len(p) > bestLen {
+				best, bestField, bestLen = s, field, len(p)
+			}
+		}
+	}
+	return best, bestField, nil
+}
+
+// normalizePath resolves symlinks where it can and strips a trailing separator
+// so two spellings of the same directory compare equal. macOS paths are
+// compared case-insensitively, matching the default filesystem.
+func normalizePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		p = real
+	}
+	return strings.ToLower(strings.TrimRight(p, string(filepath.Separator)))
+}
+
+// pathWithin reports whether want is root or sits underneath it. Both must
+// already be normalized; a prefix test alone would match /a/bc against /a/b.
+func pathWithin(want, root string) bool {
+	return want == root || strings.HasPrefix(want, root+string(filepath.Separator))
+}
+
 // Branches lists the site repo's branches (local + remote-only), marking the
 // one checked out at the base docroot, so agents can pick a preview target.
 func (e *Engine) Branches(slug string) (map[string]interface{}, error) {

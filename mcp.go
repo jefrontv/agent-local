@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -149,6 +150,12 @@ func mcpTools() []mcpTool {
 			"slug": prop("string", "site slug")}, "slug")},
 		{"db_tables", "List a site's tables with row counts and size in KB", schema(map[string]interface{}{
 			"slug": prop("string", "site slug")}, "slug")},
+		{"resolve_path", "Which managed site (or branch preview) owns a filesystem path — the lookup for integrations that key sites by checkout directory. Returns slug, url, docroot, php version, live DB connection details and cert state.", schema(map[string]interface{}{
+			"path": prop("string", "absolute path to a site directory or any file inside it")}, "path")},
+		{"cert_status", "TLS cert state for a domain: exists, trusted by the OS, expiry", schema(map[string]interface{}{
+			"domain": prop("string", "e.g. mysite.test")}, "domain")},
+		{"cert_trust", "Issue (if needed) and trust a domain's TLS cert in the system keychain", schema(map[string]interface{}{
+			"domain": prop("string", "e.g. mysite.test")}, "domain")},
 		{"wp_cli", "Run wp-cli against a site", schema(map[string]interface{}{
 			"slug": prop("string", "site slug"), "args": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "wp-cli args"}}, "slug")},
 		{"add_worktree", "Create a git worktree branch served on its own domain", schema(map[string]interface{}{
@@ -275,6 +282,12 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		return apiPost("/sites/"+get("slug")+"/db/export", map[string]string{"path": get("path")})
 	case "db_reset":
 		return apiPost("/sites/"+get("slug")+"/db/reset", nil)
+	case "resolve_path":
+		return apiGet("/resolve?path=" + url.QueryEscape(get("path")))
+	case "cert_status":
+		return apiGet("/certs/" + get("domain"))
+	case "cert_trust":
+		return apiPost("/certs/"+get("domain")+"/trust", nil)
 	case "db_tables":
 		return apiGet("/sites/" + get("slug") + "/db/tables")
 	case "wp_cli":

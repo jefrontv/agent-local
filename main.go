@@ -26,9 +26,10 @@ USAGE
   agent-local db SLUG [sql]      print DB creds or run SQL
   agent-local logs NAME [lines] tail a log (mysql, apache, daemon, fpm-SLUG…)
   agent-local php SLUG VERSION   switch PHP version
-  agent-local alias [--off]        bare URLs via 127.0.0.2:80 (no port suffix)
-  agent-local db SLUG [sql|import F|export [F]|reset|tables]   database ops
   agent-local yield [secs]       free :80/:443 briefly (let LocalWP start)
+  agent-local resolve [PATH]     which site owns a path (default: cwd)
+  agent-local cert DOMAIN [--trust]   TLS state for a domain
+  agent-local db SLUG [sql|import F|export [F]|reset|tables]   database ops
   agent-local suffix [.test]         show/set default domain suffix
   agent-local domain SLUG NAME   change site domain
   agent-local worktree SLUG BRANCH [--remove]   branch worktree on its own URL
@@ -105,6 +106,10 @@ func main() {
 		err = cmdLocalWPSites()
 	case "alias":
 		err = cmdAlias(rest)
+	case "resolve":
+		err = cmdResolve(rest)
+	case "cert":
+		err = cmdCert(rest)
 	case "yield":
 		err = cmdYield(rest)
 	case "sudo":
@@ -527,6 +532,51 @@ func cmdYield(args []string) error {
 	}
 	fmt.Printf("released :80/:443 for %ds — start your other app now\n", secs)
 	fmt.Println("bare URLs resume automatically; sites stay reachable on :" + fmt.Sprint(DefaultHTTPPort) + " throughout")
+	return nil
+}
+
+// cmdResolve prints which site owns a path — the CLI face of GET /resolve, for
+// shell integrations and for debugging an editor/UI that disagrees with us.
+func cmdResolve(args []string) error {
+	pos := positional(args)
+	target := "."
+	if len(pos) > 0 {
+		target = pos[0]
+	}
+	_, e, err := openEnv()
+	if err != nil {
+		return err
+	}
+	site, matched, wt := e.SiteForPath(target)
+	if site == nil {
+		return fmt.Errorf("no site manages %s", target)
+	}
+	if wt != nil {
+		fmt.Printf("%s (worktree %s) %s\n", site.Slug, wt.Branch, BareDomainURL(wt.Domain))
+		return nil
+	}
+	fmt.Printf("%s  matched=%s  %s  php=%s  db=%s\n", site.Slug, matched, BareURL(site), site.PHPVersion, site.DBName)
+	return nil
+}
+
+// cmdCert shows a domain's TLS state, or trusts it with --trust.
+func cmdCert(args []string) error {
+	pos := positional(args)
+	if len(pos) == 0 {
+		return fmt.Errorf("usage: agent-local cert DOMAIN [--trust]")
+	}
+	domain := pos[0]
+	if hasFlag(args, "--trust") {
+		cert, _, _, err := EnsureCert(domain)
+		if err != nil {
+			return err
+		}
+		if err := TrustCert(cert, true); err != nil {
+			return err
+		}
+	}
+	st := InspectCert(domain)
+	fmt.Printf("%s  exists=%t trusted=%t expires=%s\n  %s\n", st.Domain, st.Exists, st.Trusted, st.NotAfter, st.CertPath)
 	return nil
 }
 
