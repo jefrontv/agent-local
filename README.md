@@ -82,6 +82,36 @@ agent-local list                          # every site, state, URL
 Admin credentials are printed at the end of `create` and stored in state
 (`agent-local db mysite` for DB creds, `get_site` for everything).
 
+## Missing uploads
+
+A local database usually references thousands of images the local disk does not
+have. On production that is solved with an Apache rewrite in `.htaccess`:
+
+```apache
+RewriteCond %{REQUEST_URI} ^/wp-content/uploads/
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^(.*)$ https://example.org/$1 [QSA,L]
+```
+
+The built-in router does not read `.htaccess` — it is an Apache feature — so that
+rule is inert here and every missing image 404s. It is a property of the site
+instead, and it can be adopted straight from the file that already has it:
+
+```sh
+agent-local media SLUG               # show it, and what .htaccess implies
+agent-local media SLUG --auto        # adopt the origin from .htaccess
+agent-local media SLUG https://x.org # set it explicitly
+agent-local media SLUG --off         # back to 404s
+```
+
+In the TUI: `m` on the Sites tab, where `⇥` fills in the `.htaccess` origin.
+`doctor` flags any site carrying that rewrite with no fallback set.
+
+A `GET` under `/wp-content/uploads/` with no local file gets a 302 to the origin —
+a redirect, not a proxy, so behaviour matches the `.htaccess` exactly and nothing
+is cached locally. Local files always win, and paths outside `uploads/` still 404
+so genuine mistakes stay visible.
+
 ## The dashboard
 
 `agent-local` with no arguments opens the panel:
@@ -363,7 +393,7 @@ Same database both sides — the difference between them is code.
 }
 ```
 
-44 tools — everything the CLI can do, no shell required:
+46 tools — everything the CLI can do, no shell required:
 
 | Area | Tools |
 |---|---|

@@ -133,6 +133,11 @@ func mcpTools() []mcpTool {
 			"db_name":     prop("string", "explicit source DB name"),
 		}, "source")},
 		{"localwp_sites", "List LocalWP sites available for import", schema(nil)},
+		{"set_media_fallback", "Point a site's missing uploads at an origin: any GET under /wp-content/uploads/ with no local file 302s there. This is what the Apache-only '.htaccess uploads rewrite' does, which the built-in router cannot read. Pass \"auto\" to adopt the rule already in the site's .htaccess, or an empty string to turn it off", schema(map[string]interface{}{
+			"slug": prop("string", "site slug"),
+			"url":  prop("string", "e.g. https://example.org — or \"auto\", or \"\" to disable")}, "slug", "url")},
+		{"get_media_fallback", "A site's media fallback plus what its .htaccess implies", schema(map[string]interface{}{
+			"slug": prop("string", "site slug")}, "slug")},
 		{"set_sites_dir", "Set the parent directory new sites are created in. Existing sites stay where they are; pass an empty string to restore the default (~/.agent-local/sites)", schema(map[string]interface{}{
 			"dir": prop("string", "e.g. ~/Sites — created if missing")}, "dir")},
 		{"get_sites_dir", "Where new sites are created when create_site is called without a dir", schema(nil)},
@@ -274,6 +279,10 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 			return map[string]string{"error": err.Error()}, true
 		}
 		return sites, false
+	case "set_media_fallback":
+		return apiPost("/sites/"+get("slug")+"/media", map[string]string{"url": get("url")})
+	case "get_media_fallback":
+		return apiGet("/sites/" + get("slug") + "/media")
 	case "set_sites_dir":
 		return apiPost("/sites-dir", map[string]string{"dir": get("dir")})
 	case "get_sites_dir":

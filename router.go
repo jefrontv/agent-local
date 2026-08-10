@@ -84,6 +84,21 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method != "POST" && r.serveStatic(w, req, wpdir) {
 		return
 	}
+	// A missing upload goes to the site's media fallback rather than to
+	// WordPress, which would only render a 404 page for an image.
+	if req.Method == "GET" && r.serveMediaFallback(w, req, host, wpdir) {
+		return
+	}
+	// "/wp-admin" is a directory with its own index.php: add the slash the way
+	// mod_dir does, so relative URLs inside it resolve against the right base.
+	if req.Method == "GET" && !strings.HasSuffix(req.URL.Path, "/") && dirWithIndex(wpdir, req.URL.Path) {
+		target := req.URL.Path + "/"
+		if req.URL.RawQuery != "" {
+			target += "?" + req.URL.RawQuery
+		}
+		http.Redirect(w, req, target, http.StatusMovedPermanently)
+		return
+	}
 
 	sock := r.engine.fpmSock(fpmID)
 	if !fileExists(sock) {
@@ -96,6 +111,43 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	r.proxyFCGI(w, req, wpdir, sock, host)
+}
+
+// uploadsPrefix is the one path a media fallback applies to. Scoping it here
+// rather than to any missing file keeps genuine 404s visible.
+const uploadsPrefix = "/wp-content/uploads/"
+
+// serveMediaFallback redirects a missing upload to the site's configured origin,
+// which is what the Apache-only ".htaccess" rewrite does on production hosts:
+//
+//	RewriteCond %{REQUEST_FILENAME} !-f
+//	RewriteRule ^(.*)$ https://example.org/$1 [QSA,L]
+//
+// It is a redirect, not a proxy: the browser fetches from the origin, so nothing
+// is cached or rewritten locally and the behaviour matches the .htaccess exactly.
+func (r *Router) serveMediaFallback(w http.ResponseWriter, req *http.Request, host, wpdir string) bool {
+	// Normalise first, then decide: "/wp-content/uploads/../../../etc/passwd"
+	// starts with the uploads prefix but is not an upload, and sending a browser
+	// to the origin for it is neither useful nor honest.
+	clean := filepath.Clean("/" + req.URL.Path)
+	if !strings.HasPrefix(clean, uploadsPrefix) {
+		return false
+	}
+	site := r.engine.Store.FindSiteByDomain(host)
+	if site == nil || site.MediaFallback == "" {
+		return false
+	}
+	// Only when it is genuinely absent locally: a real file was already served by
+	// serveStatic, but a directory lands here too.
+	if _, err := os.Stat(filepath.Join(wpdir, clean)); err == nil {
+		return false
+	}
+	target := strings.TrimSuffix(site.MediaFallback, "/") + clean
+	if req.URL.RawQuery != "" {
+		target += "?" + req.URL.RawQuery
+	}
+	http.Redirect(w, req, target, http.StatusFound)
+	return true
 }
 
 // serveStatic serves a real file from disk. Returns true if it handled the
@@ -159,6 +211,71 @@ const (
 	fcgiMaxContent    = 65535
 )
 
+// resolveScript decides which PHP file runs a request, the way Apache and nginx
+// do: the file itself when it is a real .php, else that directory's own
+// index.php, and only then the site's front controller.
+//
+// Sending "/wp-admin/" to the front controller is what caused ERR_TOO_MANY_
+// REDIRECTS: WordPress's router receives a URL it knows belongs to the admin,
+// canonically redirects to /wp-admin/, and the whole thing repeats. The admin has
+// its own index.php and must be allowed to answer for itself.
+func resolveScript(wpdir, urlPath string) (script, scriptName string) {
+	front := filepath.Join(wpdir, "index.php")
+	clean := filepath.Clean("/" + urlPath)
+	full := filepath.Join(wpdir, clean)
+	// Traversal cannot reach outside the docroot.
+	if !within(full, wpdir) {
+		return front, "/index.php"
+	}
+	if strings.HasSuffix(strings.ToLower(clean), ".php") {
+		if st, err := os.Stat(full); err == nil && !st.IsDir() {
+			return full, clean
+		}
+		return front, "/index.php"
+	}
+	// DirectoryIndex: a directory holding its own index.php answers for itself.
+	// Directories without one (uploads, a "downloads" folder that is really a
+	// WordPress page) stay with the front controller, so permalinks still win.
+	if st, err := os.Stat(full); err == nil && st.IsDir() {
+		idx := filepath.Join(full, "index.php")
+		if _, err := os.Stat(idx); err == nil {
+			name := strings.TrimSuffix(clean, "/") + "/index.php"
+			return idx, name
+		}
+	}
+	return front, "/index.php"
+}
+
+// dirWithIndex reports whether a path is a real directory carrying its own
+// index.php — the only case where adding a trailing slash is correct rather than
+// a guess about someone's permalinks.
+func dirWithIndex(wpdir, urlPath string) bool {
+	if urlPath == "" || urlPath == "/" {
+		return false
+	}
+	clean := filepath.Clean("/" + urlPath)
+	// Anything that collapses to the docroot is already being served: "/../.."
+	// must not earn a redirect to "/../../".
+	if clean == "/" {
+		return false
+	}
+	full := filepath.Join(wpdir, clean)
+	if !within(full, wpdir) {
+		return false
+	}
+	if st, err := os.Stat(full); err != nil || !st.IsDir() {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(full, "index.php"))
+	return err == nil
+}
+
+// within reports whether a joined path stayed inside the docroot.
+func within(full, root string) bool {
+	root = filepath.Clean(root)
+	return full == root || strings.HasPrefix(full, root+string(os.PathSeparator))
+}
+
 // proxyFCGI speaks FastCGI to the pool socket and streams back.
 func (r *Router) proxyFCGI(w http.ResponseWriter, req *http.Request, wpdir, sock, host string) {
 	conn, err := net.Dial("unix", sock)
@@ -175,18 +292,7 @@ func (r *Router) proxyFCGI(w http.ResponseWriter, req *http.Request, wpdir, sock
 		https = "on"
 		serverPort = "443"
 	}
-	script := wpdir + req.URL.Path
-	if strings.HasSuffix(req.URL.Path, "/") || !strings.Contains(req.URL.Path, ".") {
-		// WordPress pretty permalinks → route through index.php
-		script = wpdir + "/index.php"
-	}
-	if _, err := os.Stat(script); err != nil {
-		script = wpdir + "/index.php"
-	}
-	scriptName := strings.TrimPrefix(script, wpdir)
-	if scriptName == "" {
-		scriptName = "/index.php"
-	}
+	script, scriptName := resolveScript(wpdir, req.URL.Path)
 	contentLength := "0"
 	if req.ContentLength >= 0 {
 		contentLength = fmt.Sprint(req.ContentLength)

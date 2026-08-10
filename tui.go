@@ -99,12 +99,13 @@ const (
 type inputTarget int
 
 const (
-	inputNone     inputTarget = iota
-	inputNewWhere             // step 1: the shared directory, or a path of your own
-	inputSitesDir             // change the shared directory itself
-	inputNewDir               // step 1b: where the site lives (tab-completes)
-	inputNewFresh             // step 2: install WordPress here, or just point at it
-	inputNewName              // step 3: name/slug
+	inputNone          inputTarget = iota
+	inputNewWhere                  // step 1: the shared directory, or a path of your own
+	inputSitesDir                  // change the shared directory itself
+	inputMediaFallback             // where missing uploads come from
+	inputNewDir                    // step 1b: where the site lives (tab-completes)
+	inputNewFresh                  // step 2: install WordPress here, or just point at it
+	inputNewName                   // step 3: name/slug
 	inputNewDomain
 	inputCreateName
 	inputCreateDomain
@@ -412,9 +413,16 @@ func (m model) handleInputKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		// Completion only means something for a path. Elsewhere tab would
 		// otherwise leak through to the tab bar and abandon a half-typed answer.
-		if m.input.target == inputNewDir || m.input.target == inputSitesDir {
+		switch m.input.target {
+		case inputNewDir, inputSitesDir:
 			v, note := completeDir(m.input.value)
 			m.input.value, m.input.note = v, note
+		case inputMediaFallback:
+			// Nothing to complete on disk, but the .htaccess origin is the answer
+			// nine times out of ten — so tab fills it in.
+			if h := m.engine.MediaFallbackHint(m.input.slug); h != "" {
+				m.input.value = h
+			}
 		}
 		return m, nil
 	case "backspace":
@@ -464,6 +472,17 @@ func (m *model) applyInput(spec inputSpec) error {
 			"becomes the slug, the folder and the default domain", "")
 		next.input.fresh, next.input.note = true, m.newSiteNote()
 		*m = next
+		return nil
+	case inputMediaFallback:
+		got, err := m.engine.SetMediaFallback(spec.slug, val)
+		if err != nil {
+			return err
+		}
+		if got == "" {
+			m.setMsg("media fallback off — missing uploads 404", false)
+			return nil
+		}
+		m.setMsg("missing uploads redirect to "+got, false)
 		return nil
 	case inputSitesDir:
 		if err := m.store.SetSitesDir(val); err != nil {
@@ -755,6 +774,17 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.startInput(inputWorktreeBranch, "branch to preview for "+site.Slug,
 			"served on its own domain", site.Slug), nil
+	case "m":
+		if site == nil {
+			return m, nil
+		}
+		hint := "empty turns it off"
+		if h := m.engine.MediaFallbackHint(site.Slug); h != "" && h != site.MediaFallback {
+			hint = ".htaccess says " + h + " — ⇥ accepts it"
+		}
+		next := m.startInput(inputMediaFallback, "missing uploads on "+site.Slug+" come from", hint, site.Slug)
+		next.input.value = site.MediaFallback
+		return next, nil
 	case "Q":
 		return m.startInput(inputSQL, "SQL on shared db", "e.g. SHOW DATABASES", ""), nil
 	case "o":
@@ -1128,6 +1158,12 @@ func (m *model) sitePanel(s *Site) string {
 		}
 		rows = append(rows, [2]string{"preview", strings.Join(names, stDim.Render(", "))})
 	}
+	// Only when set: an off switch does not need a row of its own, but a live
+	// redirect to somewhere else absolutely does — otherwise an image arriving
+	// from production looks like the local copy.
+	if s.MediaFallback != "" {
+		rows = append(rows, [2]string{"media", stDim.Render("missing uploads → ") + s.MediaFallback})
+	}
 	var body strings.Builder
 	for i, r := range rows {
 		if i > 0 {
@@ -1279,7 +1315,7 @@ func (m model) viewFooter(w int) string {
 	switch m.tab {
 	case tabSites:
 		keys = [][2]string{{"n", "new"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"},
-			{"o", "open"}, {"a", "preview"}, {"p", "php"}, {"d", "domain"}, {"D", "delete"}}
+			{"o", "open"}, {"a", "preview"}, {"p", "php"}, {"d", "domain"}, {"m", "media"}, {"D", "delete"}}
 	case tabWorktrees:
 		keys = [][2]string{{"a", "add preview"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"}, {"o", "open"}, {"D", "remove"}}
 	case tabRuntimes:

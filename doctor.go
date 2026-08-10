@@ -137,6 +137,21 @@ func Doctor(store *Store) *DoctorReport {
 		}
 	}
 
+	// An .htaccess uploads rewrite is invisible to the built-in router: it is an
+	// Apache directive. Sites carrying one and no media fallback would silently
+	// 404 every image the local database references but the disk does not have.
+	for _, site := range store.Sites() {
+		if site.MediaFallback != "" {
+			continue
+		}
+		if origin := htaccessUploadsRule(site.WPDir); origin != "" {
+			add(Finding{Check: "media:" + site.Slug, Status: "warn",
+				Detail:  ".htaccess redirects missing uploads to " + origin + ", which the router cannot read",
+				FixHint: "agent-local media " + site.Slug + " --auto",
+				FixCmd:  "agent-local media " + site.Slug + " --auto", AutoFix: true})
+		}
+	}
+
 	// Same for a site: a docroot removed behind our back leaves a row that looks
 	// healthy and answers 404. Say so rather than let it be discovered by hand.
 	for _, site := range store.Sites() {

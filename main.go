@@ -31,6 +31,7 @@ USAGE
   agent-local resolve [PATH]     which site owns a path (default: cwd)
   agent-local cert DOMAIN [--trust]   TLS state for a domain
   agent-local db SLUG [sql|import F|export [F]|reset|tables]   database ops
+  agent-local media SLUG [URL]       missing uploads -> origin (--auto reads .htaccess, --off)
   agent-local sites-dir [PATH]       show/set where new sites are created
   agent-local suffix [.test]         show/set default domain suffix
   agent-local domain SLUG NAME   change site domain
@@ -126,6 +127,8 @@ func main() {
 		err = cmdSudoSetup()
 	case "front-daemon":
 		err = RunFrontDaemon(rest)
+	case "media":
+		err = cmdMedia(rest)
 	case "sites-dir":
 		err = cmdSitesDir(rest)
 	case "suffix":
@@ -200,6 +203,54 @@ func atoi0(s string) int {
 	var n int
 	fmt.Sscanf(s, "%d", &n)
 	return n
+}
+
+// cmdMedia shows or sets where a site's missing uploads come from.
+func cmdMedia(args []string) error {
+	pos := positional(args)
+	if len(pos) < 1 {
+		return fmt.Errorf("usage: agent-local media SLUG [URL | --auto | --off]")
+	}
+	store, e, err := openEnv()
+	if err != nil {
+		return err
+	}
+	slug := pos[0]
+	site := store.Site(slug)
+	if site == nil {
+		return fmt.Errorf("no such site: %s", slug)
+	}
+	set := ""
+	switch {
+	case hasFlag(args, "--off"):
+		set = ""
+	case hasFlag(args, "--auto"):
+		set = "auto"
+	case len(pos) > 1:
+		set = pos[1]
+	default:
+		// Report, and say what the site's own .htaccess implies.
+		if site.MediaFallback == "" {
+			fmt.Println("media fallback: off — missing uploads 404")
+		} else {
+			fmt.Println("media fallback: " + site.MediaFallback)
+		}
+		if hint := e.MediaFallbackHint(slug); hint != "" && hint != site.MediaFallback {
+			fmt.Println(".htaccess implies: " + hint)
+			fmt.Println("adopt it: agent-local media " + slug + " --auto")
+		}
+		return nil
+	}
+	got, err := e.SetMediaFallback(slug, set)
+	if err != nil {
+		return err
+	}
+	if got == "" {
+		fmt.Println("media fallback off for " + slug)
+		return nil
+	}
+	fmt.Println("missing uploads on " + slug + " now redirect to " + got)
+	return nil
 }
 
 // cmdSitesDir shows or sets the parent directory new sites are created in.

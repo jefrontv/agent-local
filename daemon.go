@@ -162,6 +162,8 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("GET /status", a.handleStatus)
 	mux.HandleFunc("POST /sites", a.handleCreate)
 	mux.HandleFunc("POST /attach", a.handleAttach)
+	mux.HandleFunc("POST /sites/{slug}/media", a.handleMedia)
+	mux.HandleFunc("GET /sites/{slug}/media", a.handleMedia)
 	mux.HandleFunc("GET /sites-dir", a.handleSitesDir)
 	mux.HandleFunc("POST /sites-dir", a.handleSitesDir)
 	mux.HandleFunc("GET /sites", a.handleList)
@@ -230,6 +232,34 @@ func (a *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"worktrees": len(a.store.Data.Worktrees),
 	}
 	ok(w, st)
+}
+
+// handleMedia reads or sets a site's media fallback: where missing uploads go.
+func (a *APIServer) handleMedia(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	site := a.store.Site(slug)
+	if site == nil {
+		fail(w, 404, "no such site")
+		return
+	}
+	if r.Method == http.MethodPost {
+		var req struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			fail(w, 400, "bad json: "+err.Error())
+			return
+		}
+		if _, err := a.engine.SetMediaFallback(slug, req.URL); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		site = a.store.Site(slug)
+	}
+	ok(w, map[string]interface{}{
+		"slug": slug, "media_fallback": site.MediaFallback,
+		"htaccess_implies": a.engine.MediaFallbackHint(slug),
+	})
 }
 
 // handleSitesDir reads or sets the parent directory new sites are created in.

@@ -223,7 +223,12 @@ GET|POST /front                      // "router" | "apache"
 POST|DELETE /hosts                   {"domains":["a.test"]}
 ```
 
-`GET  /sites-dir  -> {"dir":"…","default":"…"}
+`GET  /sites/{slug}/media  -> {"media_fallback":"…","htaccess_implies":"…"}
+POST /sites/{slug}/media {"url":"https://origin"|"auto"|""}
+   → where a missing /wp-content/uploads/ file 302s to. The router cannot read
+     .htaccess, so this replaces the Apache uploads rewrite. MCP: get/set_media_fallback.
+
+GET  /sites-dir  -> {"dir":"…","default":"…"}
 POST /sites-dir {"dir":"~/Sites"}
    → parent directory for sites created without an explicit path. POST /sites with
      no "dir" lands in <sites-dir>/<slug>. Empty string restores the default.

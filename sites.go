@@ -331,6 +331,98 @@ func (e *Engine) managedDir(path string) bool {
 	return false
 }
 
+// htaccessUploadsRule looks for the one .htaccess pattern worth understanding:
+// "if this upload is missing, send it to that origin". It is deliberately not a
+// rewrite engine — it recognises the shape people already use so the setting can
+// be adopted instead of retyped, and reports nothing when unsure.
+//
+//	RewriteCond %{REQUEST_URI} ^/wp-content/uploads/…
+//	RewriteCond %{REQUEST_FILENAME} !-f
+//	RewriteRule ^(.*)$ https://origin.example/$1 [QSA,L]
+func htaccessUploadsRule(docroot string) string {
+	b, err := os.ReadFile(filepath.Join(docroot, ".htaccess"))
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(b), "\n")
+	uploads, missing := false, false
+	for _, ln := range lines {
+		t := strings.TrimSpace(ln)
+		switch {
+		case strings.HasPrefix(t, "#"):
+			continue
+		case strings.HasPrefix(t, "RewriteCond") && strings.Contains(t, "wp-content/uploads"):
+			uploads = true
+		case strings.HasPrefix(t, "RewriteCond") && strings.Contains(t, "!-f"):
+			missing = true
+		case strings.HasPrefix(t, "RewriteRule"):
+			if uploads && missing {
+				if u := firstURL(t); u != "" {
+					return u
+				}
+			}
+			// A rule ends the group it belonged to.
+			uploads, missing = false, false
+		}
+	}
+	return ""
+}
+
+// firstURL pulls the origin out of a RewriteRule target, dropping the trailing
+// substitution and flags: "https://x.org/$1 [QSA,L]" -> "https://x.org".
+func firstURL(rule string) string {
+	i := strings.Index(rule, "http")
+	if i < 0 {
+		return ""
+	}
+	rest := strings.Fields(rule[i:])
+	if len(rest) == 0 {
+		return ""
+	}
+	u, err := url.Parse(strings.TrimSuffix(strings.TrimSuffix(rest[0], "$1"), "/"))
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host + strings.TrimSuffix(u.Path, "/")
+}
+
+// SetMediaFallback points a site's missing uploads at an origin. An empty value
+// turns it off; "auto" adopts whatever the docroot's .htaccess already says.
+func (e *Engine) SetMediaFallback(slug, origin string) (string, error) {
+	site := e.Store.Site(slug)
+	if site == nil {
+		return "", fmt.Errorf("no such site: %s", slug)
+	}
+	switch strings.TrimSpace(origin) {
+	case "":
+		site.MediaFallback = ""
+	case "auto":
+		found := htaccessUploadsRule(site.WPDir)
+		if found == "" {
+			return "", fmt.Errorf("no uploads rewrite found in %s/.htaccess — pass a URL instead", shortHome(site.WPDir))
+		}
+		site.MediaFallback = found
+	default:
+		u, err := url.Parse(origin)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return "", fmt.Errorf("media fallback must be an http(s) URL, got %q", origin)
+		}
+		site.MediaFallback = u.Scheme + "://" + u.Host + strings.TrimSuffix(u.Path, "/")
+	}
+	e.Store.PutSite(site)
+	return site.MediaFallback, e.Store.Save()
+}
+
+// MediaFallbackHint is what a site's .htaccess implies, for surfaces that want to
+// offer it. Empty when there is nothing to adopt.
+func (e *Engine) MediaFallbackHint(slug string) string {
+	site := e.Store.Site(slug)
+	if site == nil {
+		return ""
+	}
+	return htaccessUploadsRule(site.WPDir)
+}
+
 // authoredByUs reports whether a wp-config.php is one we generated, by the
 // header writeWPConfig stamps on it. Used so deleting an attached site removes
 // only the config it added.
