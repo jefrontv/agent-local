@@ -2,29 +2,75 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
-// ---------- styles ----------
+// ---------- look ----------
+//
+// The screen is an operator's panel for a rack of local sites: ports, PHP
+// pools, sockets. So structure is steel blue and quiet, and the one loud
+// element is the lamp gutter — a dot per row, lit when that thing is actually
+// serving. It reads at a glance and it repeats on every tab, which is why the
+// tables no longer carry a "STATE" word column.
+//
+// Colours are adaptive where text is involved so a light terminal stays
+// readable; the lamps stay fixed, because a signal lamp that changes hue with
+// the theme is not a signal lamp.
 
 var (
-	stTitle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).MarginBottom(1)
-	stTabOn   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("205")).Padding(0, 1)
-	stTabOff  = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Padding(0, 1)
-	stSel     = lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Background(lipgloss.Color("63"))
-	stRun     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	stStop    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	stErr     = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	stOK      = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	stWarn    = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	stDim     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	stKey     = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
-	stStatus  = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	stDetailK = lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Width(12)
+	cInk   = lipgloss.AdaptiveColor{Light: "236", Dark: "252"}
+	cDim   = lipgloss.AdaptiveColor{Light: "244", Dark: "245"}
+	cSteel = lipgloss.AdaptiveColor{Light: "24", Dark: "67"}
+	cLamp  = lipgloss.Color("78")  // serving
+	cOff   = lipgloss.Color("240") // parked
+	cAlert = lipgloss.Color("203") // broken
+	cAmber = lipgloss.Color("179") // needs attention / in flight
 )
+
+var (
+	stName    = lipgloss.NewStyle().Bold(true).Foreground(cInk)
+	stVersion = lipgloss.NewStyle().Foreground(cDim)
+	stTabOn   = lipgloss.NewStyle().Bold(true).Foreground(cInk)
+	stTabOff  = lipgloss.NewStyle().Foreground(cDim)
+	stRail    = lipgloss.NewStyle().Foreground(cSteel)
+	stHead    = lipgloss.NewStyle().Foreground(cDim)
+	stSelBar  = lipgloss.NewStyle().Foreground(cSteel).Bold(true)
+	stSelRow  = lipgloss.NewStyle().Bold(true).Foreground(cInk)
+	stRow     = lipgloss.NewStyle().Foreground(cInk)
+	stDim     = lipgloss.NewStyle().Foreground(cDim)
+	stKey     = lipgloss.NewStyle().Bold(true).Foreground(cSteel)
+	stErr     = lipgloss.NewStyle().Foreground(cAlert)
+	stOK      = lipgloss.NewStyle().Foreground(cLamp)
+	stWarn    = lipgloss.NewStyle().Foreground(cAmber)
+	stPanel   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cSteel).Padding(0, 1)
+	stLabel   = lipgloss.NewStyle().Foreground(cDim).Width(7).Align(lipgloss.Right)
+)
+
+// lamp is the signature element: one dot, three states, same meaning everywhere.
+func lamp(on bool) string {
+	if on {
+		return lipgloss.NewStyle().Foreground(cLamp).Render("●")
+	}
+	return lipgloss.NewStyle().Foreground(cOff).Render("●")
+}
+
+// lampFor maps a doctor status onto the same three lamps.
+func lampFor(status string) string {
+	switch status {
+	case "ok":
+		return lamp(true)
+	case "warn":
+		return lipgloss.NewStyle().Foreground(cAmber).Render("●")
+	default:
+		return lipgloss.NewStyle().Foreground(cAlert).Render("●")
+	}
+}
 
 // ---------- model ----------
 
@@ -85,7 +131,16 @@ type model struct {
 	doctor   *DoctorReport
 	width    int
 	height   int
+	health   healthSnapshot
+	sizes    map[string]string
 	quitting bool
+}
+
+// healthSnapshot is the stack state the header lamps read from, sampled on
+// refresh rather than per render.
+type healthSnapshot struct {
+	db, http, https, api bool
+	front                string
 }
 
 type refreshMsg struct{}
@@ -105,11 +160,49 @@ func initialModel() model {
 	return m
 }
 
+// refresh re-reads the store and samples liveness once. The lamps must not be
+// computed in View: a render happens on every keypress, and dialling four ports
+// per frame turns typing into stutter.
 func (m *model) refresh() {
 	m.sites = m.store.Sites()
 	if m.cursor >= len(m.sites) && m.cursor > 0 {
 		m.cursor = len(m.sites) - 1
 	}
+	m.health = healthSnapshot{
+		db:    m.engine.DBRunning(),
+		http:  portOpen(DefaultHTTPPort),
+		https: portOpen(DefaultHTTPSPort),
+		api:   portOpen(DefaultAPIPort),
+		front: FrontKind(m.store),
+	}
+}
+
+// siteSize reports a site's disk usage, once per slug per session. Measuring it
+// walks the whole tree, and the panel re-renders on every keypress: an imported
+// multi-gigabyte checkout would turn arrow keys into a stall.
+func (m *model) siteSize(slug string) string {
+	if m.sizes == nil {
+		m.sizes = map[string]string{}
+	}
+	if v, ok := m.sizes[slug]; ok {
+		return v
+	}
+	v := SiteDirSize(slug)
+	m.sizes[slug] = v
+	return v
+}
+
+// phpInUse is the set of PHP versions actually serving something right now, so
+// the lamp on the Runtimes tab means "in use" rather than merely "installed" —
+// a green dot that is always green tells you nothing.
+func (m model) phpInUse() map[string]bool {
+	used := map[string]bool{}
+	for _, s := range m.sites {
+		if m.engine.FPMRunning(s.Slug) {
+			used[s.PHPVersion] = true
+		}
+	}
+	return used
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -504,22 +597,13 @@ func (m model) View() string {
 	if m.quitting {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString(stTitle.Render("AGENT-LOCAL — local WordPress, TUI"))
-	b.WriteString("\n")
-	tabs := []struct {
-		name string
-		t    tab
-	}{{"Sites", tabSites}, {"Worktrees", tabWorktrees}, {"Runtimes", tabRuntimes}, {"Doctor", tabDoctor}}
-	var line []string
-	for _, t := range tabs {
-		if t.t == m.tab {
-			line = append(line, stTabOn.Render(t.name))
-		} else {
-			line = append(line, stTabOff.Render(t.name))
-		}
+	w := m.width
+	if w < 60 {
+		w = 96 // before the first WindowSizeMsg, or in a very narrow window
 	}
-	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, line...) + "\n\n")
+	var b strings.Builder
+	b.WriteString(m.viewHeader(w) + "\n")
+	b.WriteString(m.viewTabs() + "\n\n")
 
 	switch m.tab {
 	case tabSites:
@@ -532,146 +616,227 @@ func (m model) View() string {
 		b.WriteString(m.viewDoctor())
 	}
 
-	b.WriteString("\n" + m.viewStatus())
-	b.WriteString("\n" + m.viewHelp())
+	b.WriteString("\n" + m.viewFooter(w))
 
+	// Transient layers, in the order they interrupt: a question, then work in
+	// flight, then the outcome of the last thing that finished.
 	if m.mode == modeConfirm {
-		b.WriteString("\n\n" + stWarn.Render("⚠ "+m.confirm) + "  " + stKey.Render("y") + "es / " + stKey.Render("n") + "o\n")
+		b.WriteString("\n\n" + stWarn.Render("? "+m.confirm) + "  " +
+			stKey.Render("y") + stDim.Render(" yes  ") + stKey.Render("n") + stDim.Render(" no"))
 	}
 	if m.mode == modeBusy {
-		b.WriteString("\n" + stWarn.Render("⣾ "+m.busy))
+		b.WriteString("\n\n" + stWarn.Render("· "+m.busy))
 	}
 	if m.msg != "" {
-		st := stOK
+		st, mark := stOK, "✓ "
 		if m.msgErr {
-			st = stErr
+			st, mark = stErr, "✗ "
 		}
-		b.WriteString("\n" + st.Render(m.msg))
+		b.WriteString("\n\n" + st.Render(mark+m.msg))
 	}
 	if m.mode == modeInput {
-		b.WriteString("\n" + stKey.Render(m.input.prompt+": ") + stSel.Render(m.input.value+"█"))
+		b.WriteString("\n\n" + stKey.Render(m.input.prompt) + stDim.Render(" › ") +
+			stSelRow.Render(m.input.value) + stSelBar.Render("▏"))
 		if m.input.hint != "" {
-			b.WriteString("  " + stDim.Render(m.input.hint))
+			b.WriteString("\n" + stDim.Render(strings.Repeat(" ", lipgloss.Width(m.input.prompt)+3)+m.input.hint))
 		}
-		b.WriteString("\n")
 	}
 	return b.String()
 }
 
-func (m model) viewSites() string {
+// viewHeader puts identity on the left and the stack's lamps on the right, so
+// the two questions a glance asks — "what am I looking at" and "is it up" — are
+// answered on one line.
+func (m model) viewHeader(w int) string {
+	left := stName.Render("agent-local") + " " + stVersion.Render(Version)
+	if n := len(m.sites); n > 0 {
+		left += stDim.Render(fmt.Sprintf("   %d sites", n))
+	}
+	front := m.health.front
+	if front == "" {
+		front = "router"
+	}
+	right := strings.Join([]string{
+		"db " + lamp(m.health.db) + stDim.Render(fmt.Sprintf(":%d", DefaultDBPort)),
+		front + " " + lamp(m.health.http) + stDim.Render(fmt.Sprintf(":%d", DefaultHTTPPort)),
+		"tls " + lamp(m.health.https) + stDim.Render(fmt.Sprintf(":%d", DefaultHTTPSPort)),
+		"api " + lamp(m.health.api) + stDim.Render(fmt.Sprintf(":%d", DefaultAPIPort)),
+	}, stDim.Render("  "))
+	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 2 {
+		return left + "\n" + right
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// viewTabs is a rail, not a set of buttons: the active label is underlined in
+// steel and the rest recede. Nothing is boxed, so the eye goes to the table.
+func (m model) viewTabs() string {
+	tabs := []struct {
+		name string
+		t    tab
+	}{{"Sites", tabSites}, {"Worktrees", tabWorktrees}, {"Runtimes", tabRuntimes}, {"Doctor", tabDoctor}}
+	var labels, rules []string
+	for _, t := range tabs {
+		if t.t == m.tab {
+			labels = append(labels, stTabOn.Render(t.name))
+			rules = append(rules, stRail.Render(strings.Repeat("─", lipgloss.Width(t.name))))
+		} else {
+			labels = append(labels, stTabOff.Render(t.name))
+			rules = append(rules, strings.Repeat(" ", lipgloss.Width(t.name)))
+		}
+	}
+	sep := "   "
+	return "  " + strings.Join(labels, sep) + "\n  " + strings.Join(rules, sep)
+}
+
+// row renders one table line with the cursor bar and lamp gutter. Header and
+// data rows share it, so columns cannot drift apart the way they did when the
+// header skipped the cursor gutter.
+//
+// Three weights, in order of what the eye should find: the selection is bold,
+// anything serving is normal ink, and a parked row recedes to dim so a long list
+// reads as "these five are up" without counting lamps.
+func row(selected bool, gutter, body string) string {
+	if selected {
+		return stSelBar.Render("▌ ") + gutter + stSelRow.Render(body)
+	}
+	return "  " + gutter + stRow.Render(body)
+}
+
+func rowParked(selected bool, gutter, body string) string {
+	if selected {
+		return stSelBar.Render("▌ ") + gutter + stSelRow.Render(body)
+	}
+	return "  " + gutter + stDim.Render(body)
+}
+
+// rowFor picks the weight from liveness.
+func rowFor(live, selected bool, gutter, body string) string {
+	if live {
+		return row(selected, gutter, body)
+	}
+	return rowParked(selected, gutter, body)
+}
+
+// tableWidth keeps the header rule, rows and the detail panel on one grid.
+const tableWidth = 66
+
+func (m *model) viewSites() string {
 	if len(m.sites) == 0 {
-		return stDim.Render("no sites yet — press n to create one")
+		return stDim.Render("  No sites yet. Press ") + stKey.Render("n") + stDim.Render(" to create one.")
 	}
 	var b strings.Builder
-	b.WriteString(stDim.Render(fmt.Sprintf("%-22s %-6s %-26s %-9s %s", "SLUG", "PHP", "DOMAIN", "STATE", "URL")) + "\n")
+	b.WriteString("    " + stHead.Render(fmt.Sprintf("%-20s %-5s %-30s %8s", "SITE", "PHP", "DOMAIN", "PREVIEWS")) + "\n")
 	for i, s := range m.sites {
-		state := stStop.Render("stopped")
-		if m.engine.FPMRunning(s.Slug) {
-			state = stRun.Render("running")
+		// Deliberately no size column: it costs a directory walk per row per
+		// render, and an imported checkout cannot report one anyway. Size lives
+		// in the panel, for the selected site only.
+		previews := ""
+		if n := len(m.store.WorktreesFor(s.Slug)); n > 0 {
+			previews = fmt.Sprint(n)
 		}
-		row := fmt.Sprintf("%-22s %-6s %-26s %s  %s", s.Slug, s.PHPVersion, s.Domain, pad(state, 9), BareURL(s))
-		if i == m.cursor {
-			row = stSel.Render("▸ " + row)
-		} else {
-			row = "  " + row
-		}
-		b.WriteString(row + "\n")
+		body := fmt.Sprintf("%-20s %-5s %-30s %8s",
+			trunc(s.Slug, 20), s.PHPVersion, trunc(s.Domain, 30), previews)
+		live := m.engine.FPMRunning(s.Slug)
+		b.WriteString(rowFor(live, i == m.cursor, lamp(live)+" ", body) + "\n")
 	}
-	// detail panel for selection
 	if s := m.currentSite(); s != nil {
-		b.WriteString("\n" + stDim.Render("── selected ─────────────────────────────────") + "\n")
-		rows := [][2]string{
-			{"https", s.SURL()},
-			{"admin", BareURL(s) + "/wp-admin  (" + s.AdminUser + " / " + s.AdminPass + ")"},
-			{"path", s.WPDir},
-			{"db", fmt.Sprintf("%s@127.0.0.1:%d/%s", s.DBUser, DefaultDBPort, s.DBName)},
-			{"size", SiteDirSize(s.Slug)},
-		}
-		for _, r := range rows {
-			b.WriteString(stDetailK.Render(r[0]) + r[1] + "\n")
-		}
+		b.WriteString("\n" + m.sitePanel(s))
 	}
 	return b.String()
 }
 
-func pad(s string, w int) string {
-	// rough width pad ignoring ansi (display width close enough)
-	plain := lipgloss.Width(s)
-	if plain >= w {
-		return s
+// sitePanel holds what a table column would have had to truncate: the real
+// URLs, the credentials, where it lives, how big it got.
+func (m *model) sitePanel(s *Site) string {
+	rows := [][2]string{
+		{"open", BareURL(s) + stDim.Render("   "+s.SURL())},
+		{"db", s.DBName + stDim.Render("  as ") + s.DBUser + stDim.Render(fmt.Sprintf("  127.0.0.1:%d", DefaultDBPort))},
+		{"files", shortHome(s.WPDir) + stDim.Render("   "+m.siteSize(s.Slug))},
 	}
-	return s + strings.Repeat(" ", w-plain)
+	// Credentials only exist for sites we installed; an adopted folder keeps
+	// whatever admin it already had, and inventing a blank pair reads as data.
+	if s.AdminUser != "" {
+		rows = append(rows[:1], append([][2]string{
+			{"admin", BareURL(s) + "/wp-admin" + stDim.Render("   "+s.AdminUser+" / "+s.AdminPass)},
+		}, rows[1:]...)...)
+	}
+	if wts := m.store.WorktreesFor(s.Slug); len(wts) > 0 {
+		names := make([]string, 0, len(wts))
+		for _, w := range wts {
+			names = append(names, w.Branch+stDim.Render(" → "+BareDomainURL(w.Domain)))
+		}
+		rows = append(rows, [2]string{"preview", strings.Join(names, stDim.Render(", "))})
+	}
+	var body strings.Builder
+	for i, r := range rows {
+		if i > 0 {
+			body.WriteString("\n")
+		}
+		body.WriteString(stLabel.Render(r[0]) + "  " + r[1])
+	}
+	return stPanel.Width(tableWidth).Render(body.String())
 }
 
 func (m model) viewWorktrees() string {
 	site := m.currentSite()
 	if site == nil {
-		return stDim.Render("create a site first (Sites tab, press n)")
+		return stDim.Render("  No sites yet — create one on the Sites tab first.")
 	}
 	wts := m.store.WorktreesFor(site.Slug)
 	var b strings.Builder
-	b.WriteString(stDim.Render("worktrees of "+site.Slug+"  (a=add, s=start, x=stop, D=remove)") + "\n")
+	b.WriteString("  " + stDim.Render("branch previews of ") + stRow.Render(site.Slug) + "\n\n")
 	if len(wts) == 0 {
-		return b.String() + stDim.Render("none — press a to add a branch")
+		return b.String() + stDim.Render("  None. Press ") + stKey.Render("a") + stDim.Render(" to serve a branch on its own domain.")
 	}
+	b.WriteString("    " + stHead.Render(fmt.Sprintf("%-24s %-34s %s", "BRANCH", "DOMAIN", "CHECKOUT")) + "\n")
 	for i, w := range wts {
-		state := stStop.Render("stopped")
-		if m.engine.FPMRunning(w.ID) {
-			state = stRun.Render("running")
-		}
-		row := fmt.Sprintf("%-24s %s  http://%s:%d  %s", w.Branch, pad(state, 9), w.Domain, DefaultHTTPPort, w.Path)
-		if i == m.cursor {
-			row = stSel.Render("▸ " + row)
-		} else {
-			row = "  " + row
-		}
-		b.WriteString(row + "\n")
+		body := fmt.Sprintf("%-24s %-34s", trunc(w.Branch, 24), trunc(w.Domain, 34)) + " " + stDim.Render(shortHome(w.Path))
+		live := m.engine.FPMRunning(w.ID)
+		b.WriteString(rowFor(live, i == m.cursor, lamp(live)+" ", body) + "\n")
 	}
 	return b.String()
 }
 
 func (m model) viewRuntimes() string {
-	var b strings.Builder
 	inv := m.store.Inventory()
-	b.WriteString(stDim.Render("PHP toolchains (i=install new)") + "\n")
+	var b strings.Builder
+	b.WriteString("  " + stHead.Render("PHP") + "\n")
+	inUse := m.phpInUse()
 	for i, rt := range inv.PHPs {
-		fpm := "no-fpm"
+		// Pad the plain strings, then colour: %-10s counts escape bytes as
+		// width, so styling before padding shifts every later column.
+		note := "cli only"
 		if rt.FPM != "" {
-			fpm = "fpm ✓"
+			note = "fpm"
 		}
-		row := fmt.Sprintf("php %-6s %-8s %s  %s", rt.Version, fpm, rt.Source, rt.Bin)
-		if i == m.cursor {
-			row = stSel.Render("▸ " + row)
-		} else {
-			row = "  " + row
+		if inUse[rt.Version] {
+			note = "serving"
 		}
-		b.WriteString(row + "\n")
+		body := fmt.Sprintf("%-8s %-10s", rt.Version, note) + " " + stDim.Render(shortHome(rt.Bin))
+		b.WriteString(rowFor(inUse[rt.Version], i == m.cursor, lamp(inUse[rt.Version])+" ", body) + "\n")
 	}
-	b.WriteString("\n" + stDim.Render("database") + "\n")
+	b.WriteString("\n  " + stHead.Render("SERVICES") + "\n")
+	svc := func(on bool, name, detail string) {
+		b.WriteString(row(false, lamp(on)+" ", fmt.Sprintf("%-10s", name)+" "+stDim.Render(detail)) + "\n")
+	}
 	if inv.MySQL.Bin == "" {
-		b.WriteString(stErr.Render("  none installed — press m to install MariaDB") + "\n")
+		b.WriteString(row(false, lampFor("fail")+" ", fmt.Sprintf("%-10s", "database")+" "+stDim.Render("not installed — press m")) + "\n")
 	} else {
-		b.WriteString(fmt.Sprintf("  %s %s  %s\n", inv.MySQL.Kind, inv.MySQL.Version, stateWord(m.engine.DBRunning())))
+		svc(m.health.db, inv.MySQL.Kind, fmt.Sprintf("%s   port %d", inv.MySQL.Version, DefaultDBPort))
 	}
-	b.WriteString("\n" + stDim.Render("http front") + "\n")
-	if inv.HTTP.Bin != "" {
-		b.WriteString(fmt.Sprintf("  apache %s (h=reinstall)\n", inv.HTTP.Version))
-	} else {
-		b.WriteString("  built-in router (Go FastCGI vhost proxy) — press h to install Apache alternative\n")
+	front := m.health.front
+	if front == "" {
+		front = "router"
 	}
-	if inv.Brew == "" {
-		b.WriteString("\n" + stErr.Render("homebrew missing — press b to install") + "\n")
-	} else {
-		b.WriteString("\n" + stDim.Render("homebrew: "+inv.Brew) + "\n")
+	detail := fmt.Sprintf("built-in Go vhost proxy   ports %d/%d", DefaultHTTPPort, DefaultHTTPSPort)
+	if front == "apache" {
+		detail = fmt.Sprintf("apache %s   ports %d/%d", inv.HTTP.Version, DefaultHTTPPort, DefaultHTTPSPort)
 	}
+	svc(m.health.http, front, detail)
+	svc(inv.Brew != "", "homebrew", orDash(shortHome(inv.Brew), "missing — press b"))
 	return b.String()
-}
-
-func stateWord(on bool) string {
-	if on {
-		return stRun.Render("running")
-	}
-	return stStop.Render("stopped")
 }
 
 func (m model) viewDoctor() string {
@@ -679,47 +844,104 @@ func (m model) viewDoctor() string {
 		m.doctor = Doctor(m.store)
 	}
 	var b strings.Builder
-	b.WriteString(stDim.Render("health checks (r=re-run, f=auto-fix)") + "\n")
+	var warn, fail int
 	for _, f := range m.doctor.Findings {
-		icon := stOK.Render("✓")
-		if f.Status == "warn" {
-			icon = stWarn.Render("!")
-		} else if f.Status == "fail" {
-			icon = stErr.Render("✗")
+		switch f.Status {
+		case "warn":
+			warn++
+		case "fail":
+			fail++
 		}
-		line := fmt.Sprintf(" %s %-14s %s", icon, f.Check, f.Detail)
+	}
+	summary := stOK.Render(fmt.Sprintf("%d checks pass", len(m.doctor.Findings)-warn-fail))
+	if warn > 0 {
+		summary += stDim.Render("  ") + stWarn.Render(fmt.Sprintf("%d warn", warn))
+	}
+	if fail > 0 {
+		summary += stDim.Render("  ") + stErr.Render(fmt.Sprintf("%d fail", fail))
+	}
+	b.WriteString("  " + summary + "\n\n")
+	// Width the name column to the longest check rather than a guess: names run
+	// from "dns" to "site:muster-import-test", and a fixed 12 shoved half the
+	// details out of line.
+	nameW := 8
+	for _, f := range m.doctor.Findings {
+		if n := lipgloss.Width(f.Check); n > nameW {
+			nameW = n
+		}
+	}
+	if nameW > 24 {
+		nameW = 24
+	}
+	for _, f := range m.doctor.Findings {
+		detail := f.Detail
+		if f.Status == "ok" {
+			detail = stDim.Render(detail) // failures should be the loud ones
+		}
+		line := fmt.Sprintf("%-*s", nameW, trunc(f.Check, nameW)) + "  " + detail
+		b.WriteString(row(false, lampFor(f.Status)+" ", line))
 		if f.Status != "ok" && f.FixCmd != "" {
-			line += "  " + stDim.Render("fix: "+f.FixCmd)
+			b.WriteString("\n" + strings.Repeat(" ", 4) + stDim.Render("fix: "+f.FixCmd))
 		}
-		b.WriteString(line + "\n")
+		b.WriteString("\n")
 	}
 	return b.String()
 }
 
-func (m model) viewStatus() string {
-	e := m.engine
-	parts := []string{
-		"db " + stateWord(e.DBRunning()),
-		"http:" + fmt.Sprint(DefaultHTTPPort) + " " + stateWord(portOpen(DefaultHTTPPort)),
-		"https:" + fmt.Sprint(DefaultHTTPSPort) + " " + stateWord(portOpen(DefaultHTTPSPort)),
-		fmt.Sprintf("%d sites", len(m.sites)),
-	}
-	return stStatus.Render(strings.Join(parts, "  ·  "))
-}
-
-func (m model) viewHelp() string {
-	var help string
+// viewFooter lists only the keys that do something on this tab, with the
+// universal ones parked on the right where they stop competing for attention.
+func (m model) viewFooter(w int) string {
+	var keys [][2]string
 	switch m.tab {
 	case tabSites:
-		help = "n new  s start  x stop  R restart  p php  d domain  D delete  o open  tab switch  q quit"
+		keys = [][2]string{{"n", "new"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"},
+			{"o", "open"}, {"p", "php"}, {"d", "domain"}, {"D", "delete"}}
 	case tabWorktrees:
-		help = "a add branch  s start  x stop  D remove  tab switch  q quit"
+		keys = [][2]string{{"a", "add branch"}, {"s", "start"}, {"x", "stop"}, {"D", "remove"}}
 	case tabRuntimes:
-		help = "i install php  m mariadb  h apache  b brew  tab switch  q quit"
+		keys = [][2]string{{"i", "install php"}, {"m", "mariadb"}, {"h", "apache"}, {"b", "homebrew"}}
 	case tabDoctor:
-		help = "r re-run  f auto-fix  tab switch  q quit"
+		keys = [][2]string{{"r", "re-run"}, {"f", "fix what can be fixed"}}
 	}
-	return stDim.Render(help)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, stKey.Render(k[0])+" "+stDim.Render(k[1]))
+	}
+	left := "  " + strings.Join(parts, stDim.Render(" · "))
+	right := stKey.Render("⇥") + stDim.Render(" tab") + stDim.Render(" · ") + stKey.Render("q") + stDim.Render(" quit")
+	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 2 {
+		return left + "\n  " + right
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// trunc keeps a column a column: an over-long value loses its tail to an
+// ellipsis rather than shoving every column to its right.
+func trunc(s string, w int) string {
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	if w <= 1 {
+		return "…"
+	}
+	return s[:w-1] + "…"
+}
+
+// shortHome trades the home prefix for ~, which is the difference between a
+// path that fits on the line and one that does not.
+func shortHome(p string) string {
+	if h, err := os.UserHomeDir(); err == nil && strings.HasPrefix(p, h) {
+		return "~" + strings.TrimPrefix(p, h)
+	}
+	return p
+}
+
+func orDash(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 // runTUI starts the bubbletea program.
@@ -728,4 +950,34 @@ func runTUI() {
 	if _, err := p.Run(); err != nil {
 		fmt.Println("tui error:", err)
 	}
+}
+
+// renderFrame prints a single frame and exits. Alignment bugs in a TUI are
+// invisible until something renders it at a known width, and a PTY harness
+// cannot report one — so this is how the layout gets checked.
+//
+//	agent-local tui --frame 120 --tab doctor
+func renderFrame(args []string) error {
+	// lipgloss strips colour when stdout is not a terminal, which would make a
+	// piped frame useless for reviewing the palette — force a profile so the
+	// escapes are there to look at.
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	w := 100
+	if v := flagValue(args, "--frame"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 20 {
+			w = n
+		}
+	}
+	m := initialModel()
+	m.width, m.height = w, 40
+	switch flagValue(args, "--tab") {
+	case "worktrees":
+		m.tab = tabWorktrees
+	case "runtimes":
+		m.tab = tabRuntimes
+	case "doctor":
+		m.tab = tabDoctor
+	}
+	fmt.Println(m.View())
+	return nil
 }

@@ -63,7 +63,11 @@ func main() {
 	var err error
 	switch cmd {
 	case "tui":
-		runTUI()
+		if hasFlag(args, "--frame") {
+			err = renderFrame(args)
+		} else {
+			runTUI()
+		}
 	case "create":
 		err = cmdCreate(rest)
 	case "list", "ls":

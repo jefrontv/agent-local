@@ -82,6 +82,40 @@ agent-local list                          # every site, state, URL
 Admin credentials are printed at the end of `create` and stored in state
 (`agent-local db mysite` for DB creds, `get_site` for everything).
 
+## The dashboard
+
+`agent-local` with no arguments opens the panel:
+
+```
+agent-local 0.4.0   6 sites                    db ●:10360  router ●:1080  tls ●:10443  api ●:10809
+  Sites   Worktrees   Runtimes   Doctor
+  ─────
+
+    SITE                 PHP   DOMAIN                         PREVIEWS
+▌ ● freshdemo            8.2   freshdemo.test
+  ● muster-demo          8.2   muster-demo.test
+  ● sulo                 8.2   sulo.pact                             1
+
+╭──────────────────────────────────────────────────────────────────╮
+│    open  http://freshdemo.test   https://freshdemo.test:10443    │
+│      db  al_freshdemo  as al_freshdemo  127.0.0.1:10360          │
+│   files  ~/.agent-local/sites/freshdemo/wp   137M                │
+╰──────────────────────────────────────────────────────────────────╯
+  n new · s start · x stop · R restart · o open · p php · d domain · D delete    ⇥ tab · q quit
+```
+
+One dot per row, green when that thing is serving and grey when it is parked —
+the same lamp in the header for the stack itself, on Runtimes for which PHP is
+actually in use, and on Doctor for each check. Parked rows dim so a long list
+reads at a glance. Keys are listed per tab at the bottom; `⇥` cycles tabs.
+
+Rendering one frame without opening the UI (for design work, or to check a layout
+in CI):
+
+```sh
+agent-local tui --frame 120 --tab doctor
+```
+
 ## Zero prompts (recommended, one-time)
 
 ```sh
@@ -356,7 +390,8 @@ Both fronts serve every site and preview on the same ports; switch any time with
 ## CLI reference
 
 ```
-agent-local                            TUI
+agent-local                            open the dashboard
+agent-local tui [--frame W] [--tab T]  print one frame (design/debug)
 agent-local create NAME [--domain d] [--php v] [--repo url]
                        [--admin-user u] [--admin-pass p] [--admin-email e] [--title t]
 agent-local list | start SLUG | stop SLUG | restart SLUG | open SLUG
