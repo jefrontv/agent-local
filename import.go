@@ -50,9 +50,18 @@ type LocalWPSite struct {
 }
 
 // Socket returns the site's MySQL unix socket if it exists on disk.
-func (s LocalWPSite) Socket() string {
+func (s LocalWPSite) Socket() string { return localWPSocketFor(s.ID) }
+
+// localWPSocketFor is the socket a site's mysqld listens on, once it is running.
+// A halted site has none, so this has to be asked again after starting one —
+// resolving it only up front left the dump talking TCP, which LocalWP's MySQL
+// rejects with "host is not allowed to connect".
+func localWPSocketFor(id string) string {
+	if id == "" {
+		return ""
+	}
 	for _, name := range []string{"mysqld.sock", "mysql.sock"} {
-		p := filepath.Join(HomeDir(), "Library", "Application Support", "Local", "run", s.ID, "mysql", name)
+		p := filepath.Join(HomeDir(), "Library", "Application Support", "Local", "run", id, "mysql", name)
 		if fileExists(p) {
 			return p
 		}
@@ -111,7 +120,7 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 	var docroot string
 	var srcDBName, srcHost, srcUser, srcPass, srcSocket string
 	var srcPort int
-	var lwName string
+	var lwName, lwID string
 
 	if sites, err := ListLocalWPSites(); err == nil {
 		for _, s := range sites {
@@ -125,7 +134,7 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 			if s.Name != o.Source && s.ID != o.Source && !byPath {
 				continue
 			}
-			lwName = s.Name
+			lwName, lwID = s.Name, s.ID
 			docroot = filepath.Join(s.Path, "app", "public")
 			srcUser, srcPass = s.MySQL.User, s.MySQL.Password
 			if srcUser == "" {
@@ -157,6 +166,19 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 	}
 	if !fileExists(filepath.Join(docroot, "wp-load.php")) {
 		return nil, fmt.Errorf("no WordPress at %s (missing wp-load.php)", docroot)
+	}
+
+	// A halted LocalWP site has no mysqld, so the dump would fail with a bare
+	// "can't connect" and leave the user to work out that they had to press Start.
+	// Ask Local to start it and wait, unless this import never touches the source
+	// database anyway.
+	needsSourceDB := !o.ServeOnly && o.SQLDump == ""
+	if needsSourceDB && lwID != "" {
+		sock, err := ensureLocalWPRunning(lwID, lwName, srcSocket, srcHost, srcPort, cb)
+		if err != nil {
+			return nil, err
+		}
+		srcSocket = sock
 	}
 
 	// Source connection: explicit flags win, else read the docroot's own

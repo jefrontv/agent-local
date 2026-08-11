@@ -165,3 +165,111 @@ func TestSavePreservesUnknownFields(t *testing.T) {
 		t.Error("our own change was not written")
 	}
 }
+
+// The loss this replaced: a process whose in-memory copy is missing a site must
+// never take that as an instruction to delete it. Only DelSite means delete.
+func TestStaleWriterCannotEraseRecords(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	seed, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, slug := range []string{"keeper", "other"} {
+		seed.Data.Sites[slug] = &Site{Slug: slug, Domain: slug + ".test"}
+	}
+	if err := seed.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	stale, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate any way an in-memory copy can end up short of the file: a partial
+	// rebuild, a bug, a reload that raced. No DelSite was called.
+	delete(stale.Data.Sites, "keeper")
+	stale.Data.Sites["added"] = &Site{Slug: "added", Domain: "added.test"}
+	if err := stale.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, _ := OpenStore()
+	if _, ok := fresh.Data.Sites["keeper"]; !ok {
+		t.Error("keeper was erased by a writer that never asked to delete it")
+	}
+	if _, ok := fresh.Data.Sites["added"]; !ok {
+		t.Error("the writer's own addition was lost")
+	}
+}
+
+// And the intended path still works: DelSite deletes, even against a file that
+// has moved on.
+func TestDelSiteStillDeletes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	seed, _ := OpenStore()
+	seed.Data.Sites["doomed"] = &Site{Slug: "doomed", Domain: "doomed.test"}
+	seed.Data.Sites["safe"] = &Site{Slug: "safe", Domain: "safe.test"}
+	if err := seed.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	deleter, _ := OpenStore()
+	// Another process adds a site in the meantime.
+	other, _ := OpenStore()
+	other.Data.Sites["late"] = &Site{Slug: "late", Domain: "late.test"}
+	if err := other.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	deleter.DelSite("doomed")
+	if err := deleter.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, _ := OpenStore()
+	if _, ok := fresh.Data.Sites["doomed"]; ok {
+		t.Error("DelSite did not delete")
+	}
+	for _, want := range []string{"safe", "late"} {
+		if _, ok := fresh.Data.Sites[want]; !ok {
+			t.Errorf("%s was collateral damage", want)
+		}
+	}
+}
+
+// Worktrees follow the same rule.
+func TestWorktreeDeletionIsExplicit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	seed, _ := OpenStore()
+	seed.Data.Worktrees["a--x"] = &Worktree{ID: "a--x", Site: "a", Branch: "x"}
+	seed.Data.Worktrees["a--y"] = &Worktree{ID: "a--y", Site: "a", Branch: "y"}
+	if err := seed.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	stale, _ := OpenStore()
+	delete(stale.Data.Worktrees, "a--x") // not via DelWorktree
+	if err := stale.Save(); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _ := OpenStore()
+	if _, ok := fresh.Data.Worktrees["a--x"]; !ok {
+		t.Error("a worktree was erased without DelWorktree")
+	}
+
+	real, _ := OpenStore()
+	real.DelWorktree("a--y")
+	if err := real.Save(); err != nil {
+		t.Fatal(err)
+	}
+	fresh2, _ := OpenStore()
+	if _, ok := fresh2.Data.Worktrees["a--y"]; ok {
+		t.Error("DelWorktree did not delete")
+	}
+}

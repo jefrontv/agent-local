@@ -82,6 +82,24 @@ agent-local list                          # every site, state, URL
 Admin credentials are printed at the end of `create` and stored in state
 (`agent-local db mysite` for DB creds, `get_site` for everything).
 
+### Importing a halted site
+
+`agent-local import <localwp-site>` no longer needs the site to be running. If its
+database is unreachable, agent-local asks Local to start it through the app's own
+API, waits for mysqld, and dumps through the per-site socket that only exists once
+the site is up:
+
+```
+[source] seo-website-auditor is not running — asking LocalWP to start it
+[source] seo-website-auditor is up
+[files]  copying docroot → ~/.agent-local/sites/lwtest/wp
+[database] dumping local from …/Local/run/a9HNIy28u/mysql/mysqld.sock
+```
+
+Local has to be open — it owns those services. When it is not, or the site fails
+to come up, the error says which of the two it was and what to do by hand rather
+than surfacing a bare "can't connect to MySQL".
+
 ## Sharing a machine with LocalWP
 
 Bare URLs need `:80`/`:443`, and so does every other local-dev tool. agent-local

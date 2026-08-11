@@ -23,7 +23,10 @@ type Store struct {
 	// base is the document as last loaded or written: the common ancestor a save
 	// diffs against, so only this process's own changes are pushed to disk.
 	base []byte
-	Data storeData
+	// deleted records removals this process asked for, per collection. Absence
+	// from memory is never enough to delete another process's record.
+	deleted map[string]map[string]bool
+	Data    storeData
 }
 
 type storeData struct {
@@ -118,8 +121,10 @@ func (s *Store) Save() error {
 		return err
 	}
 	s.loadedAt = fileModTime(s.path)
-	// What we just wrote is the new common ancestor for the next save.
+	// What we just wrote is the new common ancestor for the next save, and its
+	// deletions are now on disk.
 	s.base = s.snapshot()
+	s.deleted = nil
 	return nil
 }
 
@@ -135,7 +140,7 @@ func (s *Store) mergedBytes() ([]byte, error) {
 		// Nothing to merge with (first write, or the file went away).
 		return json.MarshalIndent(s.Data, "", "  ")
 	}
-	merged, err := mergeStore(s.base, mine, onDisk)
+	merged, err := mergeStore(s.base, mine, onDisk, s.deleted)
 	if err != nil {
 		// A merge we cannot reason about must not lose this process's work:
 		// fall back to our own document rather than writing nothing.
@@ -164,7 +169,7 @@ func (s *Store) snapshot() []byte {
 // A field this process changed wins. Anything else keeps the disk value. The two
 // object maps (sites, worktrees) merge per entry, so one process adding a site
 // while another deletes a different one keeps both intentions.
-func mergeStore(base, mine, disk []byte) ([]byte, error) {
+func mergeStore(base, mine, disk []byte, deleted map[string]map[string]bool) ([]byte, error) {
 	var b, m, d map[string]json.RawMessage
 	if err := json.Unmarshal(mine, &m); err != nil {
 		return nil, err
@@ -186,7 +191,7 @@ func mergeStore(base, mine, disk []byte) ([]byte, error) {
 	for k, mv := range m {
 		switch k {
 		case "sites", "worktrees":
-			merged, err := mergeEntries(b[k], mv, d[k])
+			merged, err := mergeEntries(b[k], mv, d[k], deleted[k])
 			if err != nil {
 				return nil, err
 			}
@@ -203,7 +208,7 @@ func mergeStore(base, mine, disk []byte) ([]byte, error) {
 }
 
 // mergeEntries merges one keyed object (sites or worktrees) entry by entry.
-func mergeEntries(base, mine, disk json.RawMessage) (json.RawMessage, error) {
+func mergeEntries(base, mine, disk json.RawMessage, deleted map[string]bool) (json.RawMessage, error) {
 	b, m, d := map[string]json.RawMessage{}, map[string]json.RawMessage{}, map[string]json.RawMessage{}
 	for raw, dst := range map[*json.RawMessage]*map[string]json.RawMessage{
 		&base: &b, &mine: &m, &disk: &d,
@@ -224,11 +229,10 @@ func mergeEntries(base, mine, disk json.RawMessage) (json.RawMessage, error) {
 			out[k] = mv // added or changed here
 		}
 	}
-	// Entries this process deleted: present in the ancestor, gone from ours.
-	for k := range b {
-		if _, still := m[k]; !still {
-			delete(out, k)
-		}
+	// Only removals this process actually asked for. Inferring them from absence
+	// meant a stale snapshot could erase live records.
+	for k := range deleted {
+		delete(out, k)
 	}
 	return json.Marshal(out)
 }
@@ -293,7 +297,14 @@ func (s *Store) FindSiteByDomain(domain string) *Site {
 func (s *Store) PutSite(site *Site) { s.Data.Sites[site.Slug] = site }
 
 // DelSite removes a site row.
-func (s *Store) DelSite(slug string) { delete(s.Data.Sites, slug) }
+// DelSite removes a site and records that this process meant to. Merging used to
+// infer deletions from "present when loaded, absent now", which turned any stale
+// in-memory copy into a delete order: records vanished while their database,
+// hosts entry and pool config stayed behind. Intent is now explicit.
+func (s *Store) DelSite(slug string) {
+	delete(s.Data.Sites, slug)
+	s.markDeleted("sites", slug)
+}
 
 // WorktreesFor returns worktrees of a site sorted by branch.
 func (s *Store) WorktreesFor(slug string) []*Worktree {
@@ -311,7 +322,23 @@ func (s *Store) WorktreesFor(slug string) []*Worktree {
 func (s *Store) PutWorktree(w *Worktree) { s.Data.Worktrees[w.ID] = w }
 
 // DelWorktree removes a worktree row.
-func (s *Store) DelWorktree(id string) { delete(s.Data.Worktrees, id) }
+// DelWorktree removes a worktree, recording the intent for the same reason.
+func (s *Store) DelWorktree(id string) {
+	delete(s.Data.Worktrees, id)
+	s.markDeleted("worktrees", id)
+}
+
+// markDeleted notes a deletion this process performed, so a merge can apply it
+// without guessing. Callers hold no lock; the map is only read while saving.
+func (s *Store) markDeleted(kind, key string) {
+	if s.deleted == nil {
+		s.deleted = map[string]map[string]bool{}
+	}
+	if s.deleted[kind] == nil {
+		s.deleted[kind] = map[string]bool{}
+	}
+	s.deleted[kind][key] = true
+}
 
 // NextPorts scans sites for free http/https port pairs.
 func (s *Store) NextPorts() (int, int) {
