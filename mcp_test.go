@@ -111,6 +111,68 @@ func TestToolsAreWellFormed(t *testing.T) {
 	}
 }
 
+// Every tool's inputSchema has to be valid JSON Schema on the wire. A nil Go map
+// marshals to null, and a client that validates rejects the entire tools/list —
+// which presents as "connected · tools fetch failed" with no capabilities, not as
+// one bad tool. Checked after marshalling, because from Go the nil looks fine.
+func TestToolSchemasAreValidJSON(t *testing.T) {
+	raw, err := json.Marshal(mcpTools())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tools []struct {
+		Name        string          `json:"name"`
+		InputSchema json.RawMessage `json:"inputSchema"`
+	}
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools {
+		var s map[string]json.RawMessage
+		if err := json.Unmarshal(tool.InputSchema, &s); err != nil {
+			t.Errorf("%s: schema is not an object: %v", tool.Name, err)
+			continue
+		}
+		if string(s["type"]) != `"object"` {
+			t.Errorf("%s: type = %s, want \"object\"", tool.Name, s["type"])
+		}
+		props, ok := s["properties"]
+		if !ok || string(props) == "null" {
+			t.Errorf("%s: properties must be an object, got %s", tool.Name, props)
+		} else if !strings.HasPrefix(string(props), "{") {
+			t.Errorf("%s: properties is not an object: %s", tool.Name, props)
+		}
+		// required may be absent, but never null, and never empty-but-present.
+		if req, present := s["required"]; present {
+			if string(req) == "null" || string(req) == "[]" {
+				t.Errorf("%s: required is present but %s — omit it instead", tool.Name, req)
+			} else if !strings.HasPrefix(string(req), "[") {
+				t.Errorf("%s: required is not an array: %s", tool.Name, req)
+			}
+		}
+	}
+}
+
+// Tools that take no arguments are the ones that regressed: their schema must
+// still be a usable object.
+func TestArgumentlessToolSchema(t *testing.T) {
+	s := schema(nil)
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	if strings.Contains(got, "null") {
+		t.Errorf("schema(nil) = %s, must contain no nulls", got)
+	}
+	if !strings.Contains(got, `"properties":{}`) {
+		t.Errorf("schema(nil) = %s, want an empty properties object", got)
+	}
+	if strings.Contains(got, "required") {
+		t.Errorf("schema(nil) = %s, should omit required entirely", got)
+	}
+}
+
 // The config a client pastes must name a real absolute binary and the mcp
 // subcommand, or it fails on first launch with nothing to explain it.
 func TestClientConfigIsUsable(t *testing.T) {

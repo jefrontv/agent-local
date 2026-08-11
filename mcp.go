@@ -153,8 +153,19 @@ func mcpHandle(req *mcpReq) *mcpResp {
 	}
 }
 
+// schema builds a tool's input schema. properties is always an object and
+// required is omitted when empty: a nil map marshals to `null`, and a client that
+// validates its side of the protocol rejects the whole tools/list over it — the
+// server showed as connected with "tools fetch failed" and no capabilities.
 func schema(props map[string]interface{}, required ...string) map[string]interface{} {
-	return map[string]interface{}{"type": "object", "properties": props, "required": required}
+	if props == nil {
+		props = map[string]interface{}{}
+	}
+	out := map[string]interface{}{"type": "object", "properties": props}
+	if len(required) > 0 {
+		out["required"] = required
+	}
+	return out
 }
 
 func prop(t, desc string) map[string]interface{} {
