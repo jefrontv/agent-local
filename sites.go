@@ -643,6 +643,14 @@ func (e *Engine) SetDomain(slug, domain string) error {
 		return err
 	}
 	_, _ = EnsureHosts(e.HostsInteractive, []string{domain})
+	// The name we just left behind would otherwise keep resolving to us forever,
+	// so /etc/hosts grows a dead entry per rename — and the old address still
+	// answers, which is worse than not resolving at all.
+	if old != "" && old != domain && e.Store.DomainFree(old) {
+		if err := RemoveHosts(e.HostsInteractive, []string{old}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not remove the old %s hosts entry: %v\n", old, err)
+		}
+	}
 	if cert, _, created, err := EnsureCert(domain); err == nil && created {
 		_ = TrustCert(cert, false)
 	}
@@ -650,7 +658,29 @@ func (e *Engine) SetDomain(slug, domain string) error {
 		_ = e.StopSite(slug)
 		_ = e.StartSite(slug)
 	}
+	// WordPress stores its own URLs, so a rename that stops here leaves every
+	// request redirecting straight back to the old domain — the new one only looks
+	// like it does not work. Rewrite them the way an import does.
+	if old != "" && old != domain {
+		e.rewriteSiteURLs(site, old, domain)
+	}
 	return nil
+}
+
+// rewriteSiteURLs points the site's stored URLs at a new domain. Best-effort:
+// a site whose database is unreachable still gets the rename, and says so.
+func (e *Engine) rewriteSiteURLs(site *Site, old, domain string) {
+	if err := e.EnsureDB(); err != nil {
+		return
+	}
+	for _, scheme := range []string{"https://", "http://"} {
+		if out, err := wpCLI(site, "search-replace", scheme+old, scheme+domain,
+			"--all-tables", "--skip-columns=guid"); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not rewrite %s URLs in the database: %s\n", scheme+old, tail(out, 160))
+		}
+	}
+	// A theme or wp-config constant can pin the old domain just as hard.
+	rewriteWPConfigDomains(filepath.Join(site.WPDir, "wp-config.php"), map[string]bool{old: true}, domain)
 }
 
 // ---------- Worktrees ----------

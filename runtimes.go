@@ -9,10 +9,56 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // PHPVersions the app knows how to install via Homebrew.
 var PHPVersions = []string{"7.4", "8.0", "8.1", "8.2", "8.3", "8.4"}
+
+// inventoryTTL is how long a scan is trusted. Toolchains change when someone runs
+// brew, not between two commands, so re-running `php -v` on every invocation was
+// paying ~700ms to learn what the store already knew.
+const inventoryTTL = 24 * time.Hour
+
+// EnsureInventory fills the store's Inventory, reusing the persisted scan when it
+// is still true. Validity is checked with stat calls (microseconds) rather than by
+// executing every toolchain (90ms each): if a recorded binary is gone, or the scan
+// is old, it rescans and persists the result so the next command is cheap.
+func EnsureInventory(s *Store) {
+	if inventoryFresh(s.Inventory()) {
+		return
+	}
+	DiscoverInventory(s)
+	s.Inventory().Refresh = time.Now()
+	// Persist so the cost is paid once, not by whoever runs the next command.
+	_ = s.Save()
+}
+
+// inventoryFresh reports whether the recorded scan can still be believed.
+func inventoryFresh(inv *Inventory) bool {
+	if len(inv.PHPs) == 0 || inv.Refresh.IsZero() || time.Since(inv.Refresh) > inventoryTTL {
+		return false
+	}
+	// Everything it claims exists must still exist; a brew upgrade or uninstall
+	// moves these paths, and serving a site with a stale php path fails later in a
+	// much more confusing place.
+	for _, p := range inv.PHPs {
+		if p.Bin != "" && !fileExists(p.Bin) {
+			return false
+		}
+		if p.FPM != "" && !fileExists(p.FPM) {
+			return false
+		}
+	}
+	if inv.Brew != "" && !fileExists(inv.Brew) {
+		return false
+	}
+	if inv.MySQL.Bin != "" && !fileExists(inv.MySQL.Bin) {
+		return false
+	}
+	return true
+}
 
 // DiscoverInventory scans for brew, php toolchains, httpd, mysql engines
 // and fills the store's Inventory. Fast: no installs.
@@ -24,6 +70,7 @@ func DiscoverInventory(s *Store) {
 	if inv.MySQL.Kind == "" {
 		inv.MySQL = discoverMySQLEngine()
 	}
+	inv.Refresh = time.Now()
 }
 
 func brewPrefix(brew string) string {
@@ -48,8 +95,21 @@ func discoverPHPs(brew string) []Runtime {
 		for _, v := range PHPVersions {
 			cands = append(cands, filepath.Join(prefix, "opt", "php@"+v))
 		}
-		for _, dir := range cands {
-			rt := phpFromDir(dir, "homebrew")
+		// Each candidate costs a "php -v" (~90ms) and they know nothing about each
+		// other, so probe them at once: eight kegs took the wall time of eight.
+		found := make([]*Runtime, len(cands))
+		var wg sync.WaitGroup
+		for i, dir := range cands {
+			wg.Add(1)
+			go func(i int, dir string) {
+				defer wg.Done()
+				found[i] = phpFromDir(dir, "homebrew")
+			}(i, dir)
+		}
+		wg.Wait()
+		// Ordered by the candidate list, so the result does not depend on which
+		// goroutine finished first.
+		for _, rt := range found {
 			if rt != nil && !seen[rt.Version] {
 				seen[rt.Version] = true
 				rt.InstallCmd = fmt.Sprintf("brew install %s", phpFormula(rt.Version))

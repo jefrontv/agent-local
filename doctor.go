@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 // Finding is one doctor check result.
@@ -125,16 +126,47 @@ func Doctor(store *Store) *DoctorReport {
 		add(Finding{Check: "tls", Status: "ok", Detail: "certs present for all domains"})
 	}
 
-	// per-site liveness
-	for _, site := range store.Sites() {
-		if e.FPMRunning(site.Slug) {
-			code, err := httpProbeHost("http://127.0.0.1:"+fmt.Sprint(DefaultHTTPPort)+"/", site.Domain)
-			if err == nil && code < 500 {
-				add(Finding{Check: "site:" + site.Slug, Status: "ok", Detail: fmt.Sprintf("http %d", code)})
-			} else {
-				add(Finding{Check: "site:" + site.Slug, Status: "warn", Detail: "fpm up but probe failed"})
+	// per-site liveness. Each probe is a round trip to a different pool, so they
+	// run together and are reported in site order: eight sites took the wall time
+	// of eight, for a command whose whole job is to be quick to reach for.
+	{
+		sites := store.Sites()
+		results := make([]*Finding, len(sites))
+		var wg sync.WaitGroup
+		for i, site := range sites {
+			if !e.FPMRunning(site.Slug) {
+				continue
+			}
+			wg.Add(1)
+			go func(i int, site *Site) {
+				defer wg.Done()
+				code, err := httpProbeHost("http://127.0.0.1:"+fmt.Sprint(DefaultHTTPPort)+"/", site.Domain)
+				if err == nil && code < 500 {
+					results[i] = &Finding{Check: "site:" + site.Slug, Status: "ok", Detail: fmt.Sprintf("http %d", code)}
+					return
+				}
+				results[i] = &Finding{Check: "site:" + site.Slug, Status: "warn", Detail: "fpm up but probe failed"}
+			}(i, site)
+		}
+		wg.Wait()
+		for _, f := range results {
+			if f != nil {
+				add(*f)
 			}
 		}
+	}
+
+	// A ".local" domain is resolved by mDNS on macOS, not by /etc/hosts alone, and
+	// the AAAA lookup nothing answers costs five seconds — per request. It is not
+	// our latency to fix, but it is ours to name: measured, ta.local spent 5.00s in
+	// name lookup where a .test domain spent 0.009s.
+	for _, site := range store.Sites() {
+		if !strings.HasSuffix(site.Domain, ".local") {
+			continue
+		}
+		add(Finding{Check: "dns:" + site.Slug, Status: "warn",
+			Detail:  site.Domain + " ends in .local — macOS resolves that by mDNS, adding ~5s to every request",
+			FixHint: "rename it: agent-local domain " + site.Slug + " " + strings.TrimSuffix(site.Domain, ".local") + store.Suffix()})
 	}
 
 	// Two local-dev tools, one pair of privileged ports. Ours is bound to the

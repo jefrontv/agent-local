@@ -43,7 +43,7 @@ func RunDaemon(background bool) error {
 	if err != nil {
 		return err
 	}
-	DiscoverInventory(store)
+	EnsureInventory(store)
 	store.Save()
 
 	e := NewEngine(store)

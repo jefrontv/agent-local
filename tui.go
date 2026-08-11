@@ -173,7 +173,7 @@ func initialModel() model {
 		m.msgErr = true
 		return m
 	}
-	DiscoverInventory(store)
+	EnsureInventory(store)
 	m.store = store
 	m.engine = NewEngine(store)
 	m.refresh()

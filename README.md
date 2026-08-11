@@ -100,6 +100,47 @@ Local has to be open — it owns those services. When it is not, or the site fai
 to come up, the error says which of the two it was and what to do by hand rather
 than surfacing a bare "can't connect to MySQL".
 
+## Speed
+
+Commands are cheap because the toolchain scan is cached, not repeated. Discovery
+runs `php -v` per installed keg (~90ms each), which every command used to pay:
+
+| | before | now |
+|---|---|---|
+| `agent-local list` | 889ms | **28ms** |
+| `agent-local media <slug>` | 871ms | **20ms** |
+| TUI first frame | 601ms | **36ms** |
+| `doctor` (6 sites) | ~9s of serial probes | **1.7s** |
+
+The scan is stored with a timestamp and re-run when it stops being true — any
+recorded binary missing, or 24h old — so `brew install php@8.4` is picked up
+without a flag. `agent-local doctor --refresh` forces it. Per-site probes and keg
+probes both run concurrently.
+
+Serving itself is not the bottleneck: **2.9ms** for a static file, **4.6ms** for a
+cached PHP page through FastCGI.
+
+### Avoid `.local` domains on macOS
+
+`.local` is reserved for mDNS (RFC 6762), so macOS resolves those names through
+Bonjour rather than `/etc/hosts` alone — and the AAAA lookup nobody answers costs
+**five seconds per request**, before anything reaches agent-local:
+
+```
+ta.local      namelookup 5.015s      ← mDNS timeout
+ta.test       namelookup 0.016s
+```
+
+`doctor` flags any site on a `.local` domain and gives you the rename, which now
+rewrites the URLs stored in WordPress and drops the old hosts entry too:
+
+```sh
+agent-local domain mysite mysite.test
+```
+
+(LocalWP works around this by writing both an IPv6 and an IPv4 hosts line for each
+site. agent-local serves one alias address, so the honest fix is the suffix.)
+
 ## Sharing a machine with LocalWP
 
 Bare URLs need `:80`/`:443`, and so does every other local-dev tool. agent-local

@@ -310,7 +310,7 @@ func openEnv() (*Store, *Engine, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	DiscoverInventory(store)
+	EnsureInventory(store)
 	e := NewEngine(store)
 	e.HostsInteractive = true
 	return store, e, nil
