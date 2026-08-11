@@ -531,8 +531,12 @@ func apiPost(path string, body interface{}) (interface{}, bool) {
 // The API is what MCP talks to, and it lives in the daemon under either front.
 func EnsureRouterDaemonQuiet() {
 	if portOpen(DefaultAPIPort) {
+		// Already serving — but make sure a reboot brings it back without anyone
+		// having to run a command.
+		_ = EnsureDaemonAutostart()
 		return
 	}
+	_ = EnsureDaemonAutostart()
 	_ = spawnDaemon()
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {

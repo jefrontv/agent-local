@@ -136,14 +136,34 @@ func installFrontDaemon(interactive bool) error {
 	return RunPrivileged(interactive, "/bin/launchctl", "load", dst)
 }
 
-// BareURL is the URL a browser should use for a site: bare domain when the
-// 127.0.0.2 alias carries it, else the port-suffixed loopback URL.
+// BareURL is the URL a browser should use for a site: https, because every domain
+// we serve gets a certificate we generate and trust, so offering http would be
+// showing people the worse of two URLs we already support. Bare when the
+// 127.0.0.2 alias carries it, else port-suffixed.
 func BareURL(s *Site) string { return BareDomainURL(s.Domain) }
 
 // BareDomainURL is BareURL for any domain we serve (sites and worktrees).
 func BareDomainURL(domain string) string {
+	if !fileExists(certPathFor(domain)) {
+		// No certificate yet: https would fail outright, http merely redirects.
+		return httpDomainURL(domain)
+	}
+	if AliasActive() && hostsTarget(domain) == LoopbackAlias {
+		return "https://" + domain
+	}
+	return fmt.Sprintf("https://%s:%d", domain, DefaultHTTPSPort)
+}
+
+// httpDomainURL is the plain-http form, for the cases that genuinely need it.
+func httpDomainURL(domain string) string {
 	if AliasActive() && hostsTarget(domain) == LoopbackAlias {
 		return "http://" + domain
 	}
 	return fmt.Sprintf("http://%s:%d", domain, DefaultHTTPPort)
+}
+
+// certPathFor is the certificate we would have issued for a domain.
+func certPathFor(domain string) string {
+	cert, _ := CertPaths(domain)
+	return cert
 }

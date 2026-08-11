@@ -103,9 +103,40 @@ func waitForRival() {
 	log.Printf("front-daemon: nothing claimed :80 within %s — taking %s:80/443", startupGrace, LoopbackAlias)
 }
 
+// ensureAlias puts LoopbackAlias back on lo0. macOS does not persist ifconfig
+// aliases across a reboot, so after every restart the address this daemon exists
+// to serve was simply gone — it had nothing to bind, and every URL fell back to
+// :1080. We run as root here, so fixing it needs no prompt and no user action.
+func ensureAliasBound() bool {
+	if dialableAlias() {
+		return true
+	}
+	if out, err := runCmdOut("/sbin/ifconfig", "lo0", "alias", LoopbackAlias); err != nil {
+		log.Printf("front-daemon: could not add the %s alias: %v %s", LoopbackAlias, err, strings.TrimSpace(out))
+		return false
+	}
+	log.Printf("front-daemon: re-added the %s alias to lo0 (it does not survive a reboot)", LoopbackAlias)
+	return true
+}
+
+// dialableAlias reports whether lo0 already carries the alias.
+func dialableAlias() bool {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if ip, _, err := net.ParseCIDR(a.String()); err == nil && ip.String() == LoopbackAlias {
+			return true
+		}
+	}
+	return false
+}
+
 // supervise keeps the listeners in the right state forever: bound normally,
 // released while a competing router is starting up.
 func (f *frontDaemon) supervise() {
+	ensureAliasBound()
 	waitForRival()
 	f.bind()
 	var pausedAt time.Time
@@ -114,6 +145,15 @@ func (f *frontDaemon) supervise() {
 		switch {
 		case f.paused && yieldActive():
 			// explicitly requested: wait it out, however long it asked for
+		case !dialableAlias():
+			// The address we exist to serve is gone: a reboot clears lo0 aliases,
+			// and removing one does not close the sockets already bound to it — so
+			// we still "hold" listeners that can never accept anything. Put the
+			// alias back and rebuild them.
+			if ensureAliasBound() {
+				f.release()
+				f.bind()
+			}
 		case f.paused && !rivalStarting():
 			f.bind()
 		case f.paused && time.Since(pausedAt) > autoYieldMax:
@@ -122,8 +162,22 @@ func (f *frontDaemon) supervise() {
 		case !f.paused && rivalStarting():
 			f.release()
 			pausedAt = time.Now()
+		case !f.paused && !f.holding():
+			// Nothing bound and nobody asked us to stand aside: the first attempt
+			// failed. It used to stop there — a boot with no alias yet left the
+			// daemon idle forever, which is exactly how sites lost their bare URLs
+			// until someone ran a command.
+			ensureAliasBound()
+			f.bind()
 		}
 	}
+}
+
+// holding reports whether we currently have the listeners.
+func (f *frontDaemon) holding() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.held) > 0
 }
 
 func (f *frontDaemon) bind() {

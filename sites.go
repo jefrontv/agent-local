@@ -1128,11 +1128,20 @@ func (e *Engine) StartWorktree(id string) error {
 	if err := e.StartFPM(w.ID, e.wtServeDir(w), site.PHPVersion); err != nil {
 		return err
 	}
+	// Remember it was up, so a reboot can put it back.
+	w.State = StateRunning
+	if err := e.Store.Save(); err != nil {
+		return err
+	}
 	return EnsureHTTPFront(e.Store)
 }
 
 // StopWorktree stops a worktree's pool.
 func (e *Engine) StopWorktree(id string) error {
+	if w, ok := e.Store.Data.Worktrees[id]; ok {
+		w.State = StateStopped
+		_ = e.Store.Save()
+	}
 	return e.StopFPM(id)
 }
 

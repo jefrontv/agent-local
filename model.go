@@ -111,6 +111,9 @@ type Worktree struct {
 	Branch string `json:"branch"`
 	Path   string `json:"path"`
 	Domain string `json:"domain"`
+	// State is the last known liveness, so a reboot can put back exactly what was
+	// running. Worktrees used to persist nothing and always came back stopped.
+	State SiteState `json:"state,omitempty"`
 }
 
 // Inventory is the persisted runtime environment.

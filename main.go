@@ -32,6 +32,7 @@ USAGE
   agent-local cert DOMAIN [--trust]   TLS state for a domain
   agent-local db SLUG [sql|import F|export [F]|reset|tables]   database ops
   agent-local media SLUG [URL]       missing uploads -> origin (--auto reads .htaccess, --off)
+  agent-local autostart [--off]      start the daemon at login (on by default)
   agent-local sites-dir [PATH]       show/set where new sites are created
   agent-local suffix [.al]           show/set default domain suffix
   agent-local domain SLUG NAME   change site domain
@@ -129,6 +130,8 @@ func main() {
 		err = RunFrontDaemon(rest)
 	case "media":
 		err = cmdMedia(rest)
+	case "autostart":
+		err = cmdAutostart(rest)
 	case "sites-dir":
 		err = cmdSitesDir(rest)
 	case "suffix":
@@ -203,6 +206,22 @@ func atoi0(s string) int {
 	var n int
 	fmt.Sscanf(s, "%d", &n)
 	return n
+}
+
+// cmdAutostart installs or removes the login agent that brings the stack back
+// after a reboot.
+func cmdAutostart(args []string) error {
+	if hasFlag(args, "--off") {
+		RemoveDaemonAutostart()
+		fmt.Println("autostart off — the daemon will only run when something asks for it")
+		return nil
+	}
+	if err := EnsureDaemonAutostart(); err != nil {
+		return err
+	}
+	fmt.Println("autostart on: " + shortHome(daemonAgentPath()))
+	fmt.Println("sites that were running at shutdown come back with it")
+	return nil
 }
 
 // cmdMedia shows or sets where a site's missing uploads come from.

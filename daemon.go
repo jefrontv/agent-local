@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -37,8 +38,64 @@ func APIToken() (string, error) {
 	return tok, nil
 }
 
+// restoreRunning starts the pools for every site and worktree whose persisted
+// state says it was running. Returns how many came back.
+func restoreRunning(e *Engine, store *Store) int {
+	type target struct {
+		id, dir, php string
+	}
+	var want []target
+	for _, site := range store.Sites() {
+		if site.State == StateRunning && !e.FPMRunning(site.Slug) {
+			want = append(want, target{site.Slug, site.WPDir, site.PHPVersion})
+		}
+	}
+	for _, w := range store.Data.Worktrees {
+		site := store.Site(w.Site)
+		if site == nil || w.State != StateRunning || e.FPMRunning(w.ID) {
+			continue
+		}
+		want = append(want, target{w.ID, e.wtServeDir(w), site.PHPVersion})
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	started := 0
+	for _, t := range want {
+		wg.Add(1)
+		go func(t target) {
+			defer wg.Done()
+			if err := e.StartFPM(t.id, t.dir, t.php); err != nil {
+				log.Printf("fpm %s: %v", t.id, err)
+				return
+			}
+			mu.Lock()
+			started++
+			mu.Unlock()
+		}(t)
+	}
+	wg.Wait()
+	return started
+}
+
 // RunDaemon is the `daemon` entrypoint.
 func RunDaemon(background bool) error {
+	// A daemon already serving owns the ports. Wait rather than exit: exiting
+	// meant launchd (KeepAlive on failure only) never brought the login job back
+	// when that other instance later died, so a machine could end up with nothing
+	// serving and no way to notice. Standing by costs nothing and guarantees one
+	// instance is always ready to take the role.
+	if !background && portOpen(DefaultAPIPort) {
+		log.Printf("another agent-local daemon holds :%d — standing by to take over", DefaultAPIPort)
+		for portOpen(DefaultAPIPort) {
+			time.Sleep(2 * time.Second)
+		}
+		log.Printf("the other daemon is gone — taking over")
+	}
+	// Whoever starts the daemon also gets it started at login: after a reboot the
+	// stack used to stay down until someone happened to run a command.
+	if err := EnsureDaemonAutostart(); err != nil {
+		log.Printf("autostart: %v", err)
+	}
 	store, err := OpenStore()
 	if err != nil {
 		return err
@@ -48,25 +105,19 @@ func RunDaemon(background bool) error {
 
 	e := NewEngine(store)
 
-	// Start previously-running sites' pools.
-	for _, site := range store.Sites() {
-		if site.State == StateRunning {
-			if err := e.StartFPM(site.Slug, site.WPDir, site.PHPVersion); err != nil {
-				log.Printf("fpm %s: %v", site.Slug, err)
-			}
-		}
-	}
-	for _, w := range store.Data.Worktrees {
-		if e.FPMRunning(w.ID) {
-			continue
-		}
-		// worktrees don't persist state; leave stopped
-	}
-
-	// Residue from deletes that predate pool cleanup: sweep before starting
-	// pools, so php-fpm never parses a config naming a directory that is gone.
+	// Residue from deletes that predate pool cleanup: sweep before starting pools,
+	// so php-fpm never parses a config naming a directory that is gone. This used
+	// to run after the starts, contradicting its own comment.
 	if n := e.SweepOrphanPools(); n > 0 {
 		log.Printf("swept %d orphaned php-fpm pool config(s)", n)
+	}
+
+	// Bring back whatever was running before the machine went down — sites and
+	// their branch previews. Concurrently: each pool boot is about a second, and
+	// eight of them in series is a boot nobody waits for.
+	restored := restoreRunning(e, store)
+	if restored > 0 {
+		log.Printf("restored %d pool(s) that were running before shutdown", restored)
 	}
 
 	// HTTP front: router serves in-process; apache is a child process. The API

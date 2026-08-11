@@ -155,6 +155,30 @@ agent-local domain mysite mysite.test
 (LocalWP works around this by writing both an IPv6 and an IPv4 hosts line for each
 site. agent-local serves one alias address, so the honest fix is the suffix.)
 
+## After a reboot
+
+Everything comes back by itself. Three things have to happen, and each is now
+someone's job rather than a manual step:
+
+| | who does it |
+|---|---|
+| `127.0.0.2` back on `lo0` | the root front daemon, at startup and whenever the address disappears — macOS does not persist `ifconfig` aliases |
+| the router/API daemon running | a per-user LaunchAgent (`agent-local autostart`, on by default) |
+| sites that were running, running | the daemon restores every site and preview whose state says it was up, concurrently |
+
+The alias is the one that used to bite: without it the front daemon has nothing to
+bind, so bare URLs vanish and every address falls back to `:1080`. It is now
+re-added within about two seconds of going missing.
+
+```sh
+agent-local autostart          # on (default)
+agent-local autostart --off    # only run the daemon when something asks for it
+```
+
+The login job stands by while another daemon holds the ports rather than exiting,
+so if that one dies the standby takes over in about two seconds — verified by
+killing it: `api=200 site=200` on the next probe.
+
 ## Sharing a machine with LocalWP
 
 Bare URLs need `:80`/`:443`, and so does every other local-dev tool. agent-local
@@ -233,7 +257,7 @@ so genuine mistakes stay visible.
   ● sulo                 8.2   sulo.pact                             1
 
 ╭──────────────────────────────────────────────────────────────────╮
-│    open  http://freshdemo.test   https://freshdemo.test:10443    │
+│    open  https://freshdemo.test                                  │
 │      db  al_freshdemo  as al_freshdemo  127.0.0.1:10360          │
 │   files  ~/.agent-local/sites/freshdemo/wp   137M                │
 ╰──────────────────────────────────────────────────────────────────╯

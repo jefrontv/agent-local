@@ -1293,7 +1293,7 @@ func (m *model) viewSites() string {
 // URLs, the credentials, where it lives, how big it got.
 func (m *model) sitePanel(s *Site) string {
 	rows := [][2]string{
-		{"open", BareURL(s) + stDim.Render("   "+s.SURL())},
+		{"open", BareURL(s)},
 		{"db", s.DBName + stDim.Render("  as ") + s.DBUser + stDim.Render(fmt.Sprintf("  127.0.0.1:%d", DefaultDBPort))},
 		{"files", shortHome(s.WPDir) + stDim.Render("   "+m.siteSize(s.Slug))},
 	}
