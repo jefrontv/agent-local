@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -144,16 +145,31 @@ type model struct {
 	input    inputSpec
 	confirm  string
 	confirmA func() error
-	busy     string
-	msg      string
-	msgErr   bool
-	sites    []*Site
-	doctor   *DoctorReport
-	width    int
-	height   int
-	health   healthSnapshot
-	sizes    map[string]string
-	quitting bool
+	// confirmLabel is what the busy line says while a confirmed action runs.
+	confirmLabel string
+	// pendingCmd carries a command out of applyInput, which can only return an
+	// error, to the key handler that must hand it to bubbletea.
+	pendingCmd tea.Cmd
+	// inv is a snapshot of the toolchain: rendering used to read the store
+	// directly, which a background `brew install` writes to at the same time.
+	inv Inventory
+	// A long action runs in a goroutine and reports back through progress; the
+	// UI keeps rendering while it does. Doing the work inline froze the whole
+	// screen, because bubbletea only paints once Update returns.
+	busyDetail string
+	busySince  time.Time
+	spin       int
+	progress   chan actionMsg
+	busy       string
+	msg        string
+	msgErr     bool
+	sites      []*Site
+	doctor     *DoctorReport
+	width      int
+	height     int
+	health     healthSnapshot
+	sizes      map[string]string
+	quitting   bool
 }
 
 // healthSnapshot is the stack state the header lamps read from, sampled on
@@ -188,6 +204,7 @@ func (m *model) refresh() {
 	// agent all share sites.json, and the TUI is usually the long-lived reader.
 	m.store.ReloadIfChanged()
 	m.sites = m.store.Sites()
+	m.inv = *m.store.Inventory()
 	// Clamp each cursor to its own list: deleting the last row otherwise leaves
 	// a cursor pointing past the end.
 	for _, t := range []tab{tabSites, tabWorktrees, tabRuntimes, tabDoctor} {
@@ -271,7 +288,7 @@ func (m model) rowsFor(t tab) int {
 	case tabWorktrees:
 		return len(m.allWorktrees())
 	case tabRuntimes:
-		return len(m.store.Inventory().PHPs)
+		return len(m.inv.PHPs)
 	case tabDoctor:
 		if m.doctor != nil {
 			return len(m.doctor.Findings)
@@ -304,6 +321,84 @@ func (m model) currentWorktree() *Worktree {
 	return wts[m.wtCur]
 }
 
+// actionMsg is a step or the end of a long action, sent from its goroutine.
+type actionMsg struct {
+	stage  string
+	detail string
+	done   bool
+	result string
+	err    error
+	// payload carries a value produced in the goroutine. Assigning to the model
+	// from there would write to a copy nobody renders.
+	payload any
+}
+
+// spinTickMsg advances the spinner while an action runs.
+type spinTickMsg struct{}
+
+// runAction starts work in the background and returns the commands that keep the
+// UI alive: one waiting on the action's next message, one ticking the spinner.
+// fn reports progress through cb, which is safe to call from the goroutine.
+func (m model) runAction(label string, fn func(cb func(stage, detail string)) (string, error)) (model, tea.Cmd) {
+	return m.runActionWith(label, func(cb func(string, string)) (string, any, error) {
+		msg, err := fn(cb)
+		return msg, nil, err
+	})
+}
+
+// runActionWith is runAction for work that produces a value the UI needs back.
+func (m model) runActionWith(label string, fn func(cb func(stage, detail string)) (string, any, error)) (model, tea.Cmd) {
+	ch := make(chan actionMsg, 64)
+	m.mode = modeBusy
+	m.busy = label
+	m.busyDetail = ""
+	m.busySince = time.Now()
+	m.spin = 0
+	m.progress = ch
+	go func() {
+		defer close(ch)
+		cb := func(stage, detail string) {
+			// Never block the work on a UI that is slow to drain.
+			select {
+			case ch <- actionMsg{stage: stage, detail: detail}:
+			default:
+			}
+		}
+		result, payload, err := fn(cb)
+		ch <- actionMsg{done: true, result: result, err: err, payload: payload}
+	}()
+	return m, tea.Batch(waitForAction(ch), spinTick())
+}
+
+// startBackground is runAction for callers that cannot return a command — the
+// input handlers, which report an error and nothing else. The command is stashed
+// and picked up by the key handler.
+func (m *model) startBackground(label string, fn func(cb func(stage, detail string)) (string, error)) {
+	next, cmd := m.runAction(label, fn)
+	*m = next
+	m.pendingCmd = cmd
+}
+
+// waitForAction blocks in bubbletea's command goroutine, not in Update.
+func waitForAction(ch chan actionMsg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			// Channel closed without a done message: treat as finished rather
+			// than leaving the UI spinning forever.
+			return actionMsg{done: true}
+		}
+		return msg
+	}
+}
+
+func spinTick() tea.Cmd {
+	return tea.Tick(110*time.Millisecond, func(time.Time) tea.Msg { return spinTickMsg{} })
+}
+
+// spinFrames is a quiet spinner: the lamp language of the rest of the UI, moving.
+var spinFrames = []string{"◐", "◓", "◑", "◒"}
+
 // ---------- update ----------
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -311,6 +406,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
+	case spinTickMsg:
+		if m.mode != modeBusy {
+			return m, nil
+		}
+		m.spin++
+		return m, spinTick()
+	case actionMsg:
+		if msg.done {
+			m.mode = modeBrowse
+			m.busy, m.busyDetail, m.progress = "", "", nil
+			if rep, ok := msg.payload.(*DoctorReport); ok {
+				m.doctor = rep
+			}
+			if msg.err != nil {
+				m.setMsg(msg.err.Error(), true)
+			} else if msg.result != "" {
+				m.setMsg(msg.result, false)
+			}
+			m.refresh()
+			return m, nil
+		}
+		// A step: show it and keep listening.
+		m.busyDetail = strings.TrimSpace(msg.stage + " " + msg.detail)
+		return m, waitForAction(m.progress)
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -324,16 +443,17 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modeConfirm:
 		switch k.String() {
 		case "y":
-			m.mode = modeBrowse
-			action := m.confirmA
-			m.confirm = ""
-			if err := action(); err != nil {
-				m.setMsg(err.Error(), true)
-			} else {
-				m.setMsg("done", false)
+			action, label := m.confirmA, m.confirmLabel
+			m.confirm, m.confirmA, m.confirmLabel = "", nil, ""
+			if label == "" {
+				label = "working"
 			}
-			m.refresh()
-			return m, nil
+			return m.runAction(label, func(func(string, string)) (string, error) {
+				if err := action(); err != nil {
+					return "", err
+				}
+				return "done", nil
+			})
 		case "n", "esc":
 			m.mode = modeBrowse
 			m.confirm = ""
@@ -341,6 +461,12 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case modeBusy:
+		// Quitting must still work; everything else waits, since acting on a
+		// half-changed site is how people end up with two problems.
+		if k.String() == "ctrl+c" {
+			m.quitting = true
+			return m, tea.Quit
+		}
 		return m, nil
 	}
 
@@ -407,6 +533,12 @@ func (m model) handleInputKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input = inputSpec{}
 		if err := m.applyInput(spec); err != nil {
 			m.setMsg(err.Error(), true)
+		}
+		// A backgrounded action refreshes when it finishes; refreshing now would
+		// only re-read state it is in the middle of changing.
+		if cmd := m.pendingCmd; cmd != nil {
+			m.pendingCmd = nil
+			return m, cmd
 		}
 		m.refresh()
 		return m, nil
@@ -583,85 +715,95 @@ func (m *model) applyInput(spec inputSpec) error {
 			return fmt.Errorf("domain required")
 		}
 		if spec.fresh {
-			m.busyStart("installing WordPress into " + shortHome(spec.dir))
-			site, err := m.engine.CreateSite(CreateOpts{
-				Name:     spec.name,
-				Dir:      spec.dir,
-				Domain:   val,
-				Progress: func(s, d string) {},
-			})
-			m.busyEnd()
-			if err != nil {
-				return err
-			}
-			m.setMsg("created "+BareURL(site)+"  admin="+site.AdminUser+"/"+site.AdminPass, false)
+			opts := CreateOpts{Name: spec.name, Dir: spec.dir, Domain: val}
+			m.startBackground("installing WordPress into "+shortHome(spec.dir),
+				func(cb func(string, string)) (string, error) {
+					opts.Progress = cb
+					site, err := m.engine.CreateSite(opts)
+					if err != nil {
+						return "", err
+					}
+					return "created " + BareURL(site) + "  admin=" + site.AdminUser + "/" + site.AdminPass, nil
+				})
 			return nil
 		}
-		m.busyStart("attaching " + shortHome(spec.dir))
-		var config string
-		site, err := m.engine.AttachSite(AttachOpts{
-			Name:   spec.name,
-			Dir:    spec.dir,
-			Domain: val,
-			Progress: func(stage, detail string) {
+		opts := AttachOpts{Name: spec.name, Dir: spec.dir, Domain: val}
+		m.startBackground("attaching "+shortHome(spec.dir), func(cb func(string, string)) (string, error) {
+			var config string
+			opts.Progress = func(stage, detail string) {
 				if stage == "config" {
 					config = detail
 				}
-			},
+				cb(stage, detail)
+			}
+			site, err := m.engine.AttachSite(opts)
+			if err != nil {
+				return "", err
+			}
+			msg := "attached " + BareURL(site) + "  db " + site.DBName + " / " + site.DBUser
+			if config != "" {
+				msg += "  — " + config
+			}
+			return msg, nil
 		})
-		m.busyEnd()
-		if err != nil {
-			return err
-		}
-		msg := "attached " + BareURL(site) + "  db " + site.DBName + " / " + site.DBUser
-		if config != "" {
-			msg += "  — " + config
-		}
-		m.setMsg(msg, false)
 		return nil
 	case inputCreateName:
 		if val == "" {
 			return fmt.Errorf("name required")
 		}
-		m.busyStart("creating " + val + " (downloads + installs wordpress…)")
-		site, err := m.engine.CreateSite(CreateOpts{
-			Name:     val,
-			Progress: func(s, d string) {},
+		name := val
+		m.startBackground("creating "+name, func(cb func(string, string)) (string, error) {
+			site, err := m.engine.CreateSite(CreateOpts{Name: name, Progress: cb})
+			if err != nil {
+				return "", err
+			}
+			return "created " + BareURL(site) + "  admin=" + site.AdminUser + "/" + site.AdminPass, nil
 		})
-		m.busyEnd()
-		if err != nil {
-			return err
-		}
-		m.setMsg("created "+BareURL(site)+" admin="+site.AdminUser+"/"+site.AdminPass, false)
 	case inputCreateDomain:
-		return m.engine.SetDomain(spec.slug, val)
+		slug, domain := spec.slug, val
+		m.startBackground("changing "+slug+" to "+domain, func(func(string, string)) (string, error) {
+			if err := m.engine.SetDomain(slug, domain); err != nil {
+				return "", err
+			}
+			return slug + " is now " + domain, nil
+		})
 	case inputCreatePHP, inputSwitchPHP:
 		if val == "" {
 			return fmt.Errorf("version required")
 		}
-		m.busyStart("switching php → " + val)
-		err := m.engine.SwitchPHP(spec.slug, val)
-		m.busyEnd()
-		if err != nil {
-			return err
-		}
-		m.setMsg("php "+val+" active on "+spec.slug, false)
+		slug := spec.slug
+		m.startBackground("switching "+slug+" to php "+val, func(func(string, string)) (string, error) {
+			if err := m.engine.SwitchPHP(slug, val); err != nil {
+				return "", err
+			}
+			return "php " + val + " active on " + slug, nil
+		})
 	case inputSetDomain:
 		if val == "" {
 			return fmt.Errorf("domain required")
 		}
-		return m.engine.SetDomain(spec.slug, val)
+		slug := spec.slug
+		// The rename rewrites URLs across every table, so it is seconds of work,
+		// not milliseconds: the UI has to stay alive through it.
+		m.startBackground("changing "+slug+" to "+val, func(func(string, string)) (string, error) {
+			if err := m.engine.SetDomain(slug, val); err != nil {
+				return "", err
+			}
+			return slug + " is now " + val, nil
+		})
+		return nil
 	case inputWorktreeBranch:
 		if val == "" {
 			return fmt.Errorf("branch required")
 		}
-		m.busyStart("adding worktree " + val)
-		w, err := m.engine.AddWorktree(spec.slug, val)
-		m.busyEnd()
-		if err != nil {
-			return err
-		}
-		m.setMsg(fmt.Sprintf("worktree: http://%s:%d", w.Domain, DefaultHTTPPort), false)
+		slug, branch := spec.slug, val
+		m.startBackground("adding preview "+branch, func(func(string, string)) (string, error) {
+			w, err := m.engine.AddWorktree(slug, branch)
+			if err != nil {
+				return "", err
+			}
+			return "preview running: " + BareDomainURL(w.Domain), nil
+		})
 	case inputSQL:
 		if val == "" {
 			return nil
@@ -676,21 +818,20 @@ func (m *model) applyInput(spec inputSpec) error {
 		if val == "" {
 			val = "8.3"
 		}
-		m.busyStart("brew install php@" + val + " (this can take a while…)")
-		err := InstallPHP(m.store, val, nil)
-		m.busyEnd()
-		if err != nil {
-			return err
-		}
-		DiscoverInventory(m.store)
-		m.store.Save()
-		m.setMsg("php "+val+" installed", false)
+		version := val
+		m.startBackground("brew install php@"+version+" — this can take minutes",
+			func(cb func(string, string)) (string, error) {
+				if err := InstallPHP(m.store, version, func(line string) { cb("brew", line) }); err != nil {
+					return "", err
+				}
+				DiscoverInventory(m.store)
+				_ = m.store.Save()
+				return "php " + version + " installed", nil
+			})
+		return nil
 	}
 	return nil
 }
-
-func (m *model) busyStart(s string) { m.mode = modeBusy; m.busy = s }
-func (m *model) busyEnd()           { m.mode = modeBrowse; m.busy = "" }
 
 func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	site := m.currentSite()
@@ -708,15 +849,13 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if site == nil {
 			return m, nil
 		}
-		m.busyStart("starting " + site.Slug)
-		err := m.engine.StartSite(site.Slug)
-		m.busyEnd()
-		if err != nil {
-			m.setMsg(err.Error(), true)
-		} else {
-			m.setMsg(BareURL(site), false)
-		}
-		return m, nil
+		slug, url := site.Slug, BareURL(site)
+		return m.runAction("starting "+slug, func(func(string, string)) (string, error) {
+			if err := m.engine.StartSite(slug); err != nil {
+				return "", err
+			}
+			return url, nil
+		})
 	case "x":
 		if site == nil {
 			return m, nil
@@ -731,29 +870,25 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if site == nil {
 			return m, nil
 		}
-		m.busyStart("restarting " + site.Slug)
-		stopErr := m.engine.StopSite(site.Slug)
-		// A failed stop used to be discarded: the following start then found the
-		// pool still up, returned nil, and the restart reported nothing at all.
-		if stopErr != nil && m.engine.FPMRunning(site.Slug) {
-			m.busyEnd()
-			m.setMsg("restart failed: "+stopErr.Error(), true)
-			return m, nil
-		}
-		err := m.engine.StartSite(site.Slug)
-		m.busyEnd()
-		if err != nil {
-			m.setMsg(err.Error(), true)
-		} else {
-			m.setMsg("restarted "+site.Slug, false)
-		}
-		return m, nil
+		slug := site.Slug
+		return m.runAction("restarting "+slug, func(func(string, string)) (string, error) {
+			stopErr := m.engine.StopSite(slug)
+			// A failed stop used to be discarded: the following start then found
+			// the pool still up, returned nil, and reported nothing at all.
+			if stopErr != nil && m.engine.FPMRunning(slug) {
+				return "", fmt.Errorf("restart failed: %w", stopErr)
+			}
+			if err := m.engine.StartSite(slug); err != nil {
+				return "", err
+			}
+			return "restarted " + slug, nil
+		})
 	case "p":
 		if site == nil {
 			return m, nil
 		}
 		return m.startInput(inputSwitchPHP, "php version for "+site.Slug,
-			"installed: "+strings.Join(m.store.Inventory().Runtimes(), " "), site.Slug), nil
+			"installed: "+strings.Join(m.inv.Runtimes(), " "), site.Slug), nil
 	case "d":
 		if site == nil {
 			return m, nil
@@ -764,6 +899,7 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		slug := site.Slug
+		m.confirmLabel = "deleting " + slug
 		m.confirm = "delete site " + slug + " (database + files)?"
 		m.confirmA = func() error { return m.engine.DeleteSite(slug, DeleteOpts{}) }
 		m.mode = modeConfirm
@@ -820,12 +956,13 @@ func (m model) handleWorktreesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if wt == nil {
 			return m, nil
 		}
-		if err := m.engine.StartWorktree(wt.ID); err != nil {
-			m.setMsg(err.Error(), true)
-		} else {
-			m.setMsg("preview running: "+BareDomainURL(wt.Domain), false)
-		}
-		return m, nil
+		id, url := wt.ID, BareDomainURL(wt.Domain)
+		return m.runAction("starting "+wt.Branch, func(func(string, string)) (string, error) {
+			if err := m.engine.StartWorktree(id); err != nil {
+				return "", err
+			}
+			return "preview running: " + url, nil
+		})
 	case "x":
 		if wt == nil {
 			return m, nil
@@ -837,16 +974,14 @@ func (m model) handleWorktreesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if wt == nil {
 			return m, nil
 		}
-		m.busyStart("restarting " + wt.Branch)
-		m.engine.StopWorktree(wt.ID)
-		err := m.engine.StartWorktree(wt.ID)
-		m.busyEnd()
-		if err != nil {
-			m.setMsg(err.Error(), true)
-		} else {
-			m.setMsg("restarted "+wt.Branch, false)
-		}
-		return m, nil
+		id, branch := wt.ID, wt.Branch
+		return m.runAction("restarting "+branch, func(func(string, string)) (string, error) {
+			m.engine.StopWorktree(id)
+			if err := m.engine.StartWorktree(id); err != nil {
+				return "", err
+			}
+			return "restarted " + branch, nil
+		})
 	case "o":
 		if wt == nil {
 			return m, nil
@@ -861,6 +996,7 @@ func (m model) handleWorktreesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		id, branch := wt.ID, wt.Branch
+		m.confirmLabel = "removing preview " + branch
 		m.confirm = "remove preview " + branch + " (" + id + ")? the branch itself is kept"
 		m.confirmA = func() error { return m.engine.RemoveWorktree(id) }
 		m.mode = modeConfirm
@@ -901,19 +1037,25 @@ func (m model) handleRuntimesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) handleDoctorKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "r":
-		m.doctor = Doctor(m.store)
-		return m, nil
+		store := m.store
+		return m.runActionWith("re-running checks", func(func(string, string)) (string, any, error) {
+			return "checks re-run", Doctor(store), nil
+		})
 	case "f":
-		m.busyStart("applying fixes…")
-		done := DoctorFix(m.store, false)
-		m.busyEnd()
-		m.doctor = Doctor(m.store)
-		if len(done) == 0 {
-			m.setMsg("nothing auto-fixable without a password prompt; use CLI: agent-local doctor --fix", false)
-		} else {
-			m.setMsg("fixed: "+strings.Join(done, "; "), false)
-		}
-		return m, nil
+		store := m.store
+		return m.runActionWith("applying fixes", func(cb func(string, string)) (string, any, error) {
+			done := DoctorFix(store, false)
+			for _, d := range done {
+				cb("fixed", d)
+			}
+			// Re-check afterwards, so the panel shows the result of the fixes
+			// rather than the state that prompted them.
+			rep := Doctor(store)
+			if len(done) == 0 {
+				return "nothing auto-fixable", rep, nil
+			}
+			return "fixed: " + strings.Join(done, ", "), rep, nil
+		})
 	}
 	return m, nil
 }
@@ -952,7 +1094,18 @@ func (m model) View() string {
 			stKey.Render("y") + stDim.Render(" yes  ") + stKey.Render("n") + stDim.Render(" no"))
 	}
 	if m.mode == modeBusy {
-		b.WriteString("\n\n" + stWarn.Render("· "+m.busy))
+		// A spinner, what it is doing, and how long it has been doing it. The old
+		// static line never even reached the screen, because the work ran inside
+		// Update and bubbletea paints after Update returns.
+		spin := spinFrames[m.spin%len(spinFrames)]
+		line := stKey.Render(spin+" ") + stRow.Render(m.busy)
+		if secs := int(time.Since(m.busySince).Seconds()); secs >= 2 {
+			line += stDim.Render(fmt.Sprintf("   %ds", secs))
+		}
+		b.WriteString("\n\n" + line)
+		if m.busyDetail != "" {
+			b.WriteString("\n" + stDim.Render("    "+trunc(m.busyDetail, w-6)))
+		}
 	}
 	if m.msg != "" {
 		st, mark := stOK, "✓ "
@@ -1224,7 +1377,7 @@ func (m model) viewWorktrees() string {
 }
 
 func (m model) viewRuntimes() string {
-	inv := m.store.Inventory()
+	inv := &m.inv
 	var b strings.Builder
 	b.WriteString("  " + stHead.Render("PHP") + "\n")
 	inUse := m.phpInUse()

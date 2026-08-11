@@ -390,10 +390,16 @@ func (s *Store) AllDomains() []string {
 	return out
 }
 
+// DefaultSuffix is the domain suffix new sites get. ".al" is short to type; note
+// it is Albania's real ccTLD rather than a reserved one, so a local site called
+// x.al shadows the real x.al for this machine. ".test" is the RFC 6761 reservation
+// if that ever matters — agent-local suffix .test switches back.
+const DefaultSuffix = ".al"
+
 // Suffix returns the configured default domain suffix.
 func (s *Store) Suffix() string {
 	if s.Data.Suffix == "" {
-		return ".test"
+		return DefaultSuffix
 	}
 	return s.Data.Suffix
 }
@@ -401,7 +407,7 @@ func (s *Store) Suffix() string {
 // SetSuffix stores the default domain suffix (must start with a dot).
 func (s *Store) SetSuffix(sfx string) error {
 	if sfx == "" {
-		sfx = ".test"
+		sfx = DefaultSuffix
 	}
 	if !strings.HasPrefix(sfx, ".") {
 		return fmt.Errorf("suffix must start with a dot, e.g. .test")

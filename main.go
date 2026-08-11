@@ -33,7 +33,7 @@ USAGE
   agent-local db SLUG [sql|import F|export [F]|reset|tables]   database ops
   agent-local media SLUG [URL]       missing uploads -> origin (--auto reads .htaccess, --off)
   agent-local sites-dir [PATH]       show/set where new sites are created
-  agent-local suffix [.test]         show/set default domain suffix
+  agent-local suffix [.al]           show/set default domain suffix
   agent-local domain SLUG NAME   change site domain
   agent-local worktree SLUG BRANCH [--remove]   branch worktree on its own URL
   agent-local worktrees SLUG     list worktrees
@@ -298,7 +298,7 @@ func cmdSuffix(args []string) error {
 	pos := positional(args)
 	if len(pos) == 0 {
 		fmt.Println("default domain suffix: " + store.Suffix())
-		fmt.Println("change it: agent-local suffix .localhost   (new sites + worktrees)")
+		fmt.Println("change it: agent-local suffix .test   (new sites + worktrees)")
 		return nil
 	}
 	if err := store.SetSuffix(pos[0]); err != nil {

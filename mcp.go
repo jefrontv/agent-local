@@ -206,8 +206,8 @@ func mcpTools() []mcpTool {
 		{"set_sites_dir", "Set the parent directory new sites are created in. Existing sites stay where they are; pass an empty string to restore the default (~/.agent-local/sites)", schema(map[string]interface{}{
 			"dir": prop("string", "e.g. ~/Sites — created if missing")}, "dir")},
 		{"get_sites_dir", "Where new sites are created when create_site is called without a dir", schema(nil)},
-		{"set_domain_suffix", "Set the default suffix for new sites/worktrees domains (default .test)", schema(map[string]interface{}{
-			"suffix": prop("string", "e.g. .test, .localhost, .local, .dev.local")}, "suffix")},
+		{"set_domain_suffix", "Set the default suffix for new sites/worktrees domains (default .al)", schema(map[string]interface{}{
+			"suffix": prop("string", "e.g. .al, .test, .localhost — .test is the RFC 6761 reservation; avoid .local, which macOS resolves by mDNS")}, "suffix")},
 		{"start_site", "Start a site (db + php-fpm + http)", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},
 		{"stop_site", "Stop a site", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},
 		{"restart_site", "Restart a site", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},

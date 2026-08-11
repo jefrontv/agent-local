@@ -120,6 +120,20 @@ probes both run concurrently.
 Serving itself is not the bottleneck: **2.9ms** for a static file, **4.6ms** for a
 cached PHP page through FastCGI.
 
+### Long actions do not block the UI
+
+Installing WordPress, renaming a domain (a search-replace across every table),
+switching PHP, `brew install` — all of it runs in the background with the screen
+still painting, showing what the engine is doing as it does it:
+
+```
+◓ installing WordPress into ~/Sites/mysite   16s
+    files GET https://wordpress.org/latest.tar.gz
+```
+
+Keys are held while an action runs, since acting on a half-changed site turns one
+problem into two — `ctrl+c` still quits.
+
 ### Avoid `.local` domains on macOS
 
 `.local` is reserved for mDNS (RFC 6762), so macOS resolves those names through
