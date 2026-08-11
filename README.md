@@ -134,26 +134,31 @@ still painting, showing what the engine is doing as it does it:
 Keys are held while an action runs, since acting on a half-changed site turns one
 problem into two — `ctrl+c` still quits.
 
-### Avoid `.local` domains on macOS
+### `.local` domains work too
 
 `.local` is reserved for mDNS (RFC 6762), so macOS resolves those names through
-Bonjour rather than `/etc/hosts` alone — and the AAAA lookup nobody answers costs
-**five seconds per request**, before anything reaches agent-local:
+Bonjour rather than trusting `/etc/hosts`. An entry with only an A record still
+sends the AAAA question to mDNS, where nothing answers and the resolver waits
+**five seconds — per lookup, uncached**:
 
 ```
-ta.local      namelookup 5.015s      ← mDNS timeout
-ta.test       namelookup 0.016s
+mdnsprobe.local  (IPv4 hosts line only)   5004ms  5005ms  5006ms
+orleton-om.test  (IPv4 hosts line only)      3ms     2ms     2ms
 ```
 
-`doctor` flags any site on a `.local` domain and gives you the rename, which now
-rewrites the URLs stored in WordPress and drops the old hosts entry too:
+So agent-local serves both families. `lo0` carries `127.0.0.2` and `fd00:a10c::2`,
+the front daemon binds `:80`/`:443` on each, and every domain gets two hosts lines.
+Both questions are then answered from the file and mDNS is never consulted:
 
-```sh
-agent-local domain mysite mysite.test
+```
+transportaustralia.local   before 5.006s   after 0.003s      (~1500x)
 ```
 
-(LocalWP works around this by writing both an IPv6 and an IPv4 hosts line for each
-site. agent-local serves one alias address, so the honest fix is the suffix.)
+A ULA, not `::1`: another local-dev router answers on `::1` when one is running, and
+your own sites would land on it. Existing sites gain the second line the next time
+their hosts entry is written (`agent-local alias` does the lot); `doctor` reports
+which state each `.local` domain is in. Without the IPv6 half everything still
+works — `.local` is just slow again — so it never blocks setup.
 
 ## After a reboot
 

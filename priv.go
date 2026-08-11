@@ -78,7 +78,20 @@ const HostsMarker = "# agent-local managed"
 func HostsEntries(domains []string) []string {
 	out := []string{}
 	for _, d := range domains {
-		out = append(out, fmt.Sprintf("%s %s %s", hostsIP(), d, HostsMarker))
+		for _, ip := range hostsIPs() {
+			out = append(out, fmt.Sprintf("%s %s %s", ip, d, HostsMarker))
+		}
+	}
+	return out
+}
+
+// hostsIPs are the addresses a domain should resolve to: IPv4 always, and IPv6
+// when the alias is up. Both families must be answered from the file or a ".local"
+// name spends five seconds per lookup waiting for mDNS to answer the AAAA.
+func hostsIPs() []string {
+	out := []string{hostsIP()}
+	if Alias6Active() {
+		out = append(out, LoopbackAlias6)
 	}
 	return out
 }
@@ -100,7 +113,10 @@ func EnsureHosts(interactive bool, domains []string) (int, error) {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[0] != want {
+		if len(fields) < 2 || strings.Contains(fields[0], ":") {
+			continue // leave our IPv6 lines alone
+		}
+		if fields[0] != want {
 			lines[i] = want + " " + strings.Join(fields[1:], " ")
 			changed++
 		}
@@ -108,9 +124,13 @@ func EnsureHosts(interactive bool, domains []string) (int, error) {
 	joined := strings.Join(lines, "\n")
 	var add []string
 	for _, d := range domains {
-		if !hostLineHas(joined, d) {
-			add = append(add, fmt.Sprintf("%s %s %s", want, d, HostsMarker))
-			changed++
+		// Per family: an existing IPv4-only entry still needs its AAAA line, which
+		// is what makes a .local domain fast.
+		for _, ip := range hostsIPs() {
+			if !hostLineHasIP(joined+"\n"+strings.Join(add, "\n"), d, ip) {
+				add = append(add, fmt.Sprintf("%s %s %s", ip, d, HostsMarker))
+				changed++
+			}
 		}
 	}
 	if changed == 0 && len(add) == 0 {
@@ -127,6 +147,24 @@ func EnsureHosts(interactive bool, domains []string) (int, error) {
 		return 0, err
 	}
 	return changed, nil
+}
+
+// hostLineHasIP reports whether content maps a domain at a specific address.
+// Checking the domain alone was enough while every name had one line; with two
+// families an IPv4-only entry has to be recognised as incomplete.
+func hostLineHasIP(content, domain, ip string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != ip {
+			continue
+		}
+		for _, f := range fields[1:] {
+			if f == domain {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // hostLineHas reports whether /etc/hosts content already maps a domain.

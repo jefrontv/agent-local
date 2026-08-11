@@ -178,13 +178,31 @@ func Doctor(store *Store) *DoctorReport {
 	// the AAAA lookup nothing answers costs five seconds — per request. It is not
 	// our latency to fix, but it is ours to name: measured, ta.local spent 5.00s in
 	// name lookup where a .test domain spent 0.009s.
-	for _, site := range store.Sites() {
-		if !strings.HasSuffix(site.Domain, ".local") {
-			continue
+	// A ".local" domain is only slow while the AAAA question has to go to mDNS. With
+	// the IPv6 alias and its hosts line, both families answer from the file and the
+	// five-second wait disappears — so the check is whether that is in place, not
+	// whether the suffix is ".local".
+	if dual := Alias6Active(); true {
+		for _, site := range store.Sites() {
+			if !strings.HasSuffix(site.Domain, ".local") {
+				continue
+			}
+			switch {
+			case !dual:
+				add(Finding{Check: "dns:" + site.Slug, Status: "warn",
+					Detail:  site.Domain + " ends in .local and there is no IPv6 alias — macOS asks mDNS for the AAAA and waits ~5s per lookup",
+					FixHint: "agent-local alias   (adds " + LoopbackAlias6 + " and the matching hosts line)",
+					FixCmd:  "agent-local alias", AutoFix: true})
+			case !hostsHasIP(site.Domain, LoopbackAlias6):
+				add(Finding{Check: "dns:" + site.Slug, Status: "warn",
+					Detail:  site.Domain + " has no IPv6 hosts line, so its AAAA lookup still waits on mDNS (~5s)",
+					FixHint: "agent-local start " + site.Slug + "   (rewrites the entry)",
+					FixCmd:  "agent-local start " + site.Slug, AutoFix: true})
+			default:
+				add(Finding{Check: "dns:" + site.Slug, Status: "ok",
+					Detail: site.Domain + " answers both families from /etc/hosts (no mDNS wait)"})
+			}
 		}
-		add(Finding{Check: "dns:" + site.Slug, Status: "warn",
-			Detail:  site.Domain + " ends in .local — macOS resolves that by mDNS, adding ~5s to every request",
-			FixHint: "rename it: agent-local domain " + site.Slug + " " + strings.TrimSuffix(site.Domain, ".local") + store.Suffix()})
 	}
 
 	// Two local-dev tools, one pair of privileged ports. Ours is bound to the
@@ -251,6 +269,17 @@ func Doctor(store *Store) *DoctorReport {
 	}
 
 	return rep
+}
+
+// hostsHasIP reports whether /etc/hosts maps a domain at a specific address. The
+// IPv6 line is what keeps a .local name off the mDNS path, so its presence is a
+// separate question from whether the domain resolves at all.
+func hostsHasIP(domain, ip string) bool {
+	b, err := os.ReadFile("/etc/hosts")
+	if err != nil {
+		return false
+	}
+	return hostLineHasIP(string(b), domain, ip)
 }
 
 func hostsHas(domain string) bool {

@@ -108,29 +108,30 @@ func waitForRival() {
 // to serve was simply gone — it had nothing to bind, and every URL fell back to
 // :1080. We run as root here, so fixing it needs no prompt and no user action.
 func ensureAliasBound() bool {
-	if dialableAlias() {
-		return true
-	}
-	if out, err := runCmdOut("/sbin/ifconfig", "lo0", "alias", LoopbackAlias); err != nil {
-		log.Printf("front-daemon: could not add the %s alias: %v %s", LoopbackAlias, err, strings.TrimSpace(out))
-		return false
-	}
-	log.Printf("front-daemon: re-added the %s alias to lo0 (it does not survive a reboot)", LoopbackAlias)
-	return true
-}
-
-// dialableAlias reports whether lo0 already carries the alias.
-func dialableAlias() bool {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return false
-	}
-	for _, a := range addrs {
-		if ip, _, err := net.ParseCIDR(a.String()); err == nil && ip.String() == LoopbackAlias {
-			return true
+	ok := true
+	if !interfaceHasAddr(LoopbackAlias) {
+		if out, err := runCmdOut("/sbin/ifconfig", "lo0", "alias", LoopbackAlias); err != nil {
+			log.Printf("front-daemon: could not add the %s alias: %v %s", LoopbackAlias, err, strings.TrimSpace(out))
+			ok = false
+		} else {
+			log.Printf("front-daemon: re-added the %s alias to lo0 (it does not survive a reboot)", LoopbackAlias)
 		}
 	}
-	return false
+	// IPv6 is what keeps ".local" domains off the five-second mDNS path. Its
+	// absence is not fatal, so it never blocks the IPv4 half.
+	if !interfaceHasAddr(LoopbackAlias6) {
+		if out, err := runCmdOut("/sbin/ifconfig", "lo0", "inet6", LoopbackAlias6, "prefixlen", "128", "alias"); err != nil {
+			log.Printf("front-daemon: could not add the %s alias (.local will be slow): %v %s", LoopbackAlias6, err, strings.TrimSpace(out))
+		} else {
+			log.Printf("front-daemon: re-added the %s alias to lo0", LoopbackAlias6)
+		}
+	}
+	return ok
+}
+
+// dialableAlias reports whether lo0 carries both halves we serve.
+func dialableAlias() bool {
+	return interfaceHasAddr(LoopbackAlias) && interfaceHasAddr(LoopbackAlias6)
 }
 
 // supervise keeps the listeners in the right state forever: bound normally,
@@ -187,13 +188,27 @@ func (f *frontDaemon) bind() {
 		return
 	}
 	wasPaused := f.paused
-	for _, spec := range []struct {
+	specs := []struct {
 		addr string
 		dst  int
 	}{
 		{net.JoinHostPort(LoopbackAlias, "80"), DefaultHTTPPort},
 		{net.JoinHostPort(LoopbackAlias, "443"), DefaultHTTPSPort},
-	} {
+	}
+	// The IPv6 half only exists so ".local" names resolve from /etc/hosts instead
+	// of waiting on mDNS; serve it wherever it is present.
+	if interfaceHasAddr(LoopbackAlias6) {
+		specs = append(specs,
+			struct {
+				addr string
+				dst  int
+			}{net.JoinHostPort(LoopbackAlias6, "80"), DefaultHTTPPort},
+			struct {
+				addr string
+				dst  int
+			}{net.JoinHostPort(LoopbackAlias6, "443"), DefaultHTTPSPort})
+	}
+	for _, spec := range specs {
 		l, err := net.Listen("tcp", spec.addr)
 		if err != nil {
 			log.Printf("front-daemon: bind %s: %v (will retry)", spec.addr, err)

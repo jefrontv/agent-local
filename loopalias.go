@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strings"
 )
@@ -11,6 +12,14 @@ import (
 // this specific alias, which wins those connections (specific beats
 // wildcard). Same architecture as LocalWP's own router.
 const LoopbackAlias = "127.0.0.2"
+
+// LoopbackAlias6 is the IPv6 half. It exists for one reason: macOS resolves
+// ".local" through mDNS, so a name with only an A record in /etc/hosts still sends
+// the AAAA question to Bonjour, where nobody answers and the resolver waits five
+// seconds — per lookup, uncached. Answering both families from the file removes
+// that entirely. A ULA rather than ::1, because ::1 is where another local-dev
+// router answers when one is running, and our own sites would land on it.
+const LoopbackAlias6 = "fd00:a10c::2"
 
 const pfConfMarker = "# agent-local bare-URL anchor"
 
@@ -51,8 +60,31 @@ func EnsureLoopAlias(interactive bool) error {
 	if err := RunPrivileged(interactive, "/sbin/ifconfig", "lo0", "alias", LoopbackAlias); err != nil {
 		return err
 	}
+	// Best-effort: without the IPv6 half everything still works, ".local" domains
+	// are just slow. Never fail the setup over it.
+	if err := RunPrivileged(interactive, "/sbin/ifconfig", "lo0", "inet6", LoopbackAlias6, "prefixlen", "128", "alias"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not add the %s alias (.local domains will be slow): %v\n", LoopbackAlias6, err)
+	}
 	aliasCache = 0
 	return installFrontDaemon(interactive)
+}
+
+// Alias6Active reports whether lo0 carries the IPv6 alias.
+func Alias6Active() bool { return interfaceHasAddr(LoopbackAlias6) }
+
+// interfaceHasAddr reports whether any interface carries an address.
+func interfaceHasAddr(addr string) bool {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	want := net.ParseIP(addr)
+	for _, a := range addrs {
+		if ip, _, err := net.ParseCIDR(a.String()); err == nil && ip.Equal(want) {
+			return true
+		}
+	}
+	return false
 }
 
 // RemovePFWiring strips any pf.conf block from earlier builds and reloads.
@@ -90,6 +122,7 @@ func RemovePFWiring(interactive bool) error {
 
 // RemoveLoopAlias tears down the front daemon + alias.
 func RemoveLoopAlias(interactive bool) error {
+	_ = RunPrivileged(interactive, "/sbin/ifconfig", "lo0", "inet6", LoopbackAlias6, "-alias")
 	dst := frontPlistPath()
 	_ = RunPrivileged(interactive, "/bin/launchctl", "unload", dst)
 	_ = RunPrivileged(interactive, "/bin/rm", dst)
