@@ -257,7 +257,8 @@ func (a *APIServer) handleMedia(w http.ResponseWriter, r *http.Request) {
 		site = a.store.Site(slug)
 	}
 	ok(w, map[string]interface{}{
-		"slug": slug, "media_fallback": site.MediaFallback,
+		"slug": slug, "media_fallback": EffectiveMediaFallback(site),
+		"pinned": site.MediaFallback, "off": site.MediaOff,
 		"htaccess_implies": a.engine.MediaFallbackHint(slug),
 	})
 }

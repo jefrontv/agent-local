@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // The .htaccess reader recognises one shape: "missing upload -> that origin".
@@ -171,5 +172,90 @@ func TestSetMediaFallback(t *testing.T) {
 	store.PutSite(&Site{Slug: "bare", Domain: "bare.test", WPDir: t.TempDir()})
 	if _, err := e.SetMediaFallback("bare", "auto"); err == nil {
 		t.Error("auto succeeded with no .htaccess rule to adopt")
+	}
+}
+
+// A rule sitting in the site's own .htaccess must work without a second command —
+// needing one is how this looked broken twice. Precedence: pinned value, then an
+// explicit off, then the file.
+func TestEffectiveMediaFallback(t *testing.T) {
+	dir := t.TempDir()
+	write := func(body string) {
+		if err := os.WriteFile(filepath.Join(dir, ".htaccess"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rule := func(origin string) string {
+		return "RewriteCond %{REQUEST_URI} ^/wp-content/uploads/\nRewriteCond %{REQUEST_FILENAME} !-f\nRewriteRule ^(.*)$ " + origin + "/$1 [L]\n"
+	}
+
+	site := &Site{Slug: "s", WPDir: dir}
+	if got := EffectiveMediaFallback(site); got != "" {
+		t.Errorf("no .htaccess should mean no fallback, got %q", got)
+	}
+
+	write(rule("https://from-file.example"))
+	if got := EffectiveMediaFallback(site); got != "https://from-file.example" {
+		t.Errorf("the file's rule should be honoured, got %q", got)
+	}
+
+	// Editing the file takes effect: the cache is keyed by modification time, not
+	// by "we looked once".
+	time.Sleep(10 * time.Millisecond)
+	write(rule("https://edited.example"))
+	os.Chtimes(filepath.Join(dir, ".htaccess"), time.Now().Add(time.Second), time.Now().Add(time.Second))
+	if got := EffectiveMediaFallback(site); got != "https://edited.example" {
+		t.Errorf("an edited .htaccess should be picked up, got %q", got)
+	}
+
+	// A pinned value wins over the file.
+	site.MediaFallback = "https://pinned.example"
+	if got := EffectiveMediaFallback(site); got != "https://pinned.example" {
+		t.Errorf("a pinned origin should win, got %q", got)
+	}
+
+	// Explicit off wins over the file, but not over a pinned value being set later.
+	site.MediaFallback, site.MediaOff = "", true
+	if got := EffectiveMediaFallback(site); got != "" {
+		t.Errorf("an explicit off must ignore the file, got %q", got)
+	}
+}
+
+// The setter has to leave those three states unambiguous.
+func TestSetMediaFallbackStates(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	docroot := filepath.Join(home, "site")
+	os.MkdirAll(docroot, 0o755)
+	os.WriteFile(filepath.Join(docroot, ".htaccess"), []byte(
+		"RewriteCond %{REQUEST_URI} ^/wp-content/uploads/\nRewriteCond %{REQUEST_FILENAME} !-f\nRewriteRule ^(.*)$ https://file.example/$1 [L]\n"), 0o644)
+
+	store, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.PutSite(&Site{Slug: "s", Domain: "s.test", WPDir: docroot})
+	e := NewEngine(store)
+
+	// Untouched: the file is honoured.
+	if got := EffectiveMediaFallback(store.Site("s")); got != "https://file.example" {
+		t.Errorf("untouched site should honour the file, got %q", got)
+	}
+	// Off: nothing, and it survives a round trip through the store.
+	if _, err := e.SetMediaFallback("s", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !store.Site("s").MediaOff {
+		t.Error("empty value should record an explicit off")
+	}
+	if got := EffectiveMediaFallback(store.Site("s")); got != "" {
+		t.Errorf("after --off the fallback must be nothing, got %q", got)
+	}
+	// auto: pins the file's origin and clears the off flag.
+	if got, err := e.SetMediaFallback("s", "auto"); err != nil || got != "https://file.example" {
+		t.Fatalf("auto = %q, %v", got, err)
+	}
+	if store.Site("s").MediaOff {
+		t.Error("auto should clear the off flag")
 	}
 }

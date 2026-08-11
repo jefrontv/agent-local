@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Finding is one doctor check result.
@@ -126,6 +127,10 @@ func Doctor(store *Store) *DoctorReport {
 		add(Finding{Check: "tls", Status: "ok", Detail: "certs present for all domains"})
 	}
 
+	// siteProbeTimeout bounds each liveness probe. Long enough that a warm site
+	// always answers, short enough that doctor stays a command you reach for.
+	const siteProbeTimeout = 3 * time.Second
+
 	// per-site liveness. Each probe is a round trip to a different pool, so they
 	// run together and are reported in site order: eight sites took the wall time
 	// of eight, for a command whose whole job is to be quick to reach for.
@@ -140,12 +145,25 @@ func Doctor(store *Store) *DoctorReport {
 			wg.Add(1)
 			go func(i int, site *Site) {
 				defer wg.Done()
-				code, err := httpProbeHost("http://127.0.0.1:"+fmt.Sprint(DefaultHTTPPort)+"/", site.Domain)
-				if err == nil && code < 500 {
+				code, took, err := httpProbeHostTimed("http://127.0.0.1:"+fmt.Sprint(DefaultHTTPPort)+"/", site.Domain, siteProbeTimeout)
+				switch {
+				case err != nil:
+					// Distinguish "nothing there" from "too slow to wait for": a
+					// cold WordPress render is not a broken site, but it is worth
+					// naming rather than silently making doctor take six seconds.
+					detail := "fpm up but probe failed"
+					if took >= siteProbeTimeout {
+						detail = fmt.Sprintf("serving, but slower than %s — a cold cache or a slow plugin, not a broken site", siteProbeTimeout)
+					}
+					results[i] = &Finding{Check: "site:" + site.Slug, Status: "warn", Detail: detail}
+				case code >= 500:
+					results[i] = &Finding{Check: "site:" + site.Slug, Status: "warn", Detail: fmt.Sprintf("http %d", code)}
+				case took > time.Second:
+					results[i] = &Finding{Check: "site:" + site.Slug, Status: "warn",
+						Detail: fmt.Sprintf("http %d but slow: %dms", code, took.Milliseconds())}
+				default:
 					results[i] = &Finding{Check: "site:" + site.Slug, Status: "ok", Detail: fmt.Sprintf("http %d", code)}
-					return
 				}
-				results[i] = &Finding{Check: "site:" + site.Slug, Status: "warn", Detail: "fpm up but probe failed"}
 			}(i, site)
 		}
 		wg.Wait()
@@ -184,14 +202,19 @@ func Doctor(store *Store) *DoctorReport {
 	// Apache directive. Sites carrying one and no media fallback would silently
 	// 404 every image the local database references but the disk does not have.
 	for _, site := range store.Sites() {
-		if site.MediaFallback != "" {
-			continue
-		}
-		if origin := htaccessUploadsRule(site.WPDir); origin != "" {
+		rule := htaccessUploadsRule(site.WPDir)
+		switch {
+		case site.MediaOff && rule != "":
 			add(Finding{Check: "media:" + site.Slug, Status: "warn",
-				Detail:  ".htaccess redirects missing uploads to " + origin + ", which the router cannot read",
-				FixHint: "agent-local media " + site.Slug + " --auto",
-				FixCmd:  "agent-local media " + site.Slug + " --auto", AutoFix: true})
+				Detail:  "turned off, so the .htaccess rule pointing at " + rule + " is ignored",
+				FixHint: "agent-local media " + site.Slug + " --auto"})
+		case EffectiveMediaFallback(site) != "":
+			where := "from .htaccess"
+			if site.MediaFallback != "" {
+				where = "set here"
+			}
+			add(Finding{Check: "media:" + site.Slug, Status: "ok",
+				Detail: "missing uploads → " + EffectiveMediaFallback(site) + " (" + where + ")"})
 		}
 	}
 

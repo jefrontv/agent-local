@@ -182,9 +182,10 @@ RewriteCond %{REQUEST_FILENAME} !-f
 RewriteRule ^(.*)$ https://example.org/$1 [QSA,L]
 ```
 
-The built-in router does not read `.htaccess` — it is an Apache feature — so that
-rule is inert here and every missing image 404s. It is a property of the site
-instead, and it can be adopted straight from the file that already has it:
+The built-in router does not run `.htaccess` — it is an Apache feature — but it does
+read that one rule, because a rule sitting in your own repo should not need a second
+command to take effect. Any site whose docroot carries an uploads rewrite has it
+honoured automatically, re-read when the file changes. To pin, override or refuse it:
 
 ```sh
 agent-local media SLUG               # show it, and what .htaccess implies
@@ -194,7 +195,9 @@ agent-local media SLUG --off         # back to 404s
 ```
 
 In the TUI: `m` on the Sites tab, where `⇥` fills in the `.htaccess` origin.
-`doctor` flags any site carrying that rewrite with no fallback set.
+`doctor` shows where each site's missing uploads go, and whether that came from the
+file or was set explicitly. Precedence: a value set here, then an explicit `--off`,
+then the site's `.htaccess`.
 
 A `GET` under `/wp-content/uploads/` with no local file gets a 302 to the origin —
 a redirect, not a proxy, so behaviour matches the `.htaccess` exactly and nothing

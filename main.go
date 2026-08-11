@@ -230,14 +230,19 @@ func cmdMedia(args []string) error {
 		set = pos[1]
 	default:
 		// Report, and say what the site's own .htaccess implies.
-		if site.MediaFallback == "" {
-			fmt.Println("media fallback: off — missing uploads 404")
-		} else {
-			fmt.Println("media fallback: " + site.MediaFallback)
-		}
-		if hint := e.MediaFallbackHint(slug); hint != "" && hint != site.MediaFallback {
-			fmt.Println(".htaccess implies: " + hint)
-			fmt.Println("adopt it: agent-local media " + slug + " --auto")
+		switch eff := EffectiveMediaFallback(site); {
+		case eff == "" && site.MediaOff:
+			fmt.Println("media fallback: off by request — missing uploads 404")
+			if hint := e.MediaFallbackHint(slug); hint != "" {
+				fmt.Println(".htaccess asks for: " + hint + "   (agent-local media " + slug + " --auto to honour it)")
+			}
+		case eff == "":
+			fmt.Println("media fallback: none — missing uploads 404")
+			fmt.Println("no uploads rewrite in this site's .htaccess; pass a URL to set one")
+		case site.MediaFallback != "":
+			fmt.Println("media fallback: " + eff + "   (set here)")
+		default:
+			fmt.Println("media fallback: " + eff + "   (honouring this site's .htaccess)")
 		}
 		return nil
 	}

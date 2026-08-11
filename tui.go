@@ -1161,8 +1161,12 @@ func (m *model) sitePanel(s *Site) string {
 	// Only when set: an off switch does not need a row of its own, but a live
 	// redirect to somewhere else absolutely does — otherwise an image arriving
 	// from production looks like the local copy.
-	if s.MediaFallback != "" {
-		rows = append(rows, [2]string{"media", stDim.Render("missing uploads → ") + s.MediaFallback})
+	if eff := EffectiveMediaFallback(s); eff != "" {
+		note := ""
+		if s.MediaFallback == "" {
+			note = stDim.Render("  (.htaccess)")
+		}
+		rows = append(rows, [2]string{"media", stDim.Render("missing uploads → ") + eff + note})
 	}
 	var body strings.Builder
 	for i, r := range rows {

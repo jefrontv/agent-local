@@ -51,6 +51,10 @@ type Site struct {
 	HTTPSPort  int       `json:"https_port"`
 	CreatedAt  time.Time `json:"created_at"`
 	State      SiteState `json:"state"` // persisted last known state
+	// MediaOff disables the media fallback for a site whose .htaccess asks for one:
+	// unset means "honour the file", which is what people expect of a rule sitting
+	// in their own repo, so refusing it has to be recorded explicitly.
+	MediaOff bool `json:"media_off,omitempty"`
 	// MediaFallback is where a missing upload is fetched from: a request under
 	// /wp-content/uploads/ that has no local file redirects there. This is the
 	// job the ".htaccess uploads rewrite" does on Apache, which the built-in

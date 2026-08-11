@@ -78,15 +78,32 @@ func httpProbe(url string) (int, error) {
 // httpProbeHost fetches a URL with an explicit Host header — required for
 // the shared vhost front where the Host header selects the site.
 func httpProbeHost(url, host string) (int, error) {
+	code, _, err := httpProbeHostTimed(url, host, 0)
+	return code, err
+}
+
+// httpProbeHostTimed also reports how long the answer took, and gives up after
+// the deadline. A cold WordPress render can take many seconds; a check asking
+// only "is this serving?" should not wait for it, and how slow it was is itself
+// worth reporting.
+func httpProbeHostTimed(url, host string, timeout time.Duration) (int, time.Duration, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	req.Host = host
-	resp, err := probeClient().Do(req)
+	client := probeClient()
+	if timeout > 0 {
+		c := *client
+		c.Timeout = timeout
+		client = &c
+	}
+	start := time.Now()
+	resp, err := client.Do(req)
+	took := time.Since(start)
 	if err != nil {
-		return 0, err
+		return 0, took, err
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode, nil
+	return resp.StatusCode, took, nil
 }

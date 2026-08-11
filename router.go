@@ -134,7 +134,11 @@ func (r *Router) serveMediaFallback(w http.ResponseWriter, req *http.Request, ho
 		return false
 	}
 	site := r.engine.Store.FindSiteByDomain(host)
-	if site == nil || site.MediaFallback == "" {
+	if site == nil {
+		return false
+	}
+	origin := EffectiveMediaFallback(site)
+	if origin == "" {
 		return false
 	}
 	// Only when it is genuinely absent locally: a real file was already served by
@@ -142,7 +146,7 @@ func (r *Router) serveMediaFallback(w http.ResponseWriter, req *http.Request, ho
 	if _, err := os.Stat(filepath.Join(wpdir, clean)); err == nil {
 		return false
 	}
-	target := strings.TrimSuffix(site.MediaFallback, "/") + clean
+	target := strings.TrimSuffix(origin, "/") + clean
 	if req.URL.RawQuery != "" {
 		target += "?" + req.URL.RawQuery
 	}

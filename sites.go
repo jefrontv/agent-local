@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -386,6 +387,48 @@ func firstURL(rule string) string {
 	return u.Scheme + "://" + u.Host + strings.TrimSuffix(u.Path, "/")
 }
 
+// htaccessCache remembers the uploads rule per docroot, keyed by the file's
+// modification time. A missing upload is already the slow path, but re-parsing a
+// 300-line .htaccess on every one of them would be careless.
+var htaccessCache sync.Map // docroot -> htaccessEntry
+
+type htaccessEntry struct {
+	mod    time.Time
+	origin string
+}
+
+// htaccessUploadsRuleCached is htaccessUploadsRule with the parse skipped while
+// the file has not changed. Editing .htaccess takes effect on the next request.
+func htaccessUploadsRuleCached(docroot string) string {
+	path := filepath.Join(docroot, ".htaccess")
+	st, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	if v, ok := htaccessCache.Load(docroot); ok {
+		if e := v.(htaccessEntry); e.mod.Equal(st.ModTime()) {
+			return e.origin
+		}
+	}
+	origin := htaccessUploadsRule(docroot)
+	htaccessCache.Store(docroot, htaccessEntry{mod: st.ModTime(), origin: origin})
+	return origin
+}
+
+// EffectiveMediaFallback is where a site's missing uploads actually go: an origin
+// set here wins, an explicit "off" means nothing, and otherwise the site's own
+// .htaccess is honoured — the rule is already in their repo, and needing a second
+// command to activate it is exactly how it comes to look broken.
+func EffectiveMediaFallback(site *Site) string {
+	if site.MediaFallback != "" {
+		return site.MediaFallback
+	}
+	if site.MediaOff {
+		return ""
+	}
+	return htaccessUploadsRuleCached(site.WPDir)
+}
+
 // SetMediaFallback points a site's missing uploads at an origin. An empty value
 // turns it off; "auto" adopts whatever the docroot's .htaccess already says.
 func (e *Engine) SetMediaFallback(slug, origin string) (string, error) {
@@ -396,18 +439,19 @@ func (e *Engine) SetMediaFallback(slug, origin string) (string, error) {
 	switch strings.TrimSpace(origin) {
 	case "":
 		site.MediaFallback = ""
+		site.MediaOff = true
 	case "auto":
 		found := htaccessUploadsRule(site.WPDir)
 		if found == "" {
 			return "", fmt.Errorf("no uploads rewrite found in %s/.htaccess — pass a URL instead", shortHome(site.WPDir))
 		}
-		site.MediaFallback = found
+		site.MediaFallback, site.MediaOff = found, false
 	default:
 		u, err := url.Parse(origin)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 			return "", fmt.Errorf("media fallback must be an http(s) URL, got %q", origin)
 		}
-		site.MediaFallback = u.Scheme + "://" + u.Host + strings.TrimSuffix(u.Path, "/")
+		site.MediaFallback, site.MediaOff = u.Scheme+"://"+u.Host+strings.TrimSuffix(u.Path, "/"), false
 	}
 	e.Store.PutSite(site)
 	return site.MediaFallback, e.Store.Save()
