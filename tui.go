@@ -98,6 +98,7 @@ const (
 	modeConfirm
 	modeBusy
 	modeHelp
+	modeSearch
 )
 
 type inputTarget int
@@ -176,6 +177,9 @@ type model struct {
 	health     healthSnapshot
 	sizes      map[string]string
 	quitting   bool
+	// siteFilter is the Sites-tab search. The full catalog stays in sites;
+	// visibleSites() is what the cursor and the table walk.
+	siteFilter string
 }
 
 // healthSnapshot is the stack state the header lamps read from, sampled on
@@ -259,15 +263,69 @@ func (m model) phpInUse() map[string]bool {
 	return used
 }
 
-func (m model) Init() tea.Cmd { return nil }
+const refreshInterval = 5 * time.Second
+
+func refreshTick() tea.Cmd {
+	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshMsg{} })
+}
+
+func (m model) Init() tea.Cmd { return refreshTick() }
 
 func (m *model) setMsg(s string, isErr bool) { m.msg = s; m.msgErr = isErr }
 
+// visibleSites is the Sites table: the full catalog when there is no filter,
+// otherwise a case-insensitive substring match on name, slug, domain, aliases
+// and paths. Worktrees still walk m.sites so a filter here cannot hide a preview.
+func (m model) visibleSites() []*Site {
+	q := strings.ToLower(strings.TrimSpace(m.siteFilter))
+	if q == "" {
+		return m.sites
+	}
+	out := make([]*Site, 0, len(m.sites))
+	for _, s := range m.sites {
+		if siteMatches(s, q) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func siteMatches(s *Site, q string) bool {
+	if s == nil || q == "" {
+		return true
+	}
+	if strings.Contains(strings.ToLower(s.Slug), q) ||
+		strings.Contains(strings.ToLower(s.Name), q) ||
+		strings.Contains(strings.ToLower(s.Domain), q) ||
+		strings.Contains(strings.ToLower(s.PHPVersion), q) ||
+		strings.Contains(strings.ToLower(s.WPDir), q) ||
+		strings.Contains(strings.ToLower(s.WorkDir), q) {
+		return true
+	}
+	for _, a := range s.Aliases {
+		if strings.Contains(strings.ToLower(a), q) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *model) clampSiteCur() {
+	n := len(m.visibleSites())
+	if m.siteCur >= n {
+		m.siteCur = n - 1
+	}
+	if m.siteCur < 0 {
+		m.siteCur = 0
+	}
+}
+
 func (m model) currentSite() *Site {
-	if len(m.sites) == 0 || m.siteCur >= len(m.sites) {
+	sites := m.visibleSites()
+	if len(sites) == 0 || m.siteCur >= len(sites) {
 		return nil
 	}
-	return m.sites[m.siteCur]
+	return sites[m.siteCur]
 }
 
 // cursorFor hands out the cursor belonging to a tab. One shared index used to
@@ -301,7 +359,7 @@ func (m model) rowsFor(t tab) int {
 		}
 		return 0
 	default:
-		return len(m.sites)
+		return len(m.visibleSites())
 	}
 }
 
@@ -418,6 +476,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.spin++
 		return m, spinTick()
+	case refreshMsg:
+		// CLI / MCP / another TUI can mutate sites.json while this session
+		// sits idle. Reload quietly: a "refreshed" toast every five seconds
+		// would be the whole UI.
+		if !m.quitting {
+			m.refresh()
+		}
+		return m, refreshTick()
 	case actionMsg:
 		if msg.done {
 			m.mode = modeBrowse
@@ -480,6 +546,8 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeBrowse
 		}
 		return m, nil
+	case modeSearch:
+		return m.handleSearchKey(k)
 	}
 
 	// browse mode
@@ -893,6 +961,10 @@ func (m *model) applyInput(spec inputSpec) error {
 func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	site := m.currentSite()
 	switch k.String() {
+	case "/":
+		m.mode = modeSearch
+		m.msg = ""
+		return m, nil
 	case "n":
 		// Settings live in a file five processes share. A TUI left open since
 		// before `agent-local sites-dir` ran would otherwise offer the old
@@ -1144,6 +1216,51 @@ func (m model) handleDoctorKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleSearchKey types into the Sites filter. The list updates on every rune
+// so a long rack can be cut down without a submit step. enter keeps the
+// filter and goes back to browsing; esc throws it away.
+func (m model) handleSearchKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "esc":
+		m.siteFilter = ""
+		m.mode = modeBrowse
+		m.clampSiteCur()
+		return m, nil
+	case "enter":
+		m.mode = modeBrowse
+		return m, nil
+	case "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit
+	case "ctrl+u":
+		m.siteFilter = ""
+		m.clampSiteCur()
+		return m, nil
+	case "backspace":
+		if m.siteFilter != "" {
+			r := []rune(m.siteFilter)
+			m.siteFilter = string(r[:len(r)-1])
+			m.clampSiteCur()
+		}
+		return m, nil
+	case "up", "k":
+		if m.siteCur > 0 {
+			m.siteCur--
+		}
+		return m, nil
+	case "down", "j":
+		if m.siteCur < len(m.visibleSites())-1 {
+			m.siteCur++
+		}
+		return m, nil
+	}
+	if k.Type == tea.KeyRunes && !k.Alt {
+		m.siteFilter += string(k.Runes)
+		m.clampSiteCur()
+	}
+	return m, nil
+}
+
 // ---------- view ----------
 
 func (m model) View() string {
@@ -1344,9 +1461,18 @@ func (m *model) viewSites() string {
 			stKey.Render("?") + stDim.Render("  every key")
 		return "  " + stPanel.Width(m.panelWidth()).Render(empty)
 	}
+	shown := m.visibleSites()
 	var b strings.Builder
+	if m.mode == modeSearch || m.siteFilter != "" {
+		b.WriteString(m.viewSiteSearch(len(shown)) + "\n")
+	}
+	if len(shown) == 0 {
+		empty := stDim.Render("no sites match ") + stRow.Render(m.siteFilter) + "\n" +
+			stKey.Render("esc") + stDim.Render("  clear")
+		return b.String() + "  " + stPanel.Width(m.panelWidth()).Render(empty)
+	}
 	b.WriteString("    " + stHead.Render(fmt.Sprintf("%-20s %-5s %-30s %8s", "SITE", "PHP", "DOMAIN", "PREVIEWS")) + "\n")
-	for i, s := range m.sites {
+	for i, s := range shown {
 		// Deliberately no size column: it costs a directory walk per row per
 		// render, and an imported checkout cannot report one anyway. Size lives
 		// in the panel, for the selected site only.
@@ -1371,6 +1497,21 @@ func (m *model) viewSites() string {
 		b.WriteString("\n" + m.sitePanel(s))
 	}
 	return b.String()
+}
+
+// viewSiteSearch is the filter line above the table. The caret only shows
+// while typing so a kept filter still reads as state, not as a prompt.
+func (m model) viewSiteSearch(n int) string {
+	q := m.siteFilter
+	if m.mode == modeSearch {
+		q += stSelBar.Render("▏")
+	}
+	count := stDim.Render(fmt.Sprintf("%d/%d", n, len(m.sites)))
+	hint := ""
+	if m.mode == modeSearch {
+		hint = stDim.Render("   enter keep  esc clear")
+	}
+	return "  " + stKey.Render("/") + " " + stSelRow.Render(q) + "  " + count + hint
 }
 
 // sitePanel holds what a table column would have had to truncate: the real
@@ -1606,7 +1747,7 @@ func (m model) viewFooter(w int) string {
 	var keys [][2]string
 	switch m.tab {
 	case tabSites:
-		keys = [][2]string{{"n", "new"}, {"i", "import"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"},
+		keys = [][2]string{{"/", "search"}, {"n", "new"}, {"i", "import"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"},
 			{"o", "open"}, {"g", "db"}, {"a", "preview"}, {"p", "php"}, {"d", "domain"}, {"m", "media"}, {"D", "delete"}}
 	case tabWorktrees:
 		keys = [][2]string{{"a", "add"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"}, {"o", "open"}, {"D", "remove"}}
@@ -1655,7 +1796,7 @@ func (m model) viewHelp(w int) string {
 	}
 	block := strings.Join([]string{
 		section("SITES", [][2]string{
-			{"n", "new"}, {"i", "import"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"},
+			{"/", "search"}, {"n", "new"}, {"i", "import"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"},
 			{"o", "open"}, {"g", "database"}, {"a", "preview"}, {"p", "php"}, {"d", "domain"},
 			{"m", "media"}, {"D", "delete"},
 		}, ""),

@@ -103,6 +103,35 @@ func TestActionPayloadReachesModel(t *testing.T) {
 
 // The spinner keeps ticking while busy and stops when the action ends, so a
 // finished action cannot leave a timer running forever.
+func TestAutoRefreshReloadsWithoutStealingFocus(t *testing.T) {
+	if refreshInterval != 5*time.Second {
+		t.Fatalf("refreshInterval = %s, want 5s", refreshInterval)
+	}
+	m := testModel(t, modeSearch)
+	m.siteFilter = "ohm"
+	m.store.PutSite(&Site{Slug: "oh2023", Name: "ohm", Domain: "dev-ohm2023.local"})
+	if err := m.store.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if cmd := m.Init(); cmd == nil {
+		t.Fatal("Init must schedule the first refresh tick")
+	}
+	out, cmd := m.Update(refreshMsg{})
+	got := out.(model)
+	if cmd == nil {
+		t.Fatal("a refresh must schedule the next tick")
+	}
+	if got.mode != modeSearch || got.siteFilter != "ohm" {
+		t.Fatalf("auto-refresh stole focus: mode=%v filter=%q", got.mode, got.siteFilter)
+	}
+	if got.msg != "" {
+		t.Fatalf("auto-refresh toasted %q — that is for the r key", got.msg)
+	}
+	if got.store.Site("oh2023") == nil || len(got.sites) == 0 {
+		t.Fatal("auto-refresh did not pick up the site written to the store")
+	}
+}
+
 func TestSpinnerTicksOnlyWhileBusy(t *testing.T) {
 	busy := testModel(t, modeBusy)
 	out, cmd := busy.Update(spinTickMsg{})
@@ -147,6 +176,71 @@ func TestPackChipsNeverSplitsABinding(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestSiteMatchesSlugDomainAndPath(t *testing.T) {
+	s := &Site{
+		Name: "Caulfield", Slug: "cgs-2025", Domain: "cgs-2025.test",
+		PHPVersion: "8.2", WPDir: "/Users/j/Documents/Sites/cgs-2025/app/public",
+		Aliases: []string{"www.cgs-2025.test"},
+	}
+	for _, q := range []string{"cgs", "2025", "caulfield", "8.2", "sites/cgs", "www.cgs"} {
+		if !siteMatches(s, q) {
+			t.Errorf("siteMatches(%q) = false", q)
+		}
+	}
+	if siteMatches(s, "ohm") {
+		t.Error("unrelated query matched")
+	}
+}
+
+func TestSitesSearchFiltersAndClears(t *testing.T) {
+	m := testModel(t, modeBrowse)
+	m.sites = []*Site{
+		{Slug: "cgs-2025", Name: "cgs", Domain: "cgs-2025.test"},
+		{Slug: "oh2023", Name: "ohm", Domain: "dev-ohm2023.local"},
+		{Slug: "sulo", Name: "sulo", Domain: "sulo.pact"},
+	}
+	out, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	got := out.(model)
+	if got.mode != modeSearch {
+		t.Fatalf("mode = %v, want modeSearch", got.mode)
+	}
+	out, _ = got.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ohm")})
+	got = out.(model)
+	shown := got.visibleSites()
+	if len(shown) != 1 || shown[0].Slug != "oh2023" {
+		t.Fatalf("visible = %v, want just oh2023", slugsOf(shown))
+	}
+	if cur := got.currentSite(); cur == nil || cur.Slug != "oh2023" {
+		t.Fatal("cursor is not on the only match")
+	}
+
+	out, _ = got.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	kept := out.(model)
+	if kept.mode != modeBrowse || kept.siteFilter != "ohm" {
+		t.Fatalf("enter should keep the filter: mode=%v filter=%q", kept.mode, kept.siteFilter)
+	}
+	if len(kept.visibleSites()) != 1 {
+		t.Fatal("kept filter should still hide the others")
+	}
+
+	out, _ = got.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	cleared := out.(model)
+	if cleared.mode != modeBrowse || cleared.siteFilter != "" {
+		t.Fatalf("esc should drop the filter: mode=%v filter=%q", cleared.mode, cleared.siteFilter)
+	}
+	if len(cleared.visibleSites()) != 3 {
+		t.Fatalf("cleared filter shows %d, want 3", len(cleared.visibleSites()))
+	}
+}
+
+func slugsOf(sites []*Site) []string {
+	out := make([]string, len(sites))
+	for i, s := range sites {
+		out[i] = s.Slug
+	}
+	return out
 }
 
 func TestImportKeyStartsWizard(t *testing.T) {

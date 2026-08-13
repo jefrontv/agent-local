@@ -266,7 +266,7 @@ so genuine mistakes stay visible.
 │      db  al_freshdemo  as al_freshdemo  127.0.0.1:10360          │
 │   files  ~/.agent-local/sites/freshdemo/wp   137M                │
 ╰──────────────────────────────────────────────────────────────────╯
-  n new  i import  s start  x stop  R restart  o open  g db  …     ? help  ⇥ tab  q quit
+  / search  n new  i import  s start  …  g db               ? help  ⇥ tab  q quit
 ```
 
 Press `n` and it asks one question:
