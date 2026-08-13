@@ -57,13 +57,17 @@ func restoreRunning(e *Engine, store *Store) int {
 		}
 		want = append(want, target{w.ID, e.wtServeDir(w), site.PHPVersion})
 	}
+	const restoreConcurrency = 4
+	sem := make(chan struct{}, restoreConcurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	started := 0
 	for _, t := range want {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(t target) {
 			defer wg.Done()
+			defer func() { <-sem }()
 			if err := e.StartFPM(t.id, t.dir, t.php); err != nil {
 				log.Printf("fpm %s: %v", t.id, err)
 				return
@@ -137,9 +141,14 @@ func RunDaemon(background bool) error {
 	}
 
 	// Agent API
-	api := &APIServer{store: store, engine: e}
+	api := &APIServer{store: store, engine: e, jobs: NewJobHub()}
 	mux := api.routes()
-	srv := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", DefaultAPIPort), Handler: api.auth(mux)}
+	srv := &http.Server{
+		Addr:              fmt.Sprintf("127.0.0.1:%d", DefaultAPIPort),
+		Handler:           api.auth(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("api: %v", err)
@@ -163,6 +172,7 @@ func RunDaemon(background bool) error {
 type APIServer struct {
 	store  *Store
 	engine *Engine
+	jobs   *JobHub
 }
 
 type apiResp struct {
@@ -256,7 +266,69 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("GET /certs/{domain}", a.handleCertStatus)
 	mux.HandleFunc("POST /certs/{domain}/trust", a.handleCertTrust)
 	mux.HandleFunc("POST /yield", a.handleYield)
+	mux.HandleFunc("GET /jobs", a.handleListJobs)
+	mux.HandleFunc("GET /jobs/{id}", a.handleGetJob)
+	mux.HandleFunc("GET /sites/{slug}/adminer", a.handleAdminer)
 	return mux
+}
+
+func wantAsync(r *http.Request) bool {
+	if r.URL.Query().Get("async") == "1" || strings.EqualFold(r.URL.Query().Get("async"), "true") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(r.Header.Get("Prefer")), "respond-async")
+}
+
+func (a *APIServer) runJob(w http.ResponseWriter, r *http.Request, op string, fn func(cb func(string, string)) (any, error)) {
+	if a.jobs == nil {
+		a.jobs = NewJobHub()
+	}
+	job := a.jobs.Start(op, fn)
+	w.Header().Set("X-Job-Id", job.ID)
+	if wantAsync(r) {
+		writeJSON(w, 202, apiResp{OK: true, Data: job.Snapshot()})
+		return
+	}
+	job.Wait()
+	snap := job.Snapshot()
+	if snap.Status == JobErr {
+		fail(w, 500, snap.Error)
+		return
+	}
+	ok(w, snap.Result)
+}
+
+func (a *APIServer) handleListJobs(w http.ResponseWriter, r *http.Request) {
+	if a.jobs == nil {
+		ok(w, []JobView{})
+		return
+	}
+	ok(w, a.jobs.List())
+}
+
+func (a *APIServer) handleGetJob(w http.ResponseWriter, r *http.Request) {
+	if a.jobs == nil {
+		fail(w, 404, "no such job")
+		return
+	}
+	j := a.jobs.Get(r.PathValue("id"))
+	if j == nil {
+		fail(w, 404, "no such job")
+		return
+	}
+	ok(w, j.Snapshot())
+}
+
+func (a *APIServer) handleAdminer(w http.ResponseWriter, r *http.Request) {
+	site := a.requireSite(w, r)
+	if site == nil {
+		return
+	}
+	if _, err := writeAdminerBoot(site); err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	ok(w, map[string]string{"url": AdminerURL(site.Domain), "path": AdminerPath})
 }
 
 type createReq struct {
@@ -369,17 +441,14 @@ func (a *APIServer) handleCreate(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "name required")
 		return
 	}
-	site, err := a.engine.CreateSite(CreateOpts{
-		Name: req.Name, Dir: req.Dir, Domain: req.Domain, PHPVersion: req.PHPVersion,
-		WPVersion: req.WPVersion, Repo: req.Repo,
-		AdminUser: req.AdminUser, AdminPass: req.AdminPass, AdminEmail: req.AdminEmail,
-		Title: req.Title,
+	a.runJob(w, r, "create", func(cb func(string, string)) (any, error) {
+		return a.engine.CreateSite(CreateOpts{
+			Name: req.Name, Dir: req.Dir, Domain: req.Domain, PHPVersion: req.PHPVersion,
+			WPVersion: req.WPVersion, Repo: req.Repo,
+			AdminUser: req.AdminUser, AdminPass: req.AdminPass, AdminEmail: req.AdminEmail,
+			Title: req.Title, Progress: cb,
+		})
 	})
-	if err != nil {
-		fail(w, 500, err.Error())
-		return
-	}
-	ok(w, site)
 }
 
 // handleList never returns secrets by default. `?include=secrets` opts in for
@@ -762,12 +831,11 @@ func (a *APIServer) handleDBImport(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "path required")
 		return
 	}
-	msg, err := a.engine.ImportSQL(r.PathValue("slug"), req.Path, !req.KeepURLs)
-	if err != nil {
-		fail(w, 500, err.Error())
-		return
-	}
-	ok(w, msg)
+	slug := r.PathValue("slug")
+	a.runJob(w, r, "db-import", func(cb func(string, string)) (any, error) {
+		cb("database", "loading "+req.Path)
+		return a.engine.ImportSQL(slug, req.Path, !req.KeepURLs)
+	})
 }
 func (a *APIServer) handleDBExport(w http.ResponseWriter, r *http.Request) {
 	if a.requireSite(w, r) == nil {
@@ -1113,17 +1181,15 @@ func (a *APIServer) handleImport(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "source required")
 		return
 	}
-	site, err := a.engine.ImportSite(ImportOpts{
-		Source: req.Source, Name: req.Name, Domain: req.Domain,
-		PHPVer: req.PHPVersion, Copy: req.Copy, SQLDump: req.SQLDump,
-		ServeOnly: req.ServeOnly, DBHost: req.DBHost, DBPort: req.DBPort,
-		DBUser: req.DBUser, DBPass: req.DBPass, DBName: req.DBName,
+	a.runJob(w, r, "import", func(cb func(string, string)) (any, error) {
+		return a.engine.ImportSite(ImportOpts{
+			Source: req.Source, Name: req.Name, Domain: req.Domain,
+			PHPVer: req.PHPVersion, Copy: req.Copy, SQLDump: req.SQLDump,
+			ServeOnly: req.ServeOnly, DBHost: req.DBHost, DBPort: req.DBPort,
+			DBUser: req.DBUser, DBPass: req.DBPass, DBName: req.DBName,
+			Progress: cb,
+		})
 	})
-	if err != nil {
-		fail(w, 500, err.Error())
-		return
-	}
-	ok(w, site)
 }
 
 type suffixReq struct {

@@ -68,6 +68,62 @@ func TestHostsEntriesCoverActiveFamilies(t *testing.T) {
 
 // The addresses we claim to serve have to be the ones the front daemon binds, or a
 // hosts entry points at silence.
+func TestCommentShadowedHostsLeavesOursAndCommentsLocalWP(t *testing.T) {
+	in := []string{
+		"::1\tdev-ohm2023.local",
+		"127.0.0.1\tdev-ohm2023.local",
+		"127.0.0.2 sulo.pact # agent-local managed",
+		"127.0.0.2 dev-ohm2023.local # agent-local managed",
+		"fd00:a10c::2 dev-ohm2023.local # agent-local managed",
+		"::1 dev-ohm2023.local #Local Site",
+		"127.0.0.1 dev-ohm2023.local #Local Site",
+		"127.0.0.1 other.test #Local Site",
+	}
+	out, n := commentShadowedHosts(in, []string{"dev-ohm2023.local"})
+	if n != 4 {
+		t.Fatalf("commented %d lines, want 4 (the LocalWP leftovers)", n)
+	}
+	for i, line := range out {
+		switch i {
+		case 0, 1, 5, 6:
+			if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+				t.Errorf("line %d should be commented: %q", i, line)
+			}
+		case 2, 3, 4, 7:
+			if strings.HasPrefix(strings.TrimSpace(line), "#") {
+				t.Errorf("line %d should stay live: %q", i, line)
+			}
+		}
+	}
+}
+
+func TestHostsTargetPrefersAliasOverLocalWP(t *testing.T) {
+	content := strings.Join([]string{
+		"::1 dev-ohm2023.local",
+		"127.0.0.1 dev-ohm2023.local #Local Site",
+		"127.0.0.2 dev-ohm2023.local # agent-local managed",
+	}, "\n")
+	if got := hostsTargetIn(content, "dev-ohm2023.local"); got != LoopbackAlias {
+		t.Errorf("hostsTarget = %q, want %s (not the leftover ::1)", got, LoopbackAlias)
+	}
+}
+
+func TestHostsShadowedIPs(t *testing.T) {
+	content := strings.Join([]string{
+		"::1 dev-ohm2023.local",
+		"127.0.0.1 dev-ohm2023.local #Local Site",
+		"127.0.0.2 dev-ohm2023.local # agent-local managed",
+		"# ::1 already.commented.local",
+	}, "\n")
+	got := hostsShadowedIPs(content, "dev-ohm2023.local")
+	if strings.Join(got, ",") != "::1,127.0.0.1" {
+		t.Errorf("shadowed = %v", got)
+	}
+	if got := hostsShadowedIPs(content, "already.commented.local"); len(got) != 0 {
+		t.Errorf("commented line should not count: %v", got)
+	}
+}
+
 func TestLoopbackAliasesAreDistinctLoopbacks(t *testing.T) {
 	if LoopbackAlias == "127.0.0.1" {
 		t.Error("the IPv4 alias must not be 127.0.0.1: a wildcard binder would shadow it")

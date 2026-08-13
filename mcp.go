@@ -187,6 +187,7 @@ func mcpTools() []mcpTool {
 			"admin_user":  prop("string", "admin username"),
 			"admin_pass":  prop("string", "admin password"),
 			"title":       prop("string", "site title"),
+			"async":       prop("boolean", "return a job id immediately and poll get_job instead of waiting"),
 		}, "name")},
 		{"attach_site", "Serve a directory that already exists as a site, with its own empty database. The caller's files are left alone: an existing wp-config.php is kept, and one is written only when WordPress core is present with no config at all. Use create_site for a fresh install, import_site when a database should be copied too.", schema(map[string]interface{}{
 			"dir":         prop("string", "absolute path to the directory to serve; created if missing"),
@@ -202,6 +203,7 @@ func mcpTools() []mcpTool {
 			"copy":        prop("boolean", "copy files into ~/.agent-local instead of serving in place"),
 			"sql_dump":    prop("string", "path to a .sql dump to load instead of copying from a live DB"),
 			"serve_only":  prop("boolean", "don't touch any database; serve with the existing wp-config DB settings"),
+			"async":       prop("boolean", "return a job id immediately and poll get_job instead of waiting"),
 			"db_host":     prop("string", "explicit source DB host"),
 			"db_port":     prop("integer", "explicit source DB port"),
 			"db_user":     prop("string", "explicit source DB user"),
@@ -280,6 +282,11 @@ func mcpTools() []mcpTool {
 			"domains": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "domains"}}, "domains")},
 		{"remove_hosts_entries", "Drop agent-local /etc/hosts entries for domains you registered", schema(map[string]interface{}{
 			"domains": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "domains"}}, "domains")},
+		{"list_jobs", "Recent long-running jobs (create, import, db-import) with status and progress steps", schema(nil)},
+		{"get_job", "Status, progress steps and result of one job", schema(map[string]interface{}{
+			"id": prop("string", "job id from X-Job-Id or an async start")}, "id")},
+		{"open_adminer", "URL of the per-site Adminer database GUI (served at /.agent-local/adminer)", schema(map[string]interface{}{
+			"slug": prop("string", "site slug")}, "slug")},
 	}
 }
 
@@ -331,7 +338,11 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 	case "get_site":
 		return apiGet("/sites/" + get("slug"))
 	case "create_site":
-		return apiPost("/sites", args)
+		path := "/sites"
+		if args["async"] == true {
+			path += "?async=1"
+		}
+		return apiPost(path, args)
 	case "attach_site":
 		return apiPost("/attach", map[string]interface{}{
 			"dir": get("dir"), "name": get("name"), "domain": get("domain"),
@@ -348,7 +359,11 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		if p, ok := args["db_port"].(float64); ok {
 			body["db_port"] = int(p)
 		}
-		return apiPost("/import", body)
+		path := "/import"
+		if args["async"] == true {
+			path += "?async=1"
+		}
+		return apiPost(path, body)
 	case "localwp_sites":
 		sites, err := ListLocalWPSites()
 		if err != nil {
@@ -464,6 +479,12 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		return apiPost("/hosts", map[string]interface{}{"domains": strArgs(args["domains"])})
 	case "remove_hosts_entries":
 		return apiDeleteBody("/hosts", map[string]interface{}{"domains": strArgs(args["domains"])})
+	case "list_jobs":
+		return apiGet("/jobs")
+	case "get_job":
+		return apiGet("/jobs/" + get("id"))
+	case "open_adminer":
+		return apiGet("/sites/" + get("slug") + "/adminer")
 	default:
 		return map[string]string{"error": "unknown tool: " + name}, true
 	}
@@ -499,11 +520,10 @@ func apiDo(method, path string, body interface{}) (interface{}, bool) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		// daemon down → try to start it, retry once
-		if method == "GET" {
-			EnsureRouterDaemonQuiet()
-			resp, err = client.Do(req)
-		}
+		// daemon down → start it, retry once. Used to only retry GET, so the
+		// first import_site after a reboot failed instead of spawning.
+		EnsureRouterDaemonQuiet()
+		resp, err = client.Do(req)
 		if err != nil {
 			return map[string]string{"error": "daemon unreachable: " + err.Error()}, true
 		}

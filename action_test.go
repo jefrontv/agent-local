@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,6 +120,53 @@ func TestSpinnerTicksOnlyWhileBusy(t *testing.T) {
 
 // While an action runs, keys other than ctrl+c are ignored: acting on a
 // half-changed site is how one problem becomes two.
+func TestHelpKeyOpensOverlay(t *testing.T) {
+	m := testModel(t, modeBrowse)
+	out, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	got := out.(model)
+	if got.mode != modeHelp {
+		t.Fatalf("mode = %v, want modeHelp", got.mode)
+	}
+	view := got.View()
+	if !strings.Contains(view, "import") || !strings.Contains(view, "database") {
+		t.Errorf("help overlay missing expected keys:\n%s", view)
+	}
+	out, _ = got.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if out.(model).mode != modeBrowse {
+		t.Error("esc should dismiss help")
+	}
+}
+
+func TestPackChipsNeverSplitsABinding(t *testing.T) {
+	chips := []string{"n new", "i import", "D delete"}
+	for _, w := range []int{10, 16, 24, 80} {
+		for _, line := range packChips(chips, w) {
+			// A wrap must not leave a dangling key with no label.
+			if line == "D" || strings.HasSuffix(line, " D") {
+				t.Fatalf("width %d split delete: %q", w, line)
+			}
+		}
+	}
+}
+
+func TestImportKeyStartsWizard(t *testing.T) {
+	m := testModel(t, modeBrowse)
+	out, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	got := out.(model)
+	if got.mode != modeInput || got.input.target != inputImportSource {
+		t.Fatalf("mode=%v target=%v, want import source prompt", got.mode, got.input.target)
+	}
+}
+
+func TestEmptySitesMentionsImport(t *testing.T) {
+	m := testModel(t, modeBrowse)
+	m.width = 100
+	view := m.View()
+	if !strings.Contains(view, "import") {
+		t.Errorf("empty state should offer import:\n%s", view)
+	}
+}
+
 func TestKeysAreHeldWhileBusy(t *testing.T) {
 	m := testModel(t, modeBusy)
 	m.busy = "working"

@@ -27,14 +27,14 @@ import (
 // the theme is not a signal lamp.
 
 var (
-	cInk   = lipgloss.AdaptiveColor{Light: "236", Dark: "252"}
-	cDim   = lipgloss.AdaptiveColor{Light: "244", Dark: "245"}
-	cSteel = lipgloss.AdaptiveColor{Light: "24", Dark: "67"}
-	cLamp  = lipgloss.Color("78")  // serving
-	cOff   = lipgloss.Color("240") // parked
-	cAlert = lipgloss.Color("203") // broken
-	cAmber = lipgloss.Color("179") // needs attention / in flight
-	cRule  = lipgloss.AdaptiveColor{Light: "252", Dark: "238"}
+	cInk   = lipgloss.AdaptiveColor{Light: "235", Dark: "253"}
+	cDim   = lipgloss.AdaptiveColor{Light: "243", Dark: "245"}
+	cSteel = lipgloss.AdaptiveColor{Light: "23", Dark: "73"} // phosphor teal, a broadcast monitor
+	cLamp  = lipgloss.Color("78")                            // serving
+	cOff   = lipgloss.Color("240")                           // parked
+	cAlert = lipgloss.Color("203")                           // broken
+	cAmber = lipgloss.Color("178")                           // needs attention / in flight
+	cRule  = lipgloss.AdaptiveColor{Light: "253", Dark: "236"}
 )
 
 var (
@@ -53,8 +53,10 @@ var (
 	stErr       = lipgloss.NewStyle().Foreground(cAlert)
 	stOK        = lipgloss.NewStyle().Foreground(cLamp)
 	stWarn      = lipgloss.NewStyle().Foreground(cAmber)
-	stPanel     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cSteel).Padding(0, 1)
-	stLabel     = lipgloss.NewStyle().Foreground(cDim).Width(7).Align(lipgloss.Right)
+	stPanel     = lipgloss.NewStyle().Border(lipgloss.DoubleBorder()).BorderForeground(cSteel).Padding(0, 1)
+	stModal     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cSteel).Padding(0, 1)
+	stLabel     = lipgloss.NewStyle().Foreground(cDim).Width(8).Align(lipgloss.Right)
+	stCapsule   = lipgloss.NewStyle().Foreground(cInk)
 )
 
 // lamp is the signature element: one dot, three states, same meaning everywhere.
@@ -95,6 +97,7 @@ const (
 	modeInput
 	modeConfirm
 	modeBusy
+	modeHelp
 )
 
 type inputTarget int
@@ -116,6 +119,9 @@ const (
 	inputSetDomain
 	inputSQL
 	inputInstallPHP
+	inputImportSource
+	inputImportName
+	inputImportDomain
 )
 
 type inputSpec struct {
@@ -468,6 +474,12 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m, nil
+	case modeHelp:
+		switch k.String() {
+		case "?", "esc", "q", "enter":
+			m.mode = modeBrowse
+		}
+		return m, nil
 	}
 
 	// browse mode
@@ -499,6 +511,9 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// opened — sites turning up "stopped" for no reason was this.
 		m.refresh()
 		m.setMsg("refreshed", false)
+		return m, nil
+	case "?":
+		m.mode = modeHelp
 		return m, nil
 	}
 
@@ -549,6 +564,9 @@ func (m model) handleInputKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case inputNewDir, inputSitesDir:
 			v, note := completeDir(m.input.value)
 			m.input.value, m.input.note = v, note
+		case inputImportSource:
+			v, note := completeImportSource(m.input.value)
+			m.input.value, m.input.note = v, note
 		case inputMediaFallback:
 			// Nothing to complete on disk, but the .htaccess origin is the answer
 			// nine times out of ten — so tab fills it in.
@@ -560,7 +578,7 @@ func (m model) handleInputKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "backspace":
 		if len(m.input.value) > 0 {
 			m.input.value = m.input.value[:len(m.input.value)-1]
-			if m.input.target == inputNewDir || m.input.target == inputSitesDir {
+			if m.input.target == inputNewDir || m.input.target == inputSitesDir || m.input.target == inputImportSource {
 				m.input.note = ""
 			}
 		}
@@ -814,6 +832,45 @@ func (m *model) applyInput(spec inputSpec) error {
 		out, err := m.engine.DB(val)
 		m.setMsg(strings.TrimSpace(tail(out, 160)), err != nil)
 		return err
+	case inputImportSource:
+		if val == "" {
+			return fmt.Errorf("a LocalWP site name or a WordPress directory")
+		}
+		next := m.startInput(inputImportName, "name for the imported site",
+			"becomes the slug, the folder name and the default domain", "")
+		next.input.dir = val
+		next.input.value = defaultImportName(val)
+		next.input.note = importSourceNote(val)
+		*m = next
+		return nil
+	case inputImportName:
+		if val == "" {
+			return fmt.Errorf("name required")
+		}
+		slug, err := SanitizeName(val)
+		if err != nil {
+			return err
+		}
+		next := m.startInput(inputImportDomain, "domain for "+slug, "must resolve locally — /etc/hosts is updated for you", "")
+		next.input.dir, next.input.name = spec.dir, val
+		next.input.value = m.store.DefaultDomain(slug)
+		*m = next
+		return nil
+	case inputImportDomain:
+		if val == "" {
+			return fmt.Errorf("domain required")
+		}
+		src, name, domain := spec.dir, spec.name, val
+		m.startBackground("importing "+src, func(cb func(string, string)) (string, error) {
+			site, err := m.engine.ImportSite(ImportOpts{
+				Source: src, Name: name, Domain: domain, Progress: cb,
+			})
+			if err != nil {
+				return "", err
+			}
+			return "imported " + BareURL(site) + "  db " + site.DBName, nil
+		})
+		return nil
 	case inputInstallPHP:
 		if val == "" {
 			val = "8.3"
@@ -845,6 +902,33 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			"enter or y → keep them together · n → a path for this one · d → change this directory", "")
 		next.input.note = m.newSiteNote()
 		return next, nil
+	case "i":
+		next := m.startInput(inputImportSource, "import from",
+			"LocalWP name or a WordPress directory · ⇥ completes", "")
+		next.input.note = localWPImportNote()
+		return next, nil
+	case "g":
+		if site == nil {
+			return m, nil
+		}
+		slug := site.Slug
+		return m.runAction("opening database for "+slug, func(func(string, string)) (string, error) {
+			s := m.store.Site(slug)
+			if s == nil {
+				return "", fmt.Errorf("no such site")
+			}
+			if !m.engine.FPMRunning(slug) {
+				if err := m.engine.StartSite(slug); err != nil {
+					return "", err
+				}
+			}
+			if _, err := writeAdminerBoot(s); err != nil {
+				return "", err
+			}
+			url := AdminerURL(s.Domain)
+			_ = runCmdQuiet("open", url)
+			return url, nil
+		})
 	case "s":
 		if site == nil {
 			return m, nil
@@ -1087,11 +1171,15 @@ func (m model) View() string {
 
 	b.WriteString("\n" + m.viewFooter(w))
 
-	// Transient layers, in the order they interrupt: a question, then work in
-	// flight, then the outcome of the last thing that finished.
+	// Transient layers, in the order they interrupt: help, a question, then
+	// work in flight, then the outcome of the last thing that finished.
+	if m.mode == modeHelp {
+		b.WriteString("\n" + m.viewHelp(w))
+	}
 	if m.mode == modeConfirm {
-		b.WriteString("\n\n" + stWarn.Render("? "+m.confirm) + "  " +
-			stKey.Render("y") + stDim.Render(" yes  ") + stKey.Render("n") + stDim.Render(" no"))
+		body := stWarn.Render("?  "+m.confirm) + "\n" +
+			stKey.Render("y") + stDim.Render(" yes   ") + stKey.Render("n") + stDim.Render(" no")
+		b.WriteString("\n" + stModal.Width(min(w-4, 72)).Render(body))
 	}
 	if m.mode == modeBusy {
 		// A spinner, what it is doing, and how long it has been doing it. The old
@@ -1102,36 +1190,28 @@ func (m model) View() string {
 		if secs := int(time.Since(m.busySince).Seconds()); secs >= 2 {
 			line += stDim.Render(fmt.Sprintf("   %ds", secs))
 		}
-		b.WriteString("\n\n" + line)
 		if m.busyDetail != "" {
-			b.WriteString("\n" + stDim.Render("    "+trunc(m.busyDetail, w-6)))
+			line += "\n" + stDim.Render("    "+trunc(m.busyDetail, w-10))
 		}
+		b.WriteString("\n" + stModal.Width(min(w-4, 72)).Render(line))
 	}
-	if m.msg != "" {
+	if m.msg != "" && m.mode != modeHelp {
 		st, mark := stOK, "✓ "
 		if m.msgErr {
 			st, mark = stErr, "✗ "
 		}
-		b.WriteString("\n\n" + st.Render(mark+m.msg))
+		b.WriteString("\n" + st.Render(mark+m.msg))
 	}
 	if m.mode == modeInput {
-		b.WriteString("\n\n" + stKey.Render(m.input.prompt) + stDim.Render(" › ") +
-			stSelRow.Render(m.input.value) + stSelBar.Render("▏"))
-		indent := lipgloss.Width(m.input.prompt) + 3
-		pad := strings.Repeat(" ", indent)
-		// Both lines are answers to "what am I choosing between", so they are
-		// trimmed to the window rather than left to wrap and break candidate
-		// names in half.
-		avail := w - indent - 2
-		// The note is what is actually on disk and what the answer will do with
-		// it: asking about a directory without saying what is in it is asking
-		// the user to guess.
+		inner := stKey.Render(m.input.prompt) + stDim.Render(" › ") +
+			stSelRow.Render(m.input.value) + stSelBar.Render("▏")
 		if m.input.note != "" {
-			b.WriteString("\n" + pad + stOK.Render(trunc(m.input.note, avail)))
+			inner += "\n" + stOK.Render(trunc(m.input.note, w-10))
 		}
 		if m.input.hint != "" {
-			b.WriteString("\n" + pad + stDim.Render(trunc(m.input.hint, avail)))
+			inner += "\n" + stDim.Render(trunc(m.input.hint, w-10))
 		}
+		b.WriteString("\n" + stModal.Width(min(w-4, 78)).Render(inner))
 	}
 	return b.String()
 }
@@ -1140,27 +1220,26 @@ func (m model) View() string {
 // numbers spent the same ink on "everything is fine" as on a real problem, so
 // the normal state is one word — and the exception names itself.
 func (m model) viewHeader(w int) string {
-	left := stName.Render("agent-local") + stDim.Render("  "+Version)
+	left := stName.Render("AGENT-LOCAL") + stDim.Render("  "+Version)
 
 	front := m.health.front
 	if front == "" {
 		front = "router"
 	}
-	// What is actually worth typing or knowing when all is well: the port you
-	// visit, and how many sites there are.
-	var right string
+	// The capsule is the one loud status. Everything else is inventory.
+	var status string
 	if down := m.stackDown(); len(down) == 0 {
-		right = lamp(true) + stRow.Render(" ready") +
-			stDim.Render("   "+front+" :"+fmt.Sprint(DefaultHTTPPort)) +
-			stDim.Render(fmt.Sprintf("   %d sites", len(m.sites)))
+		status = lamp(true) + stCapsule.Render(" ready")
 	} else {
 		st := lipgloss.NewStyle().Foreground(cAmber)
 		if len(down) > 1 {
 			st = lipgloss.NewStyle().Foreground(cAlert)
 		}
-		right = lampFor("fail") + st.Render(" "+strings.Join(down, ", ")+" down") +
-			stDim.Render(fmt.Sprintf("   %d sites", len(m.sites)))
+		status = lampFor("fail") + st.Render(" "+strings.Join(down, ", ")+" down")
 	}
+	right := stRail.Render("[ ") + status + stRail.Render(" ]") +
+		stDim.Render("  "+front+" :"+fmt.Sprint(DefaultHTTPPort)) +
+		stDim.Render(fmt.Sprintf("  %d sites", len(m.sites)))
 
 	gap := w - lipgloss.Width(left) - lipgloss.Width(right) - 4
 	if gap < 2 {
@@ -1258,7 +1337,12 @@ const tableWidth = 66
 
 func (m *model) viewSites() string {
 	if len(m.sites) == 0 {
-		return stDim.Render("  No sites yet. Press ") + stKey.Render("n") + stDim.Render(" to create one.")
+		empty := stRow.Render("No sites on this rack yet.") + "\n" +
+			stDim.Render("A site is a WordPress install this machine serves.") + "\n\n" +
+			stKey.Render("n") + stDim.Render("  create a new one") + "\n" +
+			stKey.Render("i") + stDim.Render("  import LocalWP or an existing checkout") + "\n" +
+			stKey.Render("?") + stDim.Render("  every key")
+		return "  " + stPanel.Width(m.panelWidth()).Render(empty)
 	}
 	var b strings.Builder
 	b.WriteString("    " + stHead.Render(fmt.Sprintf("%-20s %-5s %-30s %8s", "SITE", "PHP", "DOMAIN", "PREVIEWS")) + "\n")
@@ -1294,15 +1378,15 @@ func (m *model) viewSites() string {
 func (m *model) sitePanel(s *Site) string {
 	rows := [][2]string{
 		{"open", BareURL(s)},
+		{"admin", BareURL(s) + "/wp-admin"},
 		{"db", s.DBName + stDim.Render("  as ") + s.DBUser + stDim.Render(fmt.Sprintf("  127.0.0.1:%d", DefaultDBPort))},
+		{"gui", AdminerURL(s.Domain) + stDim.Render("  g")},
 		{"files", shortHome(s.WPDir) + stDim.Render("   "+m.siteSize(s.Slug))},
 	}
 	// Credentials only exist for sites we installed; an adopted folder keeps
 	// whatever admin it already had, and inventing a blank pair reads as data.
 	if s.AdminUser != "" {
-		rows = append(rows[:1], append([][2]string{
-			{"admin", BareURL(s) + "/wp-admin" + stDim.Render("   "+s.AdminUser+" / "+s.AdminPass)},
-		}, rows[1:]...)...)
+		rows[1] = [2]string{"admin", BareURL(s) + "/wp-admin" + stDim.Render("   "+s.AdminUser+" / "+s.AdminPass)}
 	}
 	if wts := m.store.WorktreesFor(s.Slug); len(wts) > 0 {
 		names := make([]string, 0, len(wts))
@@ -1328,7 +1412,18 @@ func (m *model) sitePanel(s *Site) string {
 		}
 		body.WriteString(stLabel.Render(r[0]) + "  " + r[1])
 	}
-	return stPanel.Width(tableWidth).Render(body.String())
+	return stPanel.Width(m.panelWidth()).Render(body.String())
+}
+
+func (m model) panelWidth() int {
+	w := m.width - 6
+	if w < tableWidth {
+		return tableWidth
+	}
+	if w > 92 {
+		return 92
+	}
+	return w
 }
 
 func (m model) viewWorktrees() string {
@@ -1363,6 +1458,7 @@ func (m model) viewWorktrees() string {
 			{"open", BareDomainURL(wt.Domain)},
 			{"branch", wt.Branch + stDim.Render("  of ") + wt.Site},
 			{"files", files},
+			{"db", stDim.Render("same database as ") + wt.Site + stDim.Render(" — writes land on the base site")},
 		}
 		var body strings.Builder
 		for i, r := range rows {
@@ -1371,7 +1467,7 @@ func (m model) viewWorktrees() string {
 			}
 			body.WriteString(stLabel.Render(r[0]) + "  " + r[1])
 		}
-		b.WriteString("\n" + stPanel.Width(tableWidth).Render(body.String()))
+		b.WriteString("\n" + stPanel.Width(m.panelWidth()).Render(body.String()))
 	}
 	return b.String()
 }
@@ -1465,32 +1561,181 @@ func (m model) viewDoctor() string {
 	return b.String()
 }
 
-// viewFooter lists only the keys that do something on this tab, with the
-// universal ones parked on the right where they stop competing for attention.
+// keyChip is one binding in the legend: the key is the only loud thing.
+func keyChip(k, label string) string {
+	return stKey.Render(k) + stDim.Render(" "+label)
+}
+
+// packChips lays chips into lines that fit width. A chip is never split, which
+// is how "D delete" used to die at the edge of the window.
+func packChips(chips []string, width int) []string {
+	if width < 8 {
+		width = 8
+	}
+	var lines []string
+	var cur string
+	for _, c := range chips {
+		if cur == "" {
+			cur = c
+			continue
+		}
+		if lipgloss.Width(cur)+2+lipgloss.Width(c) > width {
+			lines = append(lines, cur)
+			cur = c
+			continue
+		}
+		cur += "  " + c
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+
+func chipsOf(keys [][2]string) []string {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, keyChip(k[0], k[1]))
+	}
+	return out
+}
+
+// viewFooter is a legend strip under a hairline, not a sentence. Tab actions
+// wrap as whole chips; ? / tab / quit sit on the last line to the right.
 func (m model) viewFooter(w int) string {
 	var keys [][2]string
 	switch m.tab {
 	case tabSites:
-		keys = [][2]string{{"n", "new"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"},
-			{"o", "open"}, {"a", "preview"}, {"p", "php"}, {"d", "domain"}, {"m", "media"}, {"D", "delete"}}
+		keys = [][2]string{{"n", "new"}, {"i", "import"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"},
+			{"o", "open"}, {"g", "db"}, {"a", "preview"}, {"p", "php"}, {"d", "domain"}, {"m", "media"}, {"D", "delete"}}
 	case tabWorktrees:
-		keys = [][2]string{{"a", "add preview"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"}, {"o", "open"}, {"D", "remove"}}
+		keys = [][2]string{{"a", "add"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"}, {"o", "open"}, {"D", "remove"}}
 	case tabRuntimes:
-		keys = [][2]string{{"i", "install php"}, {"m", "mariadb"}, {"h", "apache"}, {"b", "homebrew"}}
+		keys = [][2]string{{"i", "php"}, {"m", "mariadb"}, {"h", "apache"}, {"b", "brew"}}
 	case tabDoctor:
-		keys = [][2]string{{"r", "re-run"}, {"f", "fix what can be fixed"}}
+		keys = [][2]string{{"r", "re-run"}, {"f", "fix"}}
 	}
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, stKey.Render(k[0])+" "+stDim.Render(k[1]))
+	always := chipsOf([][2]string{{"?", "help"}, {"⇥", "tab"}, {"q", "quit"}})
+	alwaysStr := strings.Join(always, "  ")
+	inner := w - 4
+	if inner < 20 {
+		inner = 20
 	}
-	left := "  " + strings.Join(parts, stDim.Render(" · "))
-	right := stKey.Render("⇥") + stDim.Render(" tab") + stDim.Render(" · ") + stKey.Render("q") + stDim.Render(" quit")
-	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 2 {
-		return left + "\n  " + right
+
+	lines := packChips(chipsOf(keys), inner)
+	if len(lines) == 0 {
+		lines = []string{""}
 	}
-	return left + strings.Repeat(" ", gap) + right
+	last := lines[len(lines)-1]
+	if gap := inner - lipgloss.Width(last) - lipgloss.Width(alwaysStr); gap >= 2 {
+		lines[len(lines)-1] = last + strings.Repeat(" ", gap) + alwaysStr
+	} else {
+		pad := inner - lipgloss.Width(alwaysStr)
+		if pad < 0 {
+			pad = 0
+		}
+		lines = append(lines, strings.Repeat(" ", pad)+alwaysStr)
+	}
+
+	var b strings.Builder
+	b.WriteString(stRailFaint.Render(strings.Repeat("─", max(w, 2))))
+	for _, line := range lines {
+		b.WriteString("\n  " + line)
+	}
+	return b.String()
+}
+
+func (m model) viewHelp(w int) string {
+	section := func(title string, keys [][2]string, note string) string {
+		body := strings.Join(packChips(chipsOf(keys), min(w-8, 72)), "\n")
+		if note != "" {
+			body += "\n" + stWarn.Render(note)
+		}
+		return stHead.Render(title) + "\n" + body
+	}
+	block := strings.Join([]string{
+		section("SITES", [][2]string{
+			{"n", "new"}, {"i", "import"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"},
+			{"o", "open"}, {"g", "database"}, {"a", "preview"}, {"p", "php"}, {"d", "domain"},
+			{"m", "media"}, {"D", "delete"},
+		}, ""),
+		section("PREVIEWS", [][2]string{
+			{"a", "add"}, {"s", "start"}, {"x", "stop"}, {"R", "restart"}, {"o", "open"}, {"D", "remove"},
+		}, "same database as the base site"),
+		section("RUNTIMES", [][2]string{
+			{"i", "install php"}, {"m", "mariadb"}, {"h", "apache"}, {"b", "homebrew"},
+		}, ""),
+		section("DOCTOR", [][2]string{{"r", "re-run"}, {"f", "fix what can be fixed"}}, ""),
+		section("ALWAYS", [][2]string{
+			{"⇥", "next tab"}, {"r", "refresh"}, {"q", "quit"}, {"esc", "cancel"},
+		}, ""),
+	}, "\n\n")
+	return stModal.Width(min(w-4, 76)).Render(block)
+}
+
+// completeImportSource completes a filesystem path, or a LocalWP site name.
+func completeImportSource(v string) (string, string) {
+	raw := strings.TrimSpace(v)
+	if raw == "" || strings.ContainsAny(raw, "/~") {
+		return completeDir(v)
+	}
+	sites, err := ListLocalWPSites()
+	if err != nil || len(sites) == 0 {
+		return completeDir(v)
+	}
+	var names []string
+	for _, s := range sites {
+		if strings.HasPrefix(strings.ToLower(s.Name), strings.ToLower(raw)) {
+			names = append(names, s.Name)
+		}
+	}
+	sort.Strings(names)
+	switch len(names) {
+	case 0:
+		return v, localWPImportNote()
+	case 1:
+		return names[0], "LocalWP site"
+	default:
+		return names[0], fmt.Sprintf("%d LocalWP: %s", len(names), strings.Join(trimList(names, 5), "  "))
+	}
+}
+
+func localWPImportNote() string {
+	sites, err := ListLocalWPSites()
+	if err != nil || len(sites) == 0 {
+		return "a directory with wp-load.php, or a LocalWP site name"
+	}
+	names := make([]string, 0, len(sites))
+	for _, s := range sites {
+		names = append(names, s.Name)
+	}
+	sort.Strings(names)
+	return fmt.Sprintf("LocalWP: %s", strings.Join(trimList(names, 6), "  "))
+}
+
+func defaultImportName(src string) string {
+	if sites, err := ListLocalWPSites(); err == nil {
+		for _, s := range sites {
+			if s.Name == src || s.ID == src {
+				return s.Name
+			}
+		}
+	}
+	return defaultSiteName(src)
+}
+
+func importSourceNote(src string) string {
+	if sites, err := ListLocalWPSites(); err == nil {
+		for _, s := range sites {
+			if s.Name == src || s.ID == src {
+				return "LocalWP " + s.Name + " → " + s.Domain
+			}
+		}
+	}
+	if st, err := os.Stat(src); err == nil && st.IsDir() {
+		return "directory " + shortHome(DocrootFor(src))
+	}
+	return src
 }
 
 // trunc keeps a column a column: an over-long value loses its tail to an

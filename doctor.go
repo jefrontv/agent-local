@@ -112,6 +112,24 @@ func Doctor(store *Store) *DoctorReport {
 		add(Finding{Check: "dns", Status: "ok", Detail: "all domains resolve via /etc/hosts"})
 	}
 
+	// A domain can be "in hosts" and still resolve to LocalWP's leftover ::1 /
+	// 127.0.0.1 lines that sit above ours. Then the printed URL grows :10443
+	// and the bare name never hits 127.0.0.2:443.
+	if hostsBody, err := os.ReadFile("/etc/hosts"); err == nil {
+		var shadowed []string
+		for _, d := range store.AllDomains() {
+			if ips := hostsShadowedIPs(string(hostsBody), d); len(ips) > 0 {
+				shadowed = append(shadowed, d+" ("+strings.Join(ips, ", ")+")")
+			}
+		}
+		if len(shadowed) > 0 {
+			add(Finding{Check: "dns-shadow", Status: "warn",
+				Detail:  "older /etc/hosts lines win over ours: " + strings.Join(shadowed, "; "),
+				FixHint: "LocalWP leftovers like ::1 / 127.0.0.1 sit above 127.0.0.2, so the bare URL misses the alias",
+				FixCmd:  "agent-local doctor --fix", AutoFix: true, FixRoot: true})
+		}
+	}
+
 	// certs
 	var missingCerts []string
 	for _, d := range store.AllDomains() {
@@ -337,14 +355,10 @@ func DoctorFix(store *Store, interactive bool) []string {
 		}
 		switch {
 		case strings.HasPrefix(f.Check, "dns"):
-			var missing []string
-			for _, d := range store.AllDomains() {
-				if !hostsHas(d) {
-					missing = append(missing, d)
-				}
-			}
-			if n, err := EnsureHosts(interactive, missing); err == nil && n > 0 {
-				done = append(done, fmt.Sprintf("added %d /etc/hosts entries", n))
+			// AllDomains, not just missing: EnsureHosts also comments leftover
+			// LocalWP ::1 / 127.0.0.1 lines that shadow our alias.
+			if n, err := EnsureHosts(interactive, store.AllDomains()); err == nil && n > 0 {
+				done = append(done, fmt.Sprintf("updated %d /etc/hosts line(s)", n))
 			}
 		case f.Check == "tls":
 			for _, d := range store.AllDomains() {

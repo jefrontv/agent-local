@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Whether to stand aside at startup. The cost of getting this wrong in one
 // direction is a bare URL arriving twenty seconds late; in the other it is
@@ -45,6 +48,23 @@ func TestLocalAppRunningMatchesReality(t *testing.T) {
 	}
 	if !localAppRunning() {
 		t.Errorf("LocalWP is running (%s) but localAppRunning() said no", firstLine(out))
+	}
+}
+
+func TestApacheStartArgsAreNotSingleProcess(t *testing.T) {
+	args := apacheStartArgs("/opt/homebrew/bin/httpd", "/tmp/httpd.conf")
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, " -X") || strings.HasSuffix(joined, " -X") {
+		t.Fatalf("apache still starts with -X: %v", args)
+	}
+	found := false
+	for _, a := range args {
+		if a == "-DFOREGROUND" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing -DFOREGROUND: %v", args)
 	}
 }
 

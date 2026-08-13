@@ -26,7 +26,16 @@ type Store struct {
 	// deleted records removals this process asked for, per collection. Absence
 	// from memory is never enough to delete another process's record.
 	deleted map[string]map[string]bool
+	// domains is Host → site/worktree, rebuilt on every mutate so the request
+	// path does not walk the catalog.
+	domains map[string]domainHit
 	Data    storeData
+}
+
+// domainHit is one Host-header resolution.
+type domainHit struct {
+	siteSlug string
+	wtID     string // empty = the site itself
 }
 
 type storeData struct {
@@ -77,22 +86,54 @@ func (s *Store) normalize() {
 	if s.Data.Worktrees == nil {
 		s.Data.Worktrees = map[string]*Worktree{}
 	}
+	s.reindexDomains()
 }
 
-// lock takes the advisory store lock. Returns the release func.
-func (s *Store) lock() func() {
+func (s *Store) reindexDomains() {
+	idx := make(map[string]domainHit, len(s.Data.Sites)+len(s.Data.Worktrees))
+	for _, site := range s.Data.Sites {
+		idx[site.Domain] = domainHit{siteSlug: site.Slug}
+		for _, a := range site.Aliases {
+			idx[a] = domainHit{siteSlug: site.Slug}
+		}
+	}
+	for _, w := range s.Data.Worktrees {
+		idx[w.Domain] = domainHit{siteSlug: w.Site, wtID: w.ID}
+	}
+	s.domains = idx
+}
+
+// LookupDomain resolves a Host header to a site and optional worktree.
+func (s *Store) LookupDomain(domain string) (*Site, *Worktree) {
+	if s.domains == nil {
+		s.reindexDomains()
+	}
+	hit, ok := s.domains[domain]
+	if !ok {
+		return nil, nil
+	}
+	site := s.Data.Sites[hit.siteSlug]
+	if hit.wtID == "" {
+		return site, nil
+	}
+	return site, s.Data.Worktrees[hit.wtID]
+}
+
+// lock takes the advisory store lock. A failed flock used to return a no-op
+// release, so two writers could merge unlocked and clobber each other.
+func (s *Store) lock() (func(), error) {
 	f, err := os.OpenFile(s.path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		return func() {}
+		return nil, err
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		f.Close()
-		return func() {}
+		return nil, err
 	}
 	return func() {
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		f.Close()
-	}
+	}, nil
 }
 
 // Save writes the store atomically under the lock (temp + rename).
@@ -106,7 +147,10 @@ func (s *Store) lock() func() {
 func (s *Store) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	release := s.lock()
+	release, err := s.lock()
+	if err != nil {
+		return fmt.Errorf("store lock: %w", err)
+	}
 	defer release()
 	s.Data.UpdatedAt = time.Now()
 	b, err := s.mergedBytes()
@@ -249,7 +293,10 @@ func (s *Store) ReloadIfChanged() {
 	if !s.loadedAt.IsZero() && !st.ModTime().After(s.loadedAt) {
 		return
 	}
-	release := s.lock()
+	release, err := s.lock()
+	if err != nil {
+		return
+	}
 	defer release()
 	b, err := os.ReadFile(s.path)
 	if err != nil {
@@ -278,23 +325,18 @@ func (s *Store) Sites() []*Site {
 	return out
 }
 
-// FindSiteByDomain matches domain or alias.
+// FindSiteByDomain matches a site domain, an alias, or a worktree host
+// (returning the parent site). Preview hosts used to miss and skip media fallback.
 func (s *Store) FindSiteByDomain(domain string) *Site {
-	for _, site := range s.Data.Sites {
-		if site.Domain == domain {
-			return site
-		}
-		for _, a := range site.Aliases {
-			if a == domain {
-				return site
-			}
-		}
-	}
-	return nil
+	site, _ := s.LookupDomain(domain)
+	return site
 }
 
 // PutSite inserts/updates a site.
-func (s *Store) PutSite(site *Site) { s.Data.Sites[site.Slug] = site }
+func (s *Store) PutSite(site *Site) {
+	s.Data.Sites[site.Slug] = site
+	s.reindexDomains()
+}
 
 // DelSite removes a site row.
 // DelSite removes a site and records that this process meant to. Merging used to
@@ -304,6 +346,7 @@ func (s *Store) PutSite(site *Site) { s.Data.Sites[site.Slug] = site }
 func (s *Store) DelSite(slug string) {
 	delete(s.Data.Sites, slug)
 	s.markDeleted("sites", slug)
+	s.reindexDomains()
 }
 
 // WorktreesFor returns worktrees of a site sorted by branch.
@@ -319,13 +362,17 @@ func (s *Store) WorktreesFor(slug string) []*Worktree {
 }
 
 // PutWorktree inserts/updates a worktree.
-func (s *Store) PutWorktree(w *Worktree) { s.Data.Worktrees[w.ID] = w }
+func (s *Store) PutWorktree(w *Worktree) {
+	s.Data.Worktrees[w.ID] = w
+	s.reindexDomains()
+}
 
 // DelWorktree removes a worktree row.
 // DelWorktree removes a worktree, recording the intent for the same reason.
 func (s *Store) DelWorktree(id string) {
 	delete(s.Data.Worktrees, id)
 	s.markDeleted("worktrees", id)
+	s.reindexDomains()
 }
 
 // markDeleted notes a deletion this process performed, so a merge can apply it

@@ -107,6 +107,13 @@ func EnsureHosts(interactive bool, domains []string) (int, error) {
 	}
 	changed := 0
 	lines := strings.Split(string(b), "\n")
+	// LocalWP (and friends) leave ::1 / 127.0.0.1 lines at the top of the file.
+	// macOS uses the first match, so those win over our 127.0.0.2 lines and
+	// every "bare" URL either hits the wrong stack or needs :10443. Comment
+	// them out; our marked lines stay authoritative.
+	var shadowed int
+	lines, shadowed = commentShadowedHosts(lines, domains)
+	changed += shadowed
 	// migrate our marker lines to the wanted IP
 	for i, line := range lines {
 		if !strings.Contains(line, HostsMarker) {
@@ -183,24 +190,124 @@ func hostLineHas(content, domain string) bool {
 	return false
 }
 
-// hostsTarget returns the IP /etc/hosts currently maps a domain to, or "".
-func hostsTarget(domain string) string {
-	b, err := os.ReadFile("/etc/hosts")
-	if err != nil {
-		return ""
+// commentShadowedHosts comments out unmanaged /etc/hosts lines for domains we
+// serve. Those leftovers (LocalWP's "::1 name" / "127.0.0.1 name #Local Site")
+// sit above our marked lines and win resolution.
+func commentShadowedHosts(lines []string, domains []string) ([]string, int) {
+	want := map[string]bool{}
+	for _, d := range domains {
+		if d != "" {
+			want[d] = true
+		}
 	}
-	for _, line := range strings.Split(string(b), "\n") {
+	if len(want) == 0 {
+		return lines, 0
+	}
+	ours := map[string]bool{LoopbackAlias: true, LoopbackAlias6: true}
+	if !AliasActive() {
+		ours["127.0.0.1"] = true
+	}
+	n := 0
+	out := append([]string(nil), lines...)
+	for i, line := range out {
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") || strings.Contains(line, HostsMarker) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		hit := false
+		for _, f := range fields[1:] {
+			if want[f] {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			continue
+		}
+		// An unmanaged line that already points at the address we serve can stay.
+		if ours[fields[0]] {
+			continue
+		}
+		out[i] = "# " + line + "  # shadowed by agent-local"
+		n++
+	}
+	return out, n
+}
+
+// hostsShadowedIPs lists unmanaged addresses still published for a domain.
+func hostsShadowedIPs(content, domain string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(content, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") || strings.Contains(line, HostsMarker) {
+			continue
+		}
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
 		for _, f := range fields[1:] {
-			if f == domain {
-				return fields[0]
+			if f == domain && !seen[fields[0]] {
+				seen[fields[0]] = true
+				out = append(out, fields[0])
 			}
 		}
 	}
-	return ""
+	return out
+}
+
+// hostsTarget returns the IP we treat as authoritative for a domain: our
+// marked alias if one exists, otherwise the first live hosts line. First-match
+// used to return leftover LocalWP ::1/127.0.0.1 lines and every printed URL
+// grew a :10443 suffix even though the alias was up.
+func hostsTarget(domain string) string {
+	b, err := os.ReadFile("/etc/hosts")
+	if err != nil {
+		return ""
+	}
+	return hostsTargetIn(string(b), domain)
+}
+
+func hostsTargetIn(content, domain string) string {
+	var first, alias string
+	for _, line := range strings.Split(content, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		hit := false
+		for _, f := range fields[1:] {
+			if f == domain {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			continue
+		}
+		if first == "" {
+			first = fields[0]
+		}
+		if fields[0] == LoopbackAlias {
+			alias = LoopbackAlias
+			if strings.Contains(line, HostsMarker) {
+				return LoopbackAlias
+			}
+		}
+	}
+	if alias != "" {
+		return alias
+	}
+	return first
 }
 
 // RemoveHosts strips our marker lines for the named domains. An empty list is

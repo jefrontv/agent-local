@@ -104,7 +104,7 @@ func TestToolsAreWellFormed(t *testing.T) {
 		}
 	}
 	// The tools this session added, so a refactor cannot quietly drop them.
-	for _, want := range []string{"attach_site", "set_media_fallback", "get_sites_dir", "create_site"} {
+	for _, want := range []string{"attach_site", "set_media_fallback", "get_sites_dir", "create_site", "list_jobs", "get_job", "open_adminer"} {
 		if !seen[want] {
 			t.Errorf("tool %q is missing", want)
 		}

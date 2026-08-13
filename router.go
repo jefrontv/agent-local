@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Router is the built-in vhost reverse proxy: one listener per scheme,
@@ -33,14 +34,15 @@ func (r *Router) ListenAndServe(httpPort, httpsPort int) error {
 		GetCertificate: r.getCertificate,
 		MinVersion:     tls.VersionTLS12,
 	}
-	httpSrv := &http.Server{Handler: r}
-	httpsSrv := &http.Server{Handler: r}
-	// macOS dual-stack listeners can drop IPv4-mapped connections; bind each
-	// family explicitly so both curl http://127.0.0.1 and ::1 work.
+	httpSrv := &http.Server{Handler: r, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
+	httpsSrv := &http.Server{Handler: r, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
+	// Loopback only: these ports used to bind 0.0.0.0 and every local WordPress
+	// was reachable from the LAN. Dual-stack: macOS can drop IPv4-mapped
+	// connections on a single dual-stack listener.
 	var bound []net.Listener
 	for _, addr := range []string{
-		fmt.Sprintf("0.0.0.0:%d", httpPort),
-		fmt.Sprintf("[::]:%d", httpPort),
+		fmt.Sprintf("127.0.0.1:%d", httpPort),
+		fmt.Sprintf("[::1]:%d", httpPort),
 	} {
 		if l, err := net.Listen("tcp", addr); err == nil {
 			bound = append(bound, l)
@@ -52,8 +54,8 @@ func (r *Router) ListenAndServe(httpPort, httpsPort int) error {
 	}
 	boundTLS := 0
 	for _, addr := range []string{
-		fmt.Sprintf("0.0.0.0:%d", httpsPort),
-		fmt.Sprintf("[::]:%d", httpsPort),
+		fmt.Sprintf("127.0.0.1:%d", httpsPort),
+		fmt.Sprintf("[::1]:%d", httpsPort),
 	} {
 		if l, err := net.Listen("tcp", addr); err == nil {
 			boundTLS++
@@ -77,6 +79,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	wpdir, fpmID, _, ok := r.engine.Resolve(host)
 	if !ok {
 		http.Error(w, "agent-local: no site for host "+host, http.StatusBadGateway)
+		return
+	}
+
+	if isAdminerPath(req.URL.Path) {
+		r.serveAdminer(w, req, host, wpdir)
 		return
 	}
 
@@ -282,12 +289,44 @@ func within(full, root string) bool {
 
 // proxyFCGI speaks FastCGI to the pool socket and streams back.
 func (r *Router) proxyFCGI(w http.ResponseWriter, req *http.Request, wpdir, sock, host string) {
-	conn, err := net.Dial("unix", sock)
+	script, scriptName := resolveScript(wpdir, req.URL.Path)
+	r.proxyFCGIScript(w, req, wpdir, sock, host, script, scriptName)
+}
+
+// serveAdminer runs the downloaded Adminer wrapper through the site's PHP.
+func (r *Router) serveAdminer(w http.ResponseWriter, req *http.Request, host, wpdir string) {
+	site := r.engine.SiteForHost(host)
+	if site == nil {
+		http.Error(w, "agent-local: no site for host "+host, http.StatusBadGateway)
+		return
+	}
+	boot, err := writeAdminerBoot(site)
+	if err != nil {
+		http.Error(w, "agent-local: adminer: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	// Adminer is our file, but it talks to the site's schema — use the site
+	// pool (not a preview's) so a worktree host still opens the same database.
+	sock := r.engine.fpmSock(site.Slug)
+	if !fileExists(sock) {
+		if err := r.engine.ensurePool(site.Slug); err != nil {
+			http.Error(w, "agent-local: site could not start: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+	}
+	r.proxyFCGIScript(w, req, wpdir, sock, host, boot, AdminerPath)
+}
+
+// proxyFCGIScript is proxyFCGI with an explicit script filename, used by
+// permalinks and by Adminer (which lives outside the docroot).
+func (r *Router) proxyFCGIScript(w http.ResponseWriter, req *http.Request, wpdir, sock, host, script, scriptName string) {
+	conn, err := net.DialTimeout("unix", sock, 3*time.Second)
 	if err != nil {
 		http.Error(w, "agent-local: php-fpm connect: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(130 * time.Second))
 
 	reqID := uint16(1)
 	https := ""
@@ -296,7 +335,6 @@ func (r *Router) proxyFCGI(w http.ResponseWriter, req *http.Request, wpdir, sock
 		https = "on"
 		serverPort = "443"
 	}
-	script, scriptName := resolveScript(wpdir, req.URL.Path)
 	contentLength := "0"
 	if req.ContentLength >= 0 {
 		contentLength = fmt.Sprint(req.ContentLength)

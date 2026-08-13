@@ -53,7 +53,7 @@ func (e *Engine) EnsureDB() error {
 		Name: "mysql",
 		Args: []string{
 			inv.MySQL.Bin,
-			"--no-defaults",
+			"--defaults-file=" + e.engineDefaults(),
 			"--datadir=" + datadir,
 			"--socket=" + e.dbSock(),
 			"--port=" + fmt.Sprint(DefaultDBPort),
@@ -108,6 +108,45 @@ func (e *Engine) emptyDefaults() string {
 		os.WriteFile(p, []byte("[mysqld]\n"), 0o644)
 	}
 	return p
+}
+
+// engineDefaults is the mysqld config we actually run with. Isolated from the
+// user's Homebrew my.cnf (which is how mysqlx-* vars used to leak in) but not
+// empty: a default 128MB InnoDB pool on a machine holding several imported
+// production dumps is why local admin felt like molasses.
+func (e *Engine) engineDefaults() string {
+	p := filepath.Join(P().Conf(), "mysql.cnf")
+	body := fmt.Sprintf(`[mysqld]
+innodb_buffer_pool_size = %d
+innodb_log_file_size = 64M
+max_connections = 80
+table_open_cache = 400
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_ci
+`, innodbPoolBytes())
+	_ = os.WriteFile(p, []byte(body), 0o644)
+	return p
+}
+
+func innodbPoolBytes() int64 {
+	ram := sysctlMem()
+	switch {
+	case ram >= 16<<30:
+		return 1 << 30
+	case ram >= 8<<30:
+		return 512 << 20
+	default:
+		return 256 << 20
+	}
+}
+
+func sysctlMem() int64 {
+	out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	return n
 }
 
 // DB runs SQL against the shared server as root, with no default database.
@@ -250,7 +289,7 @@ php_value[upload_max_filesize] = 128M
 php_value[post_max_size] = 128M
 php_value[max_execution_time] = 120
 php_value[opcache.enable] = 1
-php_value[opcache.memory_consumption] = 256
+php_value[opcache.memory_consumption] = 128
 php_value[opcache.interned_strings_buffer] = 16
 php_value[opcache.max_accelerated_files] = 20000
 php_value[opcache.revalidate_freq] = 2
@@ -407,21 +446,21 @@ func (e *Engine) FPMRestart(id, wpdir, phpVersion string) error {
 }
 
 // Resolve returns the serving target for a domain: wpdir + fpm id.
-// Checks worktrees first (more specific), then sites.
 func (e *Engine) Resolve(domain string) (wpdir, fpmID, phpVersion string, ok bool) {
-	for _, w := range e.Store.Data.Worktrees {
-		if w.Domain == domain {
-			site := e.Store.Site(w.Site)
-			if site == nil {
-				return "", "", "", false
-			}
-			return e.wtServeDir(w), w.ID, site.PHPVersion, true
-		}
+	site, wt := e.Store.LookupDomain(domain)
+	if site == nil {
+		return "", "", "", false
 	}
-	if site := e.Store.FindSiteByDomain(domain); site != nil {
-		return site.WPDir, site.Slug, site.PHPVersion, true
+	if wt != nil {
+		return e.wtServeDir(wt), wt.ID, site.PHPVersion, true
 	}
-	return "", "", "", false
+	return site.WPDir, site.Slug, site.PHPVersion, true
+}
+
+// SiteForHost is the site that owns a Host header, including preview domains.
+func (e *Engine) SiteForHost(host string) *Site {
+	site, _ := e.Store.LookupDomain(host)
+	return site
 }
 
 // wtServeDir is the docroot a worktree serves from: <path>/wp for

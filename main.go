@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,7 +31,9 @@ USAGE
   agent-local yield [secs]       free :80/:443 briefly (let LocalWP start)
   agent-local resolve [PATH]     which site owns a path (default: cwd)
   agent-local cert DOMAIN [--trust]   TLS state for a domain
-  agent-local db SLUG [sql|import F|export [F]|reset|tables]   database ops
+  agent-local db SLUG [sql|import F|export [F]|reset|tables|gui]   database ops
+  agent-local jobs               list recent long-running jobs
+  agent-local job ID             show one job's status and progress
   agent-local media SLUG [URL]       missing uploads -> origin (--auto reads .htaccess, --off)
   agent-local autostart [--off]      start the daemon at login (on by default)
   agent-local sites-dir [PATH]       show/set where new sites are created
@@ -142,6 +145,10 @@ func main() {
 			fmt.Println(tok)
 		}
 		err = e
+	case "jobs":
+		err = cmdJobs()
+	case "job":
+		err = cmdJob(rest)
 	case "logs":
 		err = cmdLogs(rest)
 	case "version", "--version":
@@ -527,6 +534,12 @@ func cmdOpen(args []string) error {
 		_ = e.StartSite(slug)
 	}
 	url := BareURL(site)
+	if hasFlag(args, "--db") {
+		if _, err := writeAdminerBoot(site); err != nil {
+			return err
+		}
+		url = AdminerURL(site.Domain)
+	}
 	return exec.Command("open", url).Start()
 }
 
@@ -581,6 +594,16 @@ func cmdDB(args []string) error {
 				"FROM information_schema.tables WHERE table_schema='%s' ORDER BY table_name", site.DBName))
 			fmt.Print(out)
 			return err
+		case "gui", "adminer":
+			if !e.FPMRunning(site.Slug) {
+				_ = e.StartSite(slug)
+			}
+			if _, err := writeAdminerBoot(site); err != nil {
+				return err
+			}
+			url := AdminerURL(site.Domain)
+			fmt.Println(url)
+			return exec.Command("open", url).Start()
 		}
 		// anything else: raw SQL against this site's schema
 		out, err := e.DBIn(site.DBName, strings.Join(pos[1:], " "))
@@ -745,6 +768,32 @@ func cmdCert(args []string) error {
 	}
 	st := InspectCert(domain)
 	fmt.Printf("%s  exists=%t trusted=%t expires=%s\n  %s\n", st.Domain, st.Exists, st.Trusted, st.NotAfter, st.CertPath)
+	return nil
+}
+
+func cmdJobs() error {
+	EnsureRouterDaemonQuiet()
+	data, isErr := apiGet("/jobs")
+	if isErr {
+		return fmt.Errorf("%v", data)
+	}
+	b, _ := json.MarshalIndent(data, "", "  ")
+	fmt.Println(string(b))
+	return nil
+}
+
+func cmdJob(args []string) error {
+	pos := positional(args)
+	if len(pos) == 0 {
+		return fmt.Errorf("usage: agent-local job ID")
+	}
+	EnsureRouterDaemonQuiet()
+	data, isErr := apiGet("/jobs/" + pos[0])
+	if isErr {
+		return fmt.Errorf("%v", data)
+	}
+	b, _ := json.MarshalIndent(data, "", "  ")
+	fmt.Println(string(b))
 	return nil
 }
 

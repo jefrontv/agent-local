@@ -120,7 +120,7 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 	var docroot string
 	var srcDBName, srcHost, srcUser, srcPass, srcSocket string
 	var srcPort int
-	var lwName, lwID string
+	var lwName, lwID, lwDomain, lwPHP string
 
 	if sites, err := ListLocalWPSites(); err == nil {
 		for _, s := range sites {
@@ -134,7 +134,8 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 			if s.Name != o.Source && s.ID != o.Source && !byPath {
 				continue
 			}
-			lwName, lwID = s.Name, s.ID
+			lwName, lwID, lwDomain = s.Name, s.ID, s.Domain
+			lwPHP = s.Services.PHP.Version
 			docroot = filepath.Join(s.Path, "app", "public")
 			srcUser, srcPass = s.MySQL.User, s.MySQL.Password
 			if srcUser == "" {
@@ -163,6 +164,11 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 	}
 	if docroot == "" {
 		return nil, fmt.Errorf("source %q not found as a LocalWP site or directory", o.Source)
+	}
+	if !fileExists(filepath.Join(docroot, "wp-load.php")) {
+		if found := DocrootFor(docroot); fileExists(filepath.Join(found, "wp-load.php")) {
+			docroot = found
+		}
 	}
 	if !fileExists(filepath.Join(docroot, "wp-load.php")) {
 		return nil, fmt.Errorf("no WordPress at %s (missing wp-load.php)", docroot)
@@ -249,8 +255,11 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 		return nil, fmt.Errorf("domain %q already in use", domain)
 	}
 
-	// PHP version: requested → LocalWP's → highest installed.
+	// PHP version: requested → LocalWP's (major.minor) → 8.2 → highest installed.
 	php := o.PHPVer
+	if php == "" {
+		php = matchInstalledPHP(e.Store, lwPHP)
+	}
 	if php == "" {
 		php = matchInstalledPHP(e.Store, "8.2")
 	}
@@ -350,52 +359,32 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 		}
 	}
 
-	// 4) persist + serve
-	site.State = StateRunning
+	// 4) persist, then rewrite URLs *before* the site answers HTTP — otherwise
+	// the first request can 301 to production and look like a failed import.
+	site.State = StateStopped
 	e.Store.PutSite(site)
 	if err := e.Store.Save(); err != nil {
 		return nil, err
 	}
+
+	if !o.ServeOnly {
+		oldDomains := map[string]bool{}
+		for _, h := range e.siteHostsFromDB(site) {
+			oldDomains[h] = true
+		}
+		if lwDomain != "" {
+			oldDomains[lwDomain] = true
+		}
+		for _, h := range []string{domain, ""} {
+			delete(oldDomains, h)
+		}
+		if err := e.rewriteImportedURLs(site, oldDomains, cb); err != nil {
+			return nil, fmt.Errorf("rewrite urls: %w", err)
+		}
+	}
+
 	if err := e.StartSite(slug); err != nil {
 		return nil, fmt.Errorf("start: %w", err)
-	}
-
-	oldDomain := ""
-	if sites, err := ListLocalWPSites(); err == nil {
-		for _, s := range sites {
-			if s.Name == o.Source || s.ID == o.Source {
-				oldDomain = s.Domain
-			}
-		}
-	}
-	// 5) rewrite stored URLs/domains so the copied content serves on the new
-	// domain. Source domains come from the DB itself (siteurl/home) because
-	// LocalWP sites often carry staging subdomains, plus the registry domain.
-	oldDomains := map[string]bool{}
-	for _, h := range e.siteHostsFromDB(site) {
-		oldDomains[h] = true
-	}
-	if oldDomain != "" {
-		oldDomains[oldDomain] = true
-	}
-	for _, h := range []string{domain, ""} {
-		delete(oldDomains, h)
-	}
-	for old := range oldDomains {
-		cb("urls", fmt.Sprintf("search-replace %s → %s", old, domain))
-		for _, scheme := range []string{"https://", "http://"} {
-			if out, err := wpCLI(site, "search-replace",
-				scheme+old, scheme+domain,
-				"--all-tables", "--skip-columns=guid"); err != nil {
-				cb("warn", "search-replace: "+tail(out, 200))
-			}
-		}
-	}
-
-	// 6) theme-level overrides (EFront: EFRONT_URL_OVERRIDE → WP_HOME/WP_SITEURL)
-	// pin the old domain in wp-config.php; rewrite any constant holding it.
-	if len(oldDomains) > 0 {
-		rewriteWPConfigDomains(filepath.Join(targetWPDir, "wp-config.php"), oldDomains, domain)
 	}
 
 	cb("dns", "registering "+domain)
@@ -470,21 +459,11 @@ func (e *Engine) copyDatabase(site *Site, srcDB, srcSocket, srcHost string, srcP
 		return fmt.Errorf("start load: %w", err)
 	}
 
-	// dump → collation fixer → load
-	sc := bufio.NewScanner(dumpOut)
-	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+	// dump → collation fixer → load. Byte stream, not line-scanner: a single
+	// INSERT from postmeta routinely exceeds bufio.Scanner's token cap.
 	streamErr := func() error {
 		defer loadIn.Close()
-		for sc.Scan() {
-			line := fixCollations(sc.Bytes())
-			if _, err := loadIn.Write(line); err != nil {
-				return err
-			}
-			if _, err := loadIn.Write([]byte("\n")); err != nil {
-				return err
-			}
-		}
-		return sc.Err()
+		return streamFixCollations(loadIn, dumpOut)
 	}()
 
 	dumpWait := dump.Wait()
@@ -501,10 +480,61 @@ func (e *Engine) copyDatabase(site *Site, srcDB, srcSocket, srcHost string, srcP
 	return nil
 }
 
-var collationRe = regexp.MustCompile(`utf8mb4_0900_ai_ci`)
+// collationReplacer maps MySQL-8+ collations MariaDB will refuse onto ones it
+// ships. Longest token is 22 bytes; streamFixCollations keeps that much overlap
+// so a name split across two reads still rewrites.
+var collationReplacer = strings.NewReplacer(
+	"utf8mb4_0900_ai_ci", "utf8mb4_unicode_ci",
+	"utf8mb4_0900_as_ci", "utf8mb4_unicode_ci",
+	"utf8mb4_0900_as_cs", "utf8mb4_bin",
+	"utf8mb4_0900_bin", "utf8mb4_bin",
+	"utf8mb4_uca1400_ai_ci", "utf8mb4_unicode_ci",
+	"utf8mb4_uca1400_as_ci", "utf8mb4_unicode_ci",
+	"utf8mb4_uca1400_as_cs", "utf8mb4_bin",
+)
 
 func fixCollations(b []byte) []byte {
-	return collationRe.ReplaceAll(b, []byte("utf8mb4_unicode_ci"))
+	return []byte(collationReplacer.Replace(string(b)))
+}
+
+const collationOverlap = 32
+
+// streamFixCollations copies src to dst, rewriting MySQL-8 collations as it
+// goes. Memory stays one buffer regardless of dump size or line length.
+func streamFixCollations(dst io.Writer, src io.Reader) error {
+	buf := make([]byte, 64*1024)
+	var hold []byte
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			chunk := append(hold, buf[:n]...)
+			hold = nil
+			if err == nil {
+				if len(chunk) > collationOverlap {
+					hold = append([]byte(nil), chunk[len(chunk)-collationOverlap:]...)
+					chunk = chunk[:len(chunk)-collationOverlap]
+				} else {
+					hold = chunk
+					chunk = nil
+				}
+			}
+			if len(chunk) > 0 {
+				if _, werr := dst.Write(fixCollations(chunk)); werr != nil {
+					return werr
+				}
+			}
+		}
+		if err == io.EOF {
+			if len(hold) > 0 {
+				_, werr := dst.Write(fixCollations(hold))
+				return werr
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 }
 
 // loadSQLFile streams a .sql dump into the site's database through the same
@@ -549,20 +579,9 @@ func (e *Engine) loadSQLFile(site *Site, path string) error {
 	if err := load.Start(); err != nil {
 		return err
 	}
-	sc := bufio.NewScanner(src)
-	sc.Buffer(make([]byte, 1024*1024), 64*1024*1024)
 	streamErr := func() error {
 		defer loadIn.Close()
-		for sc.Scan() {
-			line := fixCollations(sc.Bytes())
-			if _, err := loadIn.Write(line); err != nil {
-				return err
-			}
-			if _, err := loadIn.Write([]byte("\n")); err != nil {
-				return err
-			}
-		}
-		return sc.Err()
+		return streamFixCollations(loadIn, src)
 	}()
 	if waitErr := load.Wait(); waitErr != nil {
 		return fmt.Errorf("%w (%s)", waitErr, tail(loadErr.String(), 300))
@@ -600,11 +619,10 @@ func (e *Engine) ImportSQL(slug, path string, rewriteURLs bool) (string, error) 
 			olds[h] = true
 		}
 	}
+	if err := e.rewriteImportedURLs(site, olds, func(string, string) {}); err != nil {
+		return msg, fmt.Errorf("imported %s but url rewrite failed: %w", site.DBName, err)
+	}
 	for old := range olds {
-		for _, scheme := range []string{"https://", "http://"} {
-			_, _ = wpCLI(site, "search-replace", scheme+old, scheme+site.Domain,
-				"--all-tables", "--skip-columns=guid", "--skip-plugins", "--skip-themes")
-		}
 		msg += fmt.Sprintf(", urls %s → %s", old, site.Domain)
 	}
 	if warn := e.missingActiveAssets(site); warn != "" {
@@ -832,23 +850,52 @@ func setWPConst(src, name, val string) string {
 	return re.ReplaceAllString(src, `${1}'`+val+`'`)
 }
 
-// hostFromURL extracts the host (no port) from a URL-ish string.
+// hostFromURL extracts the host[:port] from a URL-ish string. The port stays:
+// search-replace of "https://x.com" will not hit "https://x.com:8443".
 func hostFromURL(u string) string {
-	s := u
+	s := strings.TrimSpace(u)
 	if i := strings.Index(s, "://"); i >= 0 {
 		s = s[i+3:]
 	}
-	if i := strings.IndexAny(s, "/?#"); i >= 0 {
-		s = s[:i]
+	if i := strings.LastIndex(s, "@"); i >= 0 {
+		s = s[i+1:]
 	}
-	if i := strings.IndexByte(s, ':'); i >= 0 {
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
 		s = s[:i]
 	}
 	return s
 }
 
-// rewriteWPConfigDomains replaces every occurrence of the old domains
-// (scheme-prefixed or bare) inside wp-config.php with the new domain.
+// rewriteImportedURLs points stored URLs at the new local domain. Failures
+// are returned rather than swallowed — an import that still redirects to
+// production is not a successful import.
+func (e *Engine) rewriteImportedURLs(site *Site, olds map[string]bool, cb func(string, string)) error {
+	if len(olds) == 0 {
+		return nil
+	}
+	if err := e.EnsureDB(); err != nil {
+		return err
+	}
+	var first error
+	for old := range olds {
+		cb("urls", fmt.Sprintf("search-replace %s → %s", old, site.Domain))
+		for _, scheme := range []string{"https://", "http://"} {
+			out, err := wpCLI(site, "search-replace", scheme+old, scheme+site.Domain,
+				"--all-tables", "--skip-columns=guid", "--skip-plugins", "--skip-themes")
+			if err != nil && first == nil {
+				first = fmt.Errorf("%s%s: %s", scheme, old, tail(out, 200))
+			}
+		}
+	}
+	if err := rewriteWPConfigDomains(filepath.Join(site.WPDir, "wp-config.php"), olds, site.Domain); err != nil && first == nil {
+		first = err
+	}
+	return first
+}
+
+// rewriteWPConfigDomains rewrites scheme-prefixed URLs, then bare hostnames
+// only inside define() string values. A global ReplaceAll of the hostname used
+// to smash AUTH_KEY salts that happened to contain it.
 func rewriteWPConfigDomains(path string, olds map[string]bool, newDomain string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -856,17 +903,36 @@ func rewriteWPConfigDomains(path string, olds map[string]bool, newDomain string)
 	}
 	src := string(b)
 	for old := range olds {
+		if old == "" || old == newDomain {
+			continue
+		}
 		src = strings.ReplaceAll(src, "https://"+old, "https://"+newDomain)
-		src = strings.ReplaceAll(src, "http://"+old, "https://"+newDomain)
-		src = strings.ReplaceAll(src, old, newDomain)
+		src = strings.ReplaceAll(src, "http://"+old, "http://"+newDomain)
+		// Bare host only in URL-ish constants. AUTH_KEY salts that happen to
+		// contain the hostname must stay intact.
+		re := regexp.MustCompile(`(define\(\s*'(?:WP_HOME|WP_SITEURL|EFRONT_URL_OVERRIDE|DOMAIN_CURRENT_SITE)'\s*,\s*')([^']*)` +
+			regexp.QuoteMeta(old) + `([^']*'\s*\))`)
+		src = re.ReplaceAllString(src, `${1}${2}`+newDomain+`${3}`)
 	}
 	return os.WriteFile(path, []byte(src), 0o644)
 }
 
 // matchInstalledPHP returns the closest installed PHP to want, or "".
+// LocalWP reports "8.2.24"; our inventory keys are "8.2".
 func matchInstalledPHP(s *Store, want string) string {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return ""
+	}
 	if s.Inventory().FindPHP(want) != nil {
 		return want
+	}
+	parts := strings.Split(want, ".")
+	if len(parts) >= 2 {
+		mm := parts[0] + "." + parts[1]
+		if s.Inventory().FindPHP(mm) != nil {
+			return mm
+		}
 	}
 	return ""
 }

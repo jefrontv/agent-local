@@ -266,7 +266,7 @@ so genuine mistakes stay visible.
 │      db  al_freshdemo  as al_freshdemo  127.0.0.1:10360          │
 │   files  ~/.agent-local/sites/freshdemo/wp   137M                │
 ╰──────────────────────────────────────────────────────────────────╯
-  n new · s start · x stop · R restart · o open · p php · d domain · D delete    ⇥ tab · q quit
+  n new  i import  s start  x stop  R restart  o open  g db  …     ? help  ⇥ tab  q quit
 ```
 
 Press `n` and it asks one question:
@@ -622,13 +622,14 @@ agent-local                            open the dashboard
 agent-local tui [--frame W] [--tab T]  print one frame (design/debug)
 agent-local create NAME [--domain d] [--php v] [--repo url]
                        [--admin-user u] [--admin-pass p] [--admin-email e] [--title t]
-agent-local list | start SLUG | stop SLUG | restart SLUG | open SLUG
+agent-local list | start SLUG | stop SLUG | restart SLUG | open SLUG [--db]
 agent-local delete SLUG [--yes] [--keep-files] [--keep-db]
 agent-local import SOURCE [--name n] [--domain d] [--php v] [--copy]
                          [--sql file] [--serve-only]
                          [--db-host h] [--db-port p] [--db-user u] [--db-pass p] [--db-name n]
 agent-local localwp-sites              list importable LocalWP sites
-agent-local db SLUG [sql | tables | import FILE [--keep-urls] | export [FILE] | reset]
+agent-local db SLUG [sql | tables | import FILE [--keep-urls] | export [FILE] | reset | gui]
+agent-local jobs | job ID              long-running create/import status
 agent-local php SLUG VERSION           switch PHP (live)
 agent-local domain SLUG NAME           change a site's domain
 agent-local suffix [.test]             show/set the default domain suffix
