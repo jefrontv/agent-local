@@ -180,6 +180,13 @@ type model struct {
 	// siteFilter is the Sites-tab search. The full catalog stays in sites;
 	// visibleSites() is what the cursor and the table walk.
 	siteFilter string
+	// siteTop is the first table row drawn on the Sites tab. The table used to
+	// render every site, so on a short terminal the detail panel and the footer
+	// were pushed off the bottom and the cursor could sit somewhere unseen.
+	siteTop int
+	// pageRows is the size of the last window the Sites table drew, so page
+	// keys move by a screenful of the list actually on screen.
+	pageRows int
 }
 
 // healthSnapshot is the stack state the header lamps read from, sampled on
@@ -317,6 +324,12 @@ func (m *model) clampSiteCur() {
 	}
 	if m.siteCur < 0 {
 		m.siteCur = 0
+	}
+	if m.siteTop > m.siteCur {
+		m.siteTop = m.siteCur
+	}
+	if m.siteTop < 0 {
+		m.siteTop = 0
 	}
 }
 
@@ -465,7 +478,20 @@ var spinFrames = []string{"◐", "◓", "◑", "◒"}
 
 // ---------- update ----------
 
+// Update runs the message through the handlers, then re-lays the Sites window
+// on whatever model comes back. The window has to be recomputed here, not in
+// View: View takes a value receiver, so a scroll position worked out while
+// rendering is written to a copy the next frame never sees.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if nm, ok := next.(model); ok {
+		nm.layoutSites()
+		return nm, cmd
+	}
+	return next, cmd
+}
+
+func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -570,6 +596,31 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		if c, n := m.cursorFor(m.tab), m.rowsFor(m.tab); *c < n-1 {
 			*c++
+		}
+		return m, nil
+	case "pgup", "ctrl+u":
+		c := m.cursorFor(m.tab)
+		*c -= m.pageStep()
+		if *c < 0 {
+			*c = 0
+		}
+		return m, nil
+	case "pgdown", "ctrl+d":
+		c, n := m.cursorFor(m.tab), m.rowsFor(m.tab)
+		*c += m.pageStep()
+		if *c > n-1 {
+			*c = n - 1
+		}
+		if *c < 0 {
+			*c = 0
+		}
+		return m, nil
+	case "home":
+		*m.cursorFor(m.tab) = 0
+		return m, nil
+	case "end":
+		if n := m.rowsFor(m.tab); n > 0 {
+			*m.cursorFor(m.tab) = n - 1
 		}
 		return m, nil
 	case "r":
@@ -1452,6 +1503,111 @@ func rowFor(live, selected bool, gutter, body string) string {
 // tableWidth keeps the header rule, rows and the detail panel on one grid.
 const tableWidth = 66
 
+// minListRows is the smallest table worth drawing. Below this the window is so
+// short that hiding rows stops helping, so the list keeps them and the terminal
+// scrolls instead.
+const minListRows = 3
+
+func lineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
+}
+
+// listRows is how many table rows fit in the window: the terminal height minus
+// the frame the View already commits to (header, tab rail, footer, message) and
+// minus whatever the tab draws around its own list. -1 means "height unknown" —
+// before the first WindowSizeMsg — and the caller should draw everything.
+func (m model) listRows(reserved int) int {
+	if m.height <= 0 {
+		return -1
+	}
+	w := m.width
+	if w < 60 {
+		w = 96
+	}
+	// Measured, not counted by hand: the header wraps to two lines in a narrow
+	// window and the footer's key chips wrap to as many as they need.
+	chrome := lineCount(m.viewHeader(w)) + lineCount(m.viewTabs(w)) + 1 // + blank under the rail
+	chrome += 1 + lineCount(m.viewFooter(w))                            // blank, then the footer
+	if m.msg != "" && m.mode != modeHelp {
+		chrome++
+	}
+	n := m.height - chrome - reserved
+	if n < minListRows {
+		n = minListRows
+	}
+	return n
+}
+
+// scrollSites moves the window the least it can to keep the cursor inside it.
+func (m *model) scrollSites(total, rows int) {
+	if rows <= 0 || total <= rows {
+		m.siteTop = 0
+		return
+	}
+	if m.siteCur < m.siteTop {
+		m.siteTop = m.siteCur
+	}
+	if m.siteCur >= m.siteTop+rows {
+		m.siteTop = m.siteCur - rows + 1
+	}
+	if m.siteTop > total-rows {
+		m.siteTop = total - rows
+	}
+	if m.siteTop < 0 {
+		m.siteTop = 0
+	}
+}
+
+// sitesLayout is the Sites tab's share of the window: how many table rows fit,
+// and whether the detail panel still has room. On a very short terminal the
+// panel goes first — a one-row table with a full panel under it is not a list.
+func (m model) sitesLayout() (rows int, showPanel bool) {
+	panelLines := 0
+	if s := m.currentSite(); s != nil {
+		panelLines = lineCount(m.sitePanel(s)) + 1 // and the blank line above it
+	}
+	fixed := 1 // the column header
+	if m.mode == modeSearch || m.siteFilter != "" {
+		fixed++
+	}
+	showPanel = panelLines > 0
+	rows = m.listRows(fixed + panelLines)
+	if showPanel && rows <= minListRows && m.listRows(fixed) > minListRows {
+		showPanel, panelLines = false, 0
+		rows = m.listRows(fixed)
+	}
+	if rows >= 0 && len(m.visibleSites()) > rows {
+		// One row goes to the "n–m of N" line, which is the only thing on screen
+		// saying the list continues past the edge.
+		rows = m.listRows(fixed + 1 + panelLines)
+	}
+	return rows, showPanel
+}
+
+// layoutSites records the window the next frame will draw, so paging and the
+// scroll position survive between renders.
+func (m *model) layoutSites() {
+	rows, _ := m.sitesLayout()
+	if rows < 0 {
+		m.pageRows, m.siteTop = len(m.visibleSites()), 0
+		return
+	}
+	m.pageRows = rows
+	m.scrollSites(len(m.visibleSites()), rows)
+}
+
+// pageStep is a screenful of list, minus a row of overlap so you keep your place.
+func (m model) pageStep() int {
+	n := m.pageRows - 1
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
 func (m *model) viewSites() string {
 	if len(m.sites) == 0 {
 		empty := stRow.Render("No sites on this rack yet.") + "\n" +
@@ -1471,8 +1627,23 @@ func (m *model) viewSites() string {
 			stKey.Render("esc") + stDim.Render("  clear")
 		return b.String() + "  " + stPanel.Width(m.panelWidth()).Render(empty)
 	}
+	rows, showPanel := m.sitesLayout()
+	panel := ""
+	if s := m.currentSite(); showPanel && s != nil {
+		panel = "\n" + m.sitePanel(s)
+	}
+	top, end := 0, len(shown)
+	if rows >= 0 {
+		m.scrollSites(len(shown), rows)
+		top = m.siteTop
+		if end = top + rows; end > len(shown) {
+			end = len(shown)
+		}
+	}
+
 	b.WriteString("    " + stHead.Render(fmt.Sprintf("%-20s %-5s %-30s %8s", "SITE", "PHP", "DOMAIN", "PREVIEWS")) + "\n")
-	for i, s := range shown {
+	for i, s := range shown[top:end] {
+		i += top
 		// Deliberately no size column: it costs a directory walk per row per
 		// render, and an imported checkout cannot report one anyway. Size lives
 		// in the panel, for the selected site only.
@@ -1493,9 +1664,10 @@ func (m *model) viewSites() string {
 		}
 		b.WriteString(rowFor(live, i == m.siteCur, gutter, body) + "\n")
 	}
-	if s := m.currentSite(); s != nil {
-		b.WriteString("\n" + m.sitePanel(s))
+	if top > 0 || end < len(shown) {
+		b.WriteString("    " + stDim.Render(fmt.Sprintf("%d–%d of %d   ↑↓ scroll", top+1, end, len(shown))) + "\n")
 	}
+	b.WriteString(panel)
 	return b.String()
 }
 
@@ -1807,6 +1979,9 @@ func (m model) viewHelp(w int) string {
 			{"i", "install php"}, {"m", "mariadb"}, {"h", "apache"}, {"b", "homebrew"},
 		}, ""),
 		section("DOCTOR", [][2]string{{"r", "re-run"}, {"f", "fix what can be fixed"}}, ""),
+		section("MOVING", [][2]string{
+			{"↑↓", "row"}, {"pgup/pgdn", "page"}, {"home/end", "first / last"},
+		}, "long lists scroll inside the window"),
 		section("ALWAYS", [][2]string{
 			{"⇥", "next tab"}, {"r", "refresh"}, {"q", "quit"}, {"esc", "cancel"},
 		}, ""),
@@ -1919,7 +2094,7 @@ func runTUI() {
 // invisible until something renders it at a known width, and a PTY harness
 // cannot report one — so this is how the layout gets checked.
 //
-//	agent-local tui --frame 120 --tab doctor
+//	agent-local tui --frame 120 --height 24 --tab doctor
 func renderFrame(args []string) error {
 	// lipgloss strips colour when stdout is not a terminal, which would make a
 	// piped frame useless for reviewing the palette — force a profile so the
@@ -1931,8 +2106,14 @@ func renderFrame(args []string) error {
 			w = n
 		}
 	}
+	h := 40
+	if v := flagValue(args, "--height"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 8 {
+			h = n
+		}
+	}
 	m := initialModel()
-	m.width, m.height = w, 40
+	m.width, m.height = w, h
 	switch flagValue(args, "--tab") {
 	case "worktrees":
 		m.tab = tabWorktrees
