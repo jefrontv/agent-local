@@ -228,8 +228,13 @@ func mcpTools() []mcpTool {
 			"slug":       prop("string", "site slug"),
 			"keep_files": prop("boolean", "leave the checkout on disk"),
 			"keep_db":    prop("boolean", "leave the schema and user in place")}, "slug")},
-		{"switch_php", "Switch a site to another installed PHP version", schema(map[string]interface{}{
-			"slug": prop("string", "site slug"), "version": prop("string", "php version")}, "slug", "version")},
+		{"switch_php", "Switch a site to another PHP version, installing or repairing that runtime first if it is not usable (default). An install runs brew and can take minutes, so pass async=1 style polling via get_job if you do not want to wait: the job id is in X-Job-Id. Versions homebrew-core has dropped (7.4, 8.0) need tap=true.", schema(map[string]interface{}{
+			"slug":    prop("string", "site slug"),
+			"version": prop("string", "php version, e.g. 7.4 or 8.3"),
+			"install": prop("boolean", "install/repair the runtime if missing (default true); false = fail instead"),
+			"tap":     prop("boolean", "allow the third-party shivammathur/php tap, the only source of PHP releases homebrew-core has deleted (7.4, 8.0)"),
+			"async":   prop("boolean", "return a job id immediately and poll get_job instead of waiting on the install"),
+		}, "slug", "version")},
 		{"set_domain", "Change a site's local domain (hosts + cert follow)", schema(map[string]interface{}{
 			"slug": prop("string", "site slug"), "domain": prop("string", "new domain")}, "slug", "domain")},
 		{"db_creds", "Get DB connection params for a site (starts db if needed)", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},
@@ -262,9 +267,13 @@ func mcpTools() []mcpTool {
 		{"start_worktree", "Start a worktree's serving pool", schema(map[string]interface{}{"id": prop("string", "worktree id")}, "id")},
 		{"stop_worktree", "Stop a worktree's serving pool", schema(map[string]interface{}{"id": prop("string", "worktree id")}, "id")},
 		{"remove_worktree", "Remove a worktree (stops serving, deletes dir)", schema(map[string]interface{}{"id": prop("string", "worktree id")}, "id")},
-		{"list_runtimes", "List installed PHP runtimes + db + http front", schema(nil)},
-		{"install_runtime", "Install brew/php/mariadb/apache", schema(map[string]interface{}{
-			"what": prop("string", "php|mariadb|apache|brew"), "version": prop("string", "version for php")}, "what")},
+		{"list_runtimes", "List installed PHP runtimes + db + http front. broken_phps lists kegs that are on disk but will not run, with the reason; install_runtime repairs those.", schema(nil)},
+		{"install_runtime", "Install a runtime, or repair a broken PHP keg (same call: it detects which is needed). Runs brew, so it can take minutes — pass async and poll get_job, or wait. PHP 7.4 and 8.0 are no longer in homebrew-core and need tap=true.", schema(map[string]interface{}{
+			"what":    prop("string", "php|mariadb|apache|brew"),
+			"version": prop("string", "php version, e.g. 7.4 (default: the series brew's php formula tracks)"),
+			"tap":     prop("boolean", "allow the third-party shivammathur/php tap for PHP releases homebrew-core has deleted (7.4, 8.0)"),
+			"async":   prop("boolean", "return a job id immediately and poll get_job instead of waiting"),
+		}, "what")},
 		{"doctor", "Run health checks", schema(nil)},
 		{"doctor_fix", "Auto-fix health issues that don't need a password prompt", schema(nil)},
 		{"get_logs", "Tail a log: mysql, apache, daemon, fpm-<slug>, fpm-<worktree-id>, or <slug>", schema(map[string]interface{}{
@@ -400,7 +409,15 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		}
 		return apiDelete(path)
 	case "switch_php":
-		return apiPost("/sites/"+get("slug")+"/php", map[string]string{"version": get("version")})
+		body := map[string]interface{}{"version": get("version"), "tap": args["tap"] == true}
+		if v, okv := args["install"].(bool); okv {
+			body["install"] = v
+		}
+		path := "/sites/" + get("slug") + "/php"
+		if args["async"] == true {
+			path += "?async=1"
+		}
+		return apiPost(path, body)
 	case "set_domain":
 		return apiPost("/sites/"+get("slug")+"/domain", map[string]string{"domain": get("domain")})
 	case "db_creds":
@@ -452,7 +469,12 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 	case "list_runtimes":
 		return apiGet("/runtimes")
 	case "install_runtime":
-		return apiPost("/install", map[string]string{"what": get("what"), "version": get("version")})
+		path := "/install"
+		if args["async"] == true {
+			path += "?async=1"
+		}
+		return apiPost(path, map[string]interface{}{
+			"what": get("what"), "version": get("version"), "tap": args["tap"] == true})
 	case "doctor":
 		return apiGet("/doctor")
 	case "doctor_fix":

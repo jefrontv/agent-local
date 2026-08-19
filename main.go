@@ -622,14 +622,22 @@ func cmdPHP(args []string) error {
 		if err != nil {
 			return err
 		}
+		rescanPHP(store)
+		_ = store.Save()
 		fmt.Println("installed:", strings.Join(store.Inventory().Runtimes(), " "))
-		return fmt.Errorf("usage: agent-local php SLUG VERSION")
+		for _, rt := range store.Inventory().BrokenPHPs {
+			fmt.Printf("broken:    %s at %s — %s\n", rt.Version, rt.Bin, rt.Broken)
+		}
+		fmt.Println("installable:", strings.Join(PHPVersions, " "))
+		return fmt.Errorf("usage: agent-local php SLUG VERSION [--install] [--tap]")
 	}
 	_, e, err := openEnv()
 	if err != nil {
 		return err
 	}
-	return e.SwitchPHP(pos[0], pos[1])
+	install := hasFlag(args, "--install") || hasFlag(args, "--tap")
+	cb := func(line string) { fmt.Println("  " + line) }
+	return e.SwitchPHPEnsure(pos[0], pos[1], install, hasFlag(args, "--tap"), cb)
 }
 
 func cmdImport(args []string) error {
@@ -992,18 +1000,18 @@ func cmdInstall(args []string) error {
 	}
 	pos := positional(args)
 	if len(pos) < 1 {
-		return fmt.Errorf("usage: agent-local install brew|php VERSION|mariadb|apache|wp-cli")
+		return fmt.Errorf("usage: agent-local install brew|php VERSION [--tap]|mariadb|apache|wp-cli")
 	}
 	cb := func(line string) { fmt.Println("  " + line) }
 	switch pos[0] {
 	case "brew", "homebrew":
 		err = InstallBrew(cb)
 	case "php":
-		v := "8.3"
+		v := latestBrewPHP()
 		if len(pos) > 1 {
-			v = pos[1]
+			v = NormalizePHPVersion(pos[1])
 		}
-		err = InstallPHP(store, v, cb)
+		err = InstallPHP(store, v, hasFlag(args, "--tap"), cb)
 	case "mariadb", "mysql":
 		err = InstallMySQL(store, cb)
 	case "apache", "httpd":

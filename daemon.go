@@ -717,6 +717,13 @@ func (a *APIServer) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 type phpReq struct {
 	Version string `json:"version"`
+	// Install lets the switch fetch or repair the runtime it needs. Default is
+	// on: a caller asking for 7.4 wants the site on 7.4, and refusing because
+	// the keg is absent left it with a failed call and no next step.
+	Install *bool `json:"install"`
+	// Tap allows the third-party tap that carries PHP releases homebrew-core has
+	// deleted. Off by default — trusting a tap runs its code on this machine.
+	Tap bool `json:"tap"`
 }
 
 func (a *APIServer) handleSwitchPHP(w http.ResponseWriter, r *http.Request) {
@@ -725,15 +732,31 @@ func (a *APIServer) handleSwitchPHP(w http.ResponseWriter, r *http.Request) {
 	}
 	var req phpReq
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Version == "" {
+	version := NormalizePHPVersion(req.Version)
+	if version == "" {
 		fail(w, 400, "version required")
 		return
 	}
-	if err := a.engine.SwitchPHP(r.PathValue("slug"), req.Version); err != nil {
-		fail(w, 500, err.Error())
+	slug := r.PathValue("slug")
+	install := req.Install == nil || *req.Install
+	// Already installed: a plain switch, answered on this request.
+	if a.store.Inventory().FindPHP(version) != nil || !install {
+		if err := a.engine.SwitchPHPEnsure(slug, version, false, false, nil); err != nil {
+			fail(w, 500, err.Error())
+			return
+		}
+		ok(w, "php "+version)
 		return
 	}
-	ok(w, "php "+req.Version)
+	// A brew install or repair runs for minutes, so it goes through a job: the
+	// caller can wait on this request or pass async=1 and poll get_job.
+	a.runJob(w, r, "switch_php", func(cb func(stage, detail string)) (any, error) {
+		err := a.engine.SwitchPHPEnsure(slug, version, true, req.Tap, func(line string) { cb("brew", line) })
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"slug": slug, "php_version": version}, nil
+	})
 }
 
 type domainReq struct {
@@ -1062,35 +1085,53 @@ func (a *APIServer) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 type installReq struct {
 	What    string `json:"what"`    // php | mariadb | apache | brew
 	Version string `json:"version"` // php version
+	// Tap allows the third-party tap for PHP releases core has dropped.
+	Tap bool `json:"tap"`
 }
 
 func (a *APIServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 	var req installReq
 	json.NewDecoder(r.Body).Decode(&req)
-	cb := func(line string) { log.Printf("install: %s", line) }
-	var err error
 	switch req.What {
-	case "php":
-		if req.Version == "" {
-			req.Version = "8.3"
-		}
-		err = InstallPHP(a.store, req.Version, cb)
-	case "mariadb", "mysql":
-		err = InstallMySQL(a.store, cb)
-	case "apache", "httpd":
-		err = InstallApache(a.store, cb)
-	case "brew", "homebrew":
-		err = InstallBrew(cb)
+	case "php", "mariadb", "mysql", "apache", "httpd", "brew", "homebrew":
 	default:
 		fail(w, 400, "what: php|mariadb|apache|brew")
 		return
 	}
-	if err != nil {
-		fail(w, 500, err.Error())
-		return
-	}
-	a.store.Save()
-	ok(w, "installed "+req.What)
+	// brew builds take minutes. This used to hold the HTTP request open for the
+	// whole install, so a client with any timeout at all gave up mid-build and
+	// had no way to find out how it ended.
+	a.runJob(w, r, "install:"+req.What, func(cb func(stage, detail string)) (any, error) {
+		line := func(s string) {
+			log.Printf("install: %s", s)
+			cb("brew", s)
+		}
+		var err error
+		switch req.What {
+		case "php":
+			version := NormalizePHPVersion(req.Version)
+			if version == "" {
+				version = latestBrewPHP()
+			}
+			err = InstallPHP(a.store, version, req.Tap, line)
+			req.Version = version
+		case "mariadb", "mysql":
+			err = InstallMySQL(a.store, line)
+		case "apache", "httpd":
+			err = InstallApache(a.store, line)
+		case "brew", "homebrew":
+			err = InstallBrew(line)
+		}
+		if err != nil {
+			return nil, err
+		}
+		DiscoverInventory(a.store)
+		if err := a.store.Save(); err != nil {
+			return nil, err
+		}
+		return map[string]any{"installed": req.What, "version": req.Version,
+			"php": a.store.Inventory().Runtimes()}, nil
+	})
 }
 
 func (a *APIServer) handleDoctor(w http.ResponseWriter, r *http.Request) {

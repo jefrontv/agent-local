@@ -438,14 +438,31 @@ collides with mDNS/Bonjour. Multi-level suffixes (`.mysite.local`) are fine.
 ## PHP versions
 
 ```sh
-agent-local install php 8.1      # also: mariadb | apache | wp-cli | brew
-agent-local php mysite 8.1       # switch a site; its pool restarts live
-agent-local doctor               # every discovered runtime
+agent-local install php 8.1        # also: mariadb | apache | wp-cli | brew
+agent-local install php 7.4 --tap  # 7.4 and 8.0: see "end-of-life versions"
+agent-local php mysite 8.1         # switch a site; its pool restarts live
+agent-local php mysite 7.4 --install   # install (or repair) it first, then switch
+agent-local php                    # installed, broken, installable
+agent-local doctor                 # every discovered runtime
 ```
 
 Installing a version takes about a minute (Homebrew keg + re-discovery) and needs
 no shell work. Each site runs its own php-fpm pool, so versions never conflict —
-one site on 7.4 next to one on 8.4 is normal.
+one site on 7.4 next to one on 8.4 is normal. Versions are matched loosely, so
+`8.2`, `8.2.28` and `php@8.2` all mean the same series.
+
+**End-of-life versions.** homebrew-core deletes a PHP formula once the release is
+end of life: 7.4 and 8.0 are already gone, and the rest follow in time. They live
+on in the third-party `shivammathur/php` tap, which Homebrew will not load until
+you trust it — trusting a tap lets its formulae run code on this machine, so that
+stays your call. `--tap` (CLI) or `tap: true` (MCP) taps and trusts it for you;
+without the flag you get the exact brew commands to run yourself.
+
+**Broken kegs.** `brew autoremove` will happily take a library php still links
+against, leaving a keg that is installed but dies on a missing dylib. Discovery
+lists those separately instead of hiding them, and `agent-local install php 7.4`
+repairs one by reinstalling the dependency that went missing — seconds, rather
+than a rebuild. `agent-local doctor --fix` does the same unprompted.
 
 ## Databases
 
@@ -567,6 +584,14 @@ Design notes that matter when driving this from an agent:
   allowlist. Not exposed as tools: `sudo` and `alias`, the two one-time installs
   that genuinely need a password.
 - **Every response is `{"ok":true,"data":…}` or `{"ok":false,"error":…}`.**
+- **`switch_php` gets the runtime it needs.** A version that is missing is
+  installed, and a keg that is installed but broken is repaired, before the
+  switch. That runs brew, so it comes back as a job: wait on the call, or pass
+  `async` and poll `get_job` with the id. `install: false` refuses instead, and
+  the error names the versions that are installed. PHP 7.4 and 8.0 need
+  `tap: true` — see [PHP versions](#php-versions).
+- **A failed call says what to do next.** Errors carry the fixing call, in both
+  CLI and MCP form, rather than only the fact that something was missing.
 
 ### HTTP API
 

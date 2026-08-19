@@ -43,7 +43,11 @@ func Doctor(store *Store) *DoctorReport {
 		add(Finding{Check: "homebrew", Status: "ok", Detail: store.Inventory().Brew})
 	}
 
-	// PHP runtimes
+	// PHP runtimes. Scanned fresh, not read from the cached inventory: a keg
+	// breaks when brew removes one of its dependencies, which happens without
+	// anything telling us, and a day-stale scan would report the version as
+	// simply absent — the same misreport that made a switch to 7.4 impossible.
+	rescanPHP(store)
 	rts := store.Inventory().Runtimes()
 	if len(rts) == 0 {
 		add(Finding{Check: "php", Status: "fail", Detail: "no PHP toolchain found",
@@ -56,6 +60,10 @@ func Doctor(store *Store) *DoctorReport {
 			}
 		}
 		add(Finding{Check: "php", Status: "ok", Detail: detail})
+	}
+
+	for _, f := range brokenPHPFindings(store.Inventory()) {
+		add(f)
 	}
 
 	// database engine
@@ -345,6 +353,20 @@ func localwpFinding(sites int, ours, rival bool) *Finding {
 	}
 }
 
+// brokenPHPFindings reports kegs that are installed but will not run. One of
+// those is worse than an absent version: every site pointed at it fails to
+// serve, and the version itself reads as missing.
+func brokenPHPFindings(inv *Inventory) []Finding {
+	out := make([]Finding, 0, len(inv.BrokenPHPs))
+	for _, rt := range inv.BrokenPHPs {
+		out = append(out, Finding{Check: "php:" + rt.Version, Status: "fail",
+			Detail:  fmt.Sprintf("%s is installed at %s but will not run: %s", rt.Version, rt.Bin, rt.Broken),
+			FixHint: "reinstalls the dependency Homebrew removed",
+			FixCmd:  AppName + " install php " + rt.Version, AutoFix: true})
+	}
+	return out
+}
+
 // DoctorFix applies auto-fixable findings. Returns what it did.
 func DoctorFix(store *Store, interactive bool) []string {
 	var done []string
@@ -367,6 +389,12 @@ func DoctorFix(store *Store, interactive bool) []string {
 					_ = TrustCert(cert, interactive)
 					done = append(done, "issued cert for "+d)
 				}
+			}
+		case strings.HasPrefix(f.Check, "php:"):
+			v := strings.TrimPrefix(f.Check, "php:")
+			if err := RepairPHP(store, v, nil); err == nil {
+				_ = store.Save()
+				done = append(done, "repaired php "+v)
 			}
 		case f.Check == "http":
 			if err := EnsureHTTPFront(store); err == nil {

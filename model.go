@@ -87,6 +87,11 @@ type Runtime struct {
 	Pear       string `json:"pear"`        // empty if absent
 	Source     string `json:"source"`      // "homebrew" | "path"
 	InstallCmd string `json:"install_cmd"` // how to (re)install
+	// Broken is why a keg that is on disk will not run — almost always a
+	// dependency `brew autoremove` took, leaving php dying on a missing dylib.
+	// Such a keg used to be dropped from the scan without a word, so switching a
+	// site to it failed with "not installed" about a version that was installed.
+	Broken string `json:"broken,omitempty"`
 }
 
 // MySQLRuntime is the embedded database server.
@@ -118,11 +123,15 @@ type Worktree struct {
 
 // Inventory is the persisted runtime environment.
 type Inventory struct {
-	PHPs    []Runtime    `json:"phps"`
-	MySQL   MySQLRuntime `json:"mysql"`
-	HTTP    HTTPRuntime  `json:"http"`
-	Brew    string       `json:"brew"`
-	Refresh time.Time    `json:"refresh"`
+	PHPs []Runtime `json:"phps"`
+	// BrokenPHPs are kegs found on disk that cannot execute. Kept apart from
+	// PHPs so nothing serves a site with one, and kept at all so the error a
+	// caller gets names the real problem and how to repair it.
+	BrokenPHPs []Runtime    `json:"broken_phps,omitempty"`
+	MySQL      MySQLRuntime `json:"mysql"`
+	HTTP       HTTPRuntime  `json:"http"`
+	Brew       string       `json:"brew"`
+	Refresh    time.Time    `json:"refresh"`
 }
 
 // Runtimes returns installed PHP versions sorted low→high.
@@ -139,6 +148,16 @@ func (inv *Inventory) FindPHP(v string) *Runtime {
 	for i := range inv.PHPs {
 		if inv.PHPs[i].Version == v {
 			return &inv.PHPs[i]
+		}
+	}
+	return nil
+}
+
+// FindBrokenPHP locates an unrunnable keg by version.
+func (inv *Inventory) FindBrokenPHP(v string) *Runtime {
+	for i := range inv.BrokenPHPs {
+		if inv.BrokenPHPs[i].Version == v {
+			return &inv.BrokenPHPs[i]
 		}
 	}
 	return nil

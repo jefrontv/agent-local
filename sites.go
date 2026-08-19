@@ -64,15 +64,16 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 	}
 
 	// PHP version
+	o.PHPVersion = NormalizePHPVersion(o.PHPVersion)
 	if o.PHPVersion == "" {
 		rts := e.Store.Inventory().Runtimes()
 		if len(rts) == 0 {
-			return nil, fmt.Errorf("no PHP installed; run: agent-local install php 8.3")
+			return nil, fmt.Errorf("no PHP installed; run: %s install php %s", AppName, latestBrewPHP())
 		}
 		o.PHPVersion = rts[len(rts)-1]
 	}
 	if e.Store.Inventory().FindPHP(o.PHPVersion) == nil {
-		return nil, fmt.Errorf("php %s not installed; run: agent-local install php %s", o.PHPVersion, o.PHPVersion)
+		return nil, e.phpMissingErr(o.PHPVersion)
 	}
 
 	domain := o.Domain
@@ -235,15 +236,16 @@ func (e *Engine) AttachSite(o AttachOpts) (*Site, error) {
 	if e.Store.Site(slug) != nil {
 		return nil, fmt.Errorf("site %q already exists", slug)
 	}
+	o.PHPVer = NormalizePHPVersion(o.PHPVer)
 	if o.PHPVer == "" {
 		rts := e.Store.Inventory().Runtimes()
 		if len(rts) == 0 {
-			return nil, fmt.Errorf("no PHP installed; run: agent-local install php 8.3")
+			return nil, fmt.Errorf("no PHP installed; run: %s install php %s", AppName, latestBrewPHP())
 		}
 		o.PHPVer = rts[len(rts)-1]
 	}
 	if e.Store.Inventory().FindPHP(o.PHPVer) == nil {
-		return nil, fmt.Errorf("php %s not installed; run: agent-local install php %s", o.PHPVer, o.PHPVer)
+		return nil, e.phpMissingErr(o.PHPVer)
 	}
 	domain := o.Domain
 	if domain == "" {
@@ -644,14 +646,42 @@ func (e *Engine) startForInstall(site *Site) error {
 	return waitPort(site.HTTPPort, 10*time.Second)
 }
 
+// phpScanMaxAge is how stale a toolchain scan may be before a missing version
+// is worth re-checking on disk.
+const phpScanMaxAge = 30 * time.Second
+
 // SwitchPHP changes a site's PHP version and restarts its pool.
 func (e *Engine) SwitchPHP(slug, version string) error {
+	return e.SwitchPHPEnsure(slug, version, false, false, nil)
+}
+
+// SwitchPHPEnsure switches a site's PHP, installing or repairing the runtime
+// first when install is set. Switching used to fail with "php 7.4 not
+// installed" and stop there: it named no versions that were installed, said
+// nothing about the keg sitting on disk broken, and offered no way to get the
+// one that was asked for — so a caller with no hands had nowhere to go.
+func (e *Engine) SwitchPHPEnsure(slug, version string, install, allowTap bool, cb func(string)) error {
+	version = NormalizePHPVersion(version)
 	site := e.Store.Site(slug)
 	if site == nil {
 		return fmt.Errorf("no such site: %s", slug)
 	}
+	if e.Store.Inventory().FindPHP(version) == nil && install {
+		if err := InstallPHP(e.Store, version, allowTap, cb); err != nil {
+			return err
+		}
+		if err := e.Store.Save(); err != nil {
+			return err
+		}
+	}
 	if e.Store.Inventory().FindPHP(version) == nil {
-		return fmt.Errorf("php %s not installed", version)
+		// The scan may be a day old: a version installed by hand since then is
+		// there but unrecorded, and refusing it would be wrong.
+		maybeRescanPHP(e.Store, phpScanMaxAge)
+		_ = e.Store.Save()
+	}
+	if e.Store.Inventory().FindPHP(version) == nil {
+		return e.phpMissingErr(version)
 	}
 	site.PHPVersion = version
 	if e.FPMRunning(site.Slug) {
@@ -667,6 +697,30 @@ func (e *Engine) SwitchPHP(slug, version string) error {
 		}
 	}
 	return e.Store.Save()
+}
+
+// phpMissingErr says which versions are here, what is wrong with the one that
+// is not, and the exact call that fixes it — in both the CLI and MCP dialects,
+// since either kind of caller can land here.
+func (e *Engine) phpMissingErr(version string) error {
+	inv := e.Store.Inventory()
+	have := strings.Join(inv.Runtimes(), ", ")
+	if have == "" {
+		have = "none"
+	}
+	if rt := inv.FindBrokenPHP(version); rt != nil {
+		return fmt.Errorf("php %s is installed at %s but will not run: %s. Repair it: `%s install php %s` "+
+			"(MCP: install_runtime {\"what\":\"php\",\"version\":\"%s\"}). Installed and working: %s",
+			version, rt.Bin, rt.Broken, AppName, version, version, have)
+	}
+	known := ""
+	for _, v := range PHPVersions {
+		if v == version {
+			known = fmt.Sprintf(" Install it: `%s install php %s` (MCP: switch_php {\"slug\":…,\"version\":\"%s\",\"install\":true}).", AppName, version, version)
+			break
+		}
+	}
+	return fmt.Errorf("php %s is not installed (installed: %s).%s", version, have, known)
 }
 
 // SetDomain changes a site's domain (hosts + cert follow).

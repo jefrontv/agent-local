@@ -905,15 +905,22 @@ func (m *model) applyInput(spec inputSpec) error {
 			return slug + " is now " + domain, nil
 		})
 	case inputCreatePHP, inputSwitchPHP:
-		if val == "" {
+		version := NormalizePHPVersion(val)
+		if version == "" {
 			return fmt.Errorf("version required")
 		}
 		slug := spec.slug
-		m.startBackground("switching "+slug+" to php "+val, func(func(string, string)) (string, error) {
-			if err := m.engine.SwitchPHP(slug, val); err != nil {
+		label := "switching " + slug + " to php " + version
+		if m.inv.FindPHP(version) == nil {
+			label = "installing php " + version + " for " + slug + " — this can take minutes"
+		}
+		m.startBackground(label, func(cb func(string, string)) (string, error) {
+			// install=true, tap allowed: someone typed this version at the
+			// keyboard, and for 7.4 or 8.0 the tap is the only place it lives.
+			if err := m.engine.SwitchPHPEnsure(slug, version, true, true, func(line string) { cb("brew", line) }); err != nil {
 				return "", err
 			}
-			return "php " + val + " active on " + slug, nil
+			return "php " + version + " active on " + slug, nil
 		})
 	case inputSetDomain:
 		if val == "" {
@@ -991,13 +998,16 @@ func (m *model) applyInput(spec inputSpec) error {
 		})
 		return nil
 	case inputInstallPHP:
-		if val == "" {
-			val = "8.3"
+		version := NormalizePHPVersion(val)
+		if version == "" {
+			version = latestBrewPHP()
 		}
-		version := val
-		m.startBackground("brew install php@"+version+" — this can take minutes",
+		m.startBackground("installing php "+version+" — this can take minutes",
 			func(cb func(string, string)) (string, error) {
-				if err := InstallPHP(m.store, version, func(line string) { cb("brew", line) }); err != nil {
+				// Third-party tap allowed here: the person typing the version is
+				// the one who gets to decide, and for 7.4 or 8.0 there is no
+				// other source left.
+				if err := InstallPHP(m.store, version, true, func(line string) { cb("brew", line) }); err != nil {
 					return "", err
 				}
 				DiscoverInventory(m.store)
@@ -1094,8 +1104,16 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if site == nil {
 			return m, nil
 		}
-		return m.startInput(inputSwitchPHP, "php version for "+site.Slug,
-			"installed: "+strings.Join(m.inv.Runtimes(), " "), site.Slug), nil
+		hint := "installed: " + strings.Join(m.inv.Runtimes(), " ")
+		if len(m.inv.BrokenPHPs) > 0 {
+			var b []string
+			for _, rt := range m.inv.BrokenPHPs {
+				b = append(b, rt.Version)
+			}
+			hint += "   broken: " + strings.Join(b, " ")
+		}
+		hint += "   any of " + strings.Join(PHPVersions, " ") + " installs on demand"
+		return m.startInput(inputSwitchPHP, "php version for "+site.Slug, hint, site.Slug), nil
 	case "d":
 		if site == nil {
 			return m, nil
@@ -1215,7 +1233,7 @@ func (m model) handleWorktreesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) handleRuntimesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "i":
-		return m.startInput(inputInstallPHP, "install php version", "7.4 8.0 8.1 8.2 8.3 8.4", ""), nil
+		return m.startInput(inputInstallPHP, "install php version", strings.Join(PHPVersions, " ")+"  (7.4 / 8.0 come from the "+phpTap+" tap)", ""), nil
 	case "b", "m", "h":
 		what := map[string]string{"b": "brew", "m": "mariadb", "h": "apache"}[k.String()]
 		m.confirm = "install " + what + " via homebrew?"

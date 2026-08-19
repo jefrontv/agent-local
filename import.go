@@ -256,7 +256,7 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 	}
 
 	// PHP version: requested → LocalWP's (major.minor) → 8.2 → highest installed.
-	php := o.PHPVer
+	php := NormalizePHPVersion(o.PHPVer)
 	if php == "" {
 		php = matchInstalledPHP(e.Store, lwPHP)
 	}
