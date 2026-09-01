@@ -3,22 +3,6 @@
     "title": "Front Page",
     "fields": [
         {
-            "key": "field_al0hero0intro",
-            "label": "Hero intro",
-            "name": "hero_intro",
-            "type": "textarea",
-            "instructions": "Optional",
-            "rows": 4,
-            "new_lines": "wpautop"
-        },
-        {
-            "key": "field_al0hero0note0",
-            "label": "Hero note",
-            "name": "hero_note",
-            "type": "text",
-            "instructions": "Optional"
-        },
-        {
             "key": "field_al0stats00000",
             "label": "Stats",
             "name": "stats",
@@ -122,6 +106,13 @@
                 { "key": "field_al0inst0label", "label": "Label", "name": "label", "type": "text", "parent_repeater": "field_al0install000" },
                 { "key": "field_al0inst0cmd00", "label": "Command", "name": "command", "type": "text", "parent_repeater": "field_al0install000" }
             ]
+        },
+        {
+            "key": "field_al0installalt",
+            "label": "Install without Homebrew",
+            "name": "install_alt",
+            "type": "text",
+            "instructions": "Optional"
         }
     ],
     "location": [

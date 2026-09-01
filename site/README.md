@@ -31,8 +31,18 @@ Sources are `src/scss/` and `src/js/`; `style.css` is only the theme header.
 
 Every string on the page ships as a default in `front-page.php`, so the theme renders
 complete with no plugins. With ACF PRO installed, the "Front Page" field group
-(`acf-json/`) overrides any of it from the page editor: hero copy, stats, statements,
-benchmark rows, features, the comparison table, and install steps.
+(`acf-json/`) overrides any of it from the page editor: stats, statements, benchmark
+rows, features, the comparison table, and install steps. The "How it works" map, the
+harness marquee and the Claude Code transcript scenes (`src/js/main.js`) are code, not copy.
+
+The headline stats repeat the benchmark section's figures on purpose. Change them
+together, or the page contradicts itself under a label that says "measured".
+
+## Icons
+
+`assets/favicon.svg` is the hero field in miniature: three swells and the lamp above
+them. `favicon-32.png` and `apple-touch-icon.png` are rasters of it; regenerate both
+if the SVG changes.
 
 ## Benchmark provenance
 

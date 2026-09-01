@@ -23,9 +23,10 @@
 		flex: 1;
 		justify-content: center;
 		font-size: 13px;
-		a { color: $dim; }
-		a:hover { color: $text; }
+		a { color: $dim; transition: color 0.3s ease; }
+		a:hover, a[aria-current] { color: $text; }
 	}
+	&__ext { margin-left: 12px; }
 	&__cta {
 		border: 1px solid $text;
 		padding: 9px 18px;
@@ -60,9 +61,10 @@
 			opacity: 0.5;
 		}
 	}
-	&__mark { position: relative; z-index: 1; }
 	&__mark {
 		@include display(clamp(56px, 9.8vw, 200px));
+		position: relative;
+		z-index: 1;
 		color: $mark;
 		text-align: center;
 		white-space: nowrap;
@@ -157,13 +159,32 @@
 	.is-in &__fill { width: var(--w); }
 	&__row--us &__fill { background: $lamp; }
 	&__val {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 2px 10px;
 		font-family: $mono;
 		font-size: 12px;
+		line-height: 1.5;
 		color: $text;
-		padding-top: 5px;
+		padding-top: 6px;
 		em { font-style: normal; color: $dim; }
 	}
 	&__row--us &__val { color: $lamp; }
+	// The ratio arrives after the bar has finished growing.
+	&__x {
+		padding: 0 8px;
+		line-height: 16px;
+		border: 1px solid rgba($lamp, 0.35);
+		border-radius: 999px;
+		font-size: 10.5px;
+		letter-spacing: 0.04em;
+		color: $lamp;
+		opacity: 0;
+		transform: translateX(-6px);
+		transition: opacity 0.5s ease 1s, transform 0.5s ease 1s;
+	}
+	.is-in &__x { opacity: 1; transform: none; }
 	&__na {
 		font-family: $mono;
 		font-size: 12px;
@@ -212,6 +233,9 @@
 	.label { margin-top: 48px; }
 }
 
+// A Claude Code session, faithfully: window bar, welcome box, ⏺ bullets,
+// ⎿ results, the spinner while a tool runs, and the prompt box at the foot.
+// Colour stays in the palette: the lamp stands in for Claude's asterisk.
 .term {
 	width: min(640px, 90vw);
 	background: $panel;
@@ -219,14 +243,31 @@
 	border-radius: 10px;
 	overflow: hidden;
 	text-align: left;
+	font-family: $mono;
+	font-size: 12.5px;
+	line-height: 1.75;
 
 	&__bar {
-		@include label;
-		font-size: 10.5px;
+		position: relative;
 		display: flex;
 		align-items: center;
-		padding: 15px 22px;
+		height: 40px;
+		padding: 0 16px;
 		border-bottom: 1px solid $hairline;
+	}
+	&__lights {
+		display: flex;
+		gap: 8px;
+		i { width: 11px; height: 11px; border-radius: 50%; background: #2e2d28; }
+	}
+	&__title {
+		position: absolute;
+		inset: 0;
+		display: grid;
+		place-items: center;
+		font-size: 11.5px;
+		color: $dim;
+		pointer-events: none;
 	}
 	// Fixed viewport: the transcript tails inside it like a terminal, the
 	// card never resizes the page, and only the script may scroll it.
@@ -237,36 +278,189 @@
 	}
 	pre {
 		margin: 0;
-		padding: 26px 28px 30px;
-		font-family: $mono;
-		font-size: 12.5px;
-		line-height: 1.75;
+		padding: 20px 24px 22px;
+		font: inherit;
 		white-space: pre-wrap;
 		word-break: break-word;
 		color: $dim;
 
-		// One transcript grammar: a prompt, tool calls, their results, and
-		// the assistant's prose. Prefixes are drawn here so every line kind
-		// carries its mark in the right color; rhythm is margins, not blank lines.
+		// One transcript grammar. Prefixes are drawn here so every line kind
+		// carries its mark in the right colour; rhythm is margins, not blank lines.
 		.t-line { display: block; }
-		.t-user { color: $text; margin-bottom: 6px; }
-		.t-user::before { content: ">\00A0\00A0"; color: $lamp; }
-		.t-tool { color: $text; margin-top: 15px; }
-		.t-tool::before { content: "\25CF\00A0\00A0"; color: $lamp; }
-		.t-res { color: $dim; padding-left: 3px; margin-top: 2px; }
-		.t-res::before { content: "\23BF\00A0\00A0"; color: $mark; }
+		.t-user { color: $text; margin-top: 14px; }
+		.t-user::before { content: ">\00A0"; color: $dim; }
+		.t-tool { color: $text; margin-top: 14px; }
+		.t-tool::before { content: "\23FA\00A0"; color: $lamp; }
+		.t-tool b { font-weight: 600; }
+		.t-res { color: $dim; margin-top: 1px; }
+		.t-res::before { content: "\00A0\00A0\23BF\00A0\00A0"; color: $mark; }
 		.t-assist { color: $text; }
-		.t-assist:not(.t-assist + .t-assist) { margin-top: 20px; }
+		.t-assist::before { content: "\23FA\00A0"; color: $text; }
+		.t-assist:not(.t-assist + .t-assist) { margin-top: 14px; }
+		.t-spin { color: $dim; margin-top: 14px; }
+		.t-spin i { font-style: normal; color: $lamp; display: inline-block; width: 1.2em; }
+	}
+	// The banner Claude Code prints at the top of a session.
+	.t-welcome {
+		display: block;
+		margin: 2px 0 6px;
+		padding: 8px 14px 10px;
+		border: 1px solid $dim;
+		border-radius: 6px;
+		color: $text;
+		i { font-style: normal; color: $lamp; }
+		small { display: block; margin-top: 8px; font-size: inherit; color: $dim; }
+	}
+	&__input {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 9px 24px;
+		border-top: 1px solid $hairline;
+		border-bottom: 1px solid $hairline;
+		color: $text;
+		min-height: 40px;
+	}
+	&__prompt { color: $dim; }
+	&__status {
+		display: flex;
+		justify-content: space-between;
+		gap: 16px;
+		padding: 7px 24px 9px;
+		font-size: 11px;
+		color: $mark;
 	}
 }
 .t-cursor {
 	display: inline-block;
 	width: 7px; height: 13px;
 	vertical-align: -2px;
-	background: $lamp;
+	background: $text;
 	animation: blink 1.1s steps(1) infinite;
 }
 @keyframes blink { 50% { opacity: 0; } }
+
+// ---------------------------------------------------------------- how it works
+// Three nodes and two wires. A request walks the wire on a shared six-second
+// cycle: each piece is delayed into its slot, so the phases hold forever.
+$how-cycle: 6s;
+.how {
+	padding: clamp(100px, 15vh, 170px) clamp(20px, 4vw, 56px);
+	border-top: 1px solid $hairline;
+
+	&__map {
+		margin-top: 64px;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) 88px minmax(0, 1.2fr) 88px minmax(0, 1fr);
+		align-items: stretch;
+	}
+	&__node {
+		position: relative;
+		background: $panel;
+		border: 1px solid $hairline;
+		border-radius: 10px;
+		padding: 22px 24px 26px;
+		animation: how-flash $how-cycle ease-in-out infinite;
+		&--daemon { animation-delay: 1.6s; }
+		&--site { animation-delay: 3.2s; }
+	}
+	&__head {
+		@include label;
+		display: block;
+		padding-bottom: 14px;
+		margin-bottom: 16px;
+		border-bottom: 1px solid $hairline;
+		color: $text;
+	}
+	&__lines {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: grid;
+		gap: 10px;
+		li {
+			display: grid;
+			grid-template-columns: 52px 1fr;
+			gap: 12px;
+			font-family: $mono;
+			font-size: 12px;
+			line-height: 1.6;
+			color: $dim;
+			opacity: 0;
+			transform: translateY(6px);
+			transition: opacity 0.6s ease, transform 0.6s ease;
+			@for $i from 1 through 6 {
+				&:nth-child(#{$i}) { transition-delay: 0.25s + $i * 0.08s; }
+			}
+		}
+		b { color: $text; font-weight: 500; }
+	}
+	.is-in &__lines li { opacity: 1; transform: none; }
+	&__link {
+		position: relative;
+		align-self: center;
+		height: 1px;
+		background: $hairline;
+		span {
+			@include label;
+			font-size: 9.5px;
+			position: absolute;
+			left: 50%;
+			top: -20px;
+			transform: translateX(-50%);
+		}
+		&--out .how__pkt { animation-delay: 2.2s; }
+	}
+	&__pkt {
+		position: absolute;
+		top: -3px;
+		left: 0;
+		width: 7px; height: 7px;
+		border-radius: 50%;
+		background: $lamp;
+		box-shadow: 0 0 10px 2px rgba($lamp, 0.55);
+		opacity: 0;
+		animation: how-packet $how-cycle linear infinite;
+		animation-delay: 0.6s;
+	}
+	&__copy {
+		margin-top: 48px;
+		max-width: 66ch;
+		color: $dim;
+		font-size: 15px;
+		line-height: 1.75;
+	}
+}
+@keyframes how-packet {
+	0% { opacity: 0; left: 0; }
+	1% { opacity: 1; }
+	17% { opacity: 1; left: calc(100% - 7px); }
+	18%, 100% { opacity: 0; left: calc(100% - 7px); }
+}
+@keyframes how-flash {
+	0%, 12%, 100% { border-color: $hairline; box-shadow: none; }
+	4%, 8% { border-color: rgba($lamp, 0.65); box-shadow: 0 0 0 1px rgba($lamp, 0.12), 0 0 28px rgba($lamp, 0.07); }
+}
+@media (max-width: 900px) {
+	.how__map { grid-template-columns: 1fr; }
+	.how__link {
+		height: 40px;
+		width: 1px;
+		justify-self: center;
+		span { left: 14px; top: 50%; transform: translateY(-50%); }
+		.how__pkt { left: -3px; top: 0; animation-name: how-packet-v; }
+	}
+}
+@keyframes how-packet-v {
+	0% { opacity: 0; top: 0; }
+	1% { opacity: 1; }
+	17% { opacity: 1; top: calc(100% - 7px); }
+	18%, 100% { opacity: 0; top: calc(100% - 7px); }
+}
+@media (prefers-reduced-motion: reduce) {
+	.how__node, .how__pkt { animation: none; }
+	.how__lines li { opacity: 1; transform: none; }
+}
 
 // ---------------------------------------------------------------- features index
 .index {
@@ -366,6 +560,27 @@
 	}
 	&__k { @include label; }
 	&__copy { @include label; font-size: 10px; }
+	// The no-Homebrew route: same copy affordance, quieter.
+	&__alt {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		gap: 20px;
+		align-items: center;
+		width: 100%;
+		max-width: 600px;
+		margin: -24px auto 48px;
+		padding: 16px 22px 0;
+		background: none;
+		border: 0;
+		border-top: 1px dashed $hairline;
+		color: $dim;
+		font: inherit;
+		text-align: left;
+		cursor: copy;
+		code { font-size: 12px; transition: color 0.3s ease; }
+		&:hover code { color: $text; }
+		&.is-done code { color: $lamp; }
+	}
 }
 
 // ---------------------------------------------------------------- footer
@@ -426,10 +641,12 @@
 	}
 	&:hover &__track { animation-play-state: paused; }
 	&__half {
+		list-style: none;
+		margin: 0;
 		display: flex;
 		align-items: center;
 		gap: 64px;
-		padding-right: 64px;
+		padding: 0 64px 0 0;
 	}
 	&__item {
 		display: inline-flex;

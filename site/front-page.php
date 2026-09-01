@@ -6,10 +6,12 @@
 
 get_header();
 
+// Headline numbers repeat the benchmark section's values on purpose: one
+// page, one measurement, one set of figures. Change them together.
 $defaults = array(
 	'stats'          => array(
-		array( 'value' => '2.9', 'unit' => 'ms', 'label' => 'to serve a static file' ),
-		array( 'value' => '15', 'unit' => 's', 'label' => 'to create a serving site' ),
+		array( 'value' => '3.2', 'unit' => 'ms', 'label' => 'to serve a static file' ),
+		array( 'value' => '18.8', 'unit' => 's', 'label' => 'to create a serving site' ),
 		array( 'value' => '59', 'unit' => '', 'label' => 'tools in the agent API' ),
 		array( 'value' => '0', 'unit' => '', 'label' => 'containers required' ),
 	),
@@ -23,15 +25,19 @@ $defaults = array(
 		array( 'title' => 'Public share links', 'body' => 'One command opens a verified public URL through a Cloudflare tunnel. No account needed, and client sites keep their production images.' ),
 		array( 'title' => 'Branch previews', 'body' => 'Any git branch on its own domain beside the running site. Same database, copy-on-write files, ready in about ten seconds.' ),
 		array( 'title' => 'Per-site PHP versions', 'body' => 'Each site runs its own pool, 7.4 through 8.5. Switching installs or repairs the runtime it needs, including releases Homebrew has dropped.' ),
+		array( 'title' => 'Trusted HTTPS', 'body' => 'Every domain gets a certificate issued and trusted in the keychain the moment it is created or renamed. Sites and previews answer on 443 with no warning page.' ),
 		array( 'title' => 'Streaming imports', 'body' => 'A 7 GB LocalWP site imports in place with no copy step. Every stored domain is rewritten, serialized data included.' ),
 		array( 'title' => 'Production media fallback', 'body' => 'Missing uploads redirect to your production origin, honouring the .htaccess rule already in the repo.' ),
+		array( 'title' => 'WP_DEBUG without the ritual', 'body' => 'One flag turns debugging on with the log routed to a file and display kept off. Reproduce, then read the log. An agent does the same in two calls.' ),
 		array( 'title' => 'A doctor that fixes', 'body' => 'Every health check reports the exact command that repairs it, and doctor --fix applies them all.' ),
 	),
 	'compare_rows'   => array(
 		array( 'label' => 'Runs on', 'agentlocal' => 'native processes', 'localwp' => 'Electron + services', 'mamp' => 'bundled Apache/MySQL', 'ddev' => 'Docker containers' ),
 		array( 'label' => 'Prerequisites', 'agentlocal' => 'none, installs what it needs', 'localwp' => 'app download', 'mamp' => 'app download', 'ddev' => 'Docker Desktop / Colima' ),
 		array( 'label' => 'Agent control', 'agentlocal' => '59 MCP tools + HTTP API', 'localwp' => 'none', 'mamp' => 'none', 'ddev' => 'CLI with JSON output' ),
-		array( 'label' => 'New WordPress site', 'agentlocal' => '15 seconds', 'localwp' => 'about a minute', 'mamp' => 'manual setup', 'ddev' => 'fast after first pull' ),
+		array( 'label' => 'New WordPress site', 'agentlocal' => '19 seconds', 'localwp' => 'about a minute', 'mamp' => 'manual setup', 'ddev' => 'fast after first pull' ),
+		array( 'label' => 'Memory for one site', 'agentlocal' => '52 MB', 'localwp' => '601 MB', 'mamp' => 'not measured', 'ddev' => '2.5 GB' ),
+		array( 'label' => 'Trusted HTTPS', 'agentlocal' => 'automatic, every domain', 'localwp' => 'a Trust button per site', 'mamp' => 'by hand', 'ddev' => 'mkcert, once' ),
 		array( 'label' => 'Branch previews', 'agentlocal' => 'own URLs, shared database', 'localwp' => 'none', 'mamp' => 'none', 'ddev' => 'second project by hand' ),
 		array( 'label' => 'Outgoing mail capture', 'agentlocal' => 'yes, agents can read it', 'localwp' => 'yes', 'mamp' => 'no', 'ddev' => 'Mailpit' ),
 		array( 'label' => 'Database snapshots', 'agentlocal' => 'automatic', 'localwp' => 'no', 'mamp' => 'no', 'ddev' => 'manual' ),
@@ -42,16 +48,18 @@ $defaults = array(
 	'install_steps'  => array(
 		array( 'label' => 'install', 'command' => 'brew install jefrontv/tap/agent-local' ),
 		array( 'label' => 'create', 'command' => 'agent-local create mysite' ),
-		array( 'label' => 'agents', 'command' => 'agent-local mcp --config' ),
+		array( 'label' => 'agents', 'command' => 'agent-local connect' ),
 	),
+	'install_alt'    => 'curl -fsSL https://raw.githubusercontent.com/jefrontv/agent-local/main/install.sh | bash',
 );
 ?>
 
-<main>
+<main id="main">
 
 <!-- hero -->
 <section class="hero">
 	<div class="hero__field" aria-hidden="true"><pre id="wave-field"></pre></div>
+	<h1 class="sr-only">agent-local: local WordPress for humans and agents</h1>
 	<p class="hero__mark" aria-hidden="true">AGENT-LOCAL</p>
 </section>
 
@@ -124,6 +132,24 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 				array( 'who' => 'LocalWP', 'value' => $b['lw'], 'note' => $b['lw_note'], 'us' => false ),
 				array( 'who' => 'DDEV', 'value' => $b['dd'], 'note' => $b['dd_note'], 'us' => false ),
 			);
+			// The ratio is against the nearest competitor that has a number:
+			// the most conservative claim the measurements support.
+			$ratio = '';
+			$us    = (float) $b['al'];
+			$rival = null;
+			foreach ( array_slice( $bars, 1 ) as $bar ) {
+				if ( '' === trim( (string) $bar['value'] ) ) {
+					continue;
+				}
+				if ( null === $rival || (float) $bar['value'] < (float) $rival['value'] ) {
+					$rival = $bar;
+				}
+			}
+			if ( $rival && $us > 0 && (float) $rival['value'] > $us ) {
+				$x     = (float) $rival['value'] / $us;
+				$x     = $x >= 10 ? (string) round( $x ) : number_format( $x, 1 );
+				$ratio = $x . '× ' . ( 'MB' === $b['unit'] ? 'less than' : 'faster than' ) . ' ' . $rival['who'];
+			}
 		?>
 		<div class="bench__metric">
 			<h3 class="bench__label"><?php echo esc_html( $b['label'] ); ?><span class="bench__lower">lower is better</span></h3>
@@ -139,7 +165,8 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 					<span class="bench__who"><?php echo esc_html( $bar['who'] ); ?></span>
 					<span class="bench__track"><i class="bench__fill" style="--w:<?php echo esc_attr( $w ); ?>%"></i></span>
 					<span class="bench__val"><?php echo esc_html( $bar['value'] . ' ' . $b['unit'] );
-						if ( $bar['note'] ) : ?> <em><?php echo esc_html( $bar['note'] ); ?></em><?php endif; ?></span>
+						if ( $bar['note'] ) : ?> <em><?php echo esc_html( $bar['note'] ); ?></em><?php endif;
+						if ( $bar['us'] && $ratio ) : ?> <span class="bench__x"><?php echo esc_html( $ratio ); ?></span><?php endif; ?></span>
 				</div>
 				<?php endif; ?>
 			<?php endforeach; ?>
@@ -160,15 +187,56 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 	<p class="statement__copy"><?php echo esc_html( al_field( 'statement_one_copy', $defaults['statement_one_copy'] ) ); ?></p>
 </section>
 
+<!-- how it works: the anatomy, with a request walking through it -->
+<section class="how" id="how">
+	<p class="label"><span class="lamp" aria-hidden="true"></span>What is actually running</p>
+	<h2 class="bench__heading">One engine. Three doors.</h2>
+	<div class="how__map">
+		<div class="how__node how__node--you">
+			<span class="how__head">You, or an agent</span>
+			<ul class="how__lines">
+				<li><b>tui</b>the dashboard: sites, previews, runtimes, doctor</li>
+				<li><b>cli</b>one command per action, scriptable</li>
+				<li><b>mcp</b>59 tools over stdio, plus the HTTP API</li>
+			</ul>
+		</div>
+		<div class="how__link how__link--in" aria-hidden="true"><span>http</span><i class="how__pkt"></i></div>
+		<div class="how__node how__node--daemon">
+			<span class="how__head">The daemon</span>
+			<ul class="how__lines">
+				<li><b>front</b>one listener on 80 and 443, routed by Host</li>
+				<li><b>tls</b>a certificate per domain, trusted for you</li>
+				<li><b>hosts</b>.test domains resolve with no port suffix</li>
+				<li><b>db</b>one MariaDB, a schema and user per site</li>
+				<li><b>mail</b>every outgoing message caught, nothing sent</li>
+			</ul>
+		</div>
+		<div class="how__link how__link--out" aria-hidden="true"><span>fastcgi</span><i class="how__pkt"></i></div>
+		<div class="how__node how__node--site">
+			<span class="how__head">Each site</span>
+			<ul class="how__lines">
+				<li><b>fpm</b>its own PHP pool, 7.4 to 8.5, on a unix socket</li>
+				<li><b>files</b>served where they already are, no copy</li>
+				<li><b>@/</b>branch previews beside the checkout</li>
+				<li><b>static</b>straight from disk, PHP streamed</li>
+			</ul>
+		</div>
+	</div>
+	<p class="how__copy">State is one JSON file, written under a lock and re-read when it changes, so the TUI, the CLI,
+		the daemon and any number of agents act on the same truth at once. Processes carry pid files and are
+		reaped on exit, so restarts never leave an orphan holding a socket.</p>
+</section>
+
 <!-- statement two: agents -->
 <section class="statement" id="agents">
 	<h2 class="statement__display rv-scale"><?php echo esc_html( al_field( 'statement_two', $defaults['statement_two'] ) ); ?></h2>
 	<p class="statement__copy"><?php echo esc_html( al_field( 'statement_two_copy', $defaults['statement_two_copy'] ) ); ?></p>
 	<div class="statement__term">
 		<div class="term" aria-hidden="true">
-			<div class="term__bar"><span class="lamp"></span>agent session · mcp</div>
-			<div class="term__viewport"><pre id="term-screen">$ agent-local create demo
-  ● Site ready: https://demo.test   15s</pre></div>
+			<div class="term__bar"><span class="term__lights"><i></i><i></i><i></i></span><span class="term__title">claude — ~/Sites/sulo</span></div>
+			<div class="term__viewport"><pre id="term-screen">$ claude</pre></div>
+			<div class="term__input"><span class="term__prompt">&gt;</span><span id="term-input"></span><span class="t-cursor"></span></div>
+			<div class="term__status"><span>? for shortcuts</span><span>agent-local · 59 mcp tools</span></div>
 		</div>
 	</div>
 	<p class="label label--center">create · import · snapshot · share · mail · previews</p>
@@ -199,21 +267,21 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 		$mark = isset( $hx['glyph'] )
 			? '<span class="harness__glyph">' . esc_html( $hx['glyph'] ) . '</span>'
 			: file_get_contents( get_template_directory() . '/assets/harness/' . $hx['icon'] . '.svg' );
-		$harness_half .= '<span class="harness__item">' . $mark .
-			'<span class="harness__name">' . esc_html( $hx['name'] ) . '</span></span>';
+		$harness_half .= '<li class="harness__item">' . $mark .
+			'<span class="harness__name">' . esc_html( $hx['name'] ) . '</span></li>';
 	}
 	?>
-	<div class="harness" aria-label="Agent harnesses that speak MCP">
+	<div class="harness">
 		<div class="harness__track">
-			<div class="harness__half"><?php echo $harness_half; ?></div>
-			<div class="harness__half" aria-hidden="true"><?php echo $harness_half; ?></div>
+			<ul class="harness__half" aria-label="Agent harnesses that speak MCP"><?php echo $harness_half; ?></ul>
+			<ul class="harness__half" aria-hidden="true"><?php echo $harness_half; ?></ul>
 		</div>
 	</div>
 </section>
 
 <!-- features index -->
 <section class="index" id="features">
-	<p class="label"><span class="lamp" aria-hidden="true"></span>What one command does</p>
+	<p class="label"><span class="lamp" aria-hidden="true"></span>What ships in the binary</p>
 	<div class="index__list">
 		<?php foreach ( al_rows( 'features', $defaults['features'] ) as $i => $f ) : ?>
 		<div class="index__row">
@@ -231,7 +299,7 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 	<div class="compare__scroll">
 		<table class="compare__table">
 			<thead>
-				<tr><th></th><th>agent-local</th><th>LocalWP</th><th>MAMP</th><th>DDEV</th></tr>
+				<tr><th scope="col"><span class="sr-only">Capability</span></th><th scope="col">agent-local</th><th scope="col">LocalWP</th><th scope="col">MAMP</th><th scope="col">DDEV</th></tr>
 			</thead>
 			<tbody>
 			<?php foreach ( al_rows( 'compare_rows', $defaults['compare_rows'] ) as $r ) : ?>
@@ -260,7 +328,14 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 		</button>
 		<?php endforeach; ?>
 	</div>
-	<p class="label label--center">macOS · Apple Silicon and Intel · free and open source</p>
+	<?php $alt = al_field( 'install_alt', $defaults['install_alt'] ); if ( $alt ) : ?>
+	<button class="install__alt" type="button" data-copy="<?php echo esc_attr( $alt ); ?>">
+		<span class="install__k">no homebrew</span>
+		<code><?php echo str_replace( '/', '/<wbr>', esc_html( $alt ) ); ?></code>
+	</button>
+	<?php endif; ?>
+	<p class="label label--center">macOS · Apple Silicon and Intel · MIT licensed</p>
+	<span class="sr-only" aria-live="polite" id="copy-live"></span>
 </section>
 
 </main>

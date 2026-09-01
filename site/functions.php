@@ -11,6 +11,31 @@ add_action( 'after_setup_theme', function () {
 	add_theme_support( 'title-tag' );
 } );
 
+// The front page is the product, not the blog: its title says what the thing
+// is regardless of what the WordPress install happens to be called.
+add_filter( 'pre_get_document_title', function ( $title ) {
+	return is_front_page() ? 'agent-local: local WordPress for humans and agents' : $title;
+} );
+
+add_action( 'wp_head', function () {
+	if ( ! is_front_page() ) {
+		return;
+	}
+	$ld = array(
+		'@context'            => 'https://schema.org',
+		'@type'               => 'SoftwareApplication',
+		'name'                => 'agent-local',
+		'operatingSystem'     => 'macOS',
+		'applicationCategory' => 'DeveloperApplication',
+		'description'         => 'One Go binary that creates, serves and manages WordPress sites on macOS. No Docker, no prerequisites, and a full agent API.',
+		'url'                 => home_url( '/' ),
+		'downloadUrl'         => 'https://github.com/jefrontv/agent-local/releases',
+		'license'             => 'https://opensource.org/licenses/MIT',
+		'offers'              => array( '@type' => 'Offer', 'price' => '0', 'priceCurrency' => 'USD' ),
+	);
+	echo '<script type="application/ld+json">' . wp_json_encode( $ld, JSON_UNESCAPED_SLASHES ) . '</script>' . "\n";
+}, 5 );
+
 add_action( 'wp_enqueue_scripts', function () {
 	$v = wp_get_theme()->get( 'Version' );
 	wp_enqueue_style(
