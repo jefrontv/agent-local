@@ -55,6 +55,7 @@ USAGE
   agent-local daemon             run daemon in foreground
   agent-local daemon --background run daemon detached
   agent-local mcp                MCP server (stdio, JSON-RPC)
+  agent-local connect            register the MCP server in installed agent harnesses
   agent-local api-token          print agent API token
   agent-local update [--check]   install the latest release
   agent-local restart-daemon     reload the daemon after an update
@@ -119,6 +120,8 @@ func main() {
 		err = RunDaemon(hasFlag(rest, "--background"))
 	case "mcp":
 		err = runMCP(rest)
+	case "connect":
+		err = cmdConnect(rest)
 	case "front":
 		err = cmdFront(rest)
 	case "import":

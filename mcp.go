@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -107,29 +106,22 @@ func mcpTTYNotice() string {
 		"  Nothing will happen here: this speaks JSON-RPC over stdin/stdout and is\n" +
 		"  meant to be launched by an MCP client, not run by hand.\n\n" +
 		"  Client config:      agent-local mcp --config\n" +
+		"  Register yourself:  agent-local connect\n" +
 		"  Try one call:       echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}' | agent-local mcp\n" +
 		"  Everything here is also a CLI command:  agent-local help\n\n" +
 		"  Listening on stdin — ctrl-c to quit.\n"
 }
 
 // mcpClientConfig is the block to paste into a client's config file.
+// `agent-local connect` does this automatically for the harnesses it knows —
+// this is the manual fallback for anything else.
 func mcpClientConfig() string {
-	bin, err := os.Executable()
-	if err != nil || bin == "" {
-		bin = "agent-local"
-	}
-	if p, err := filepath.EvalSymlinks(bin); err == nil {
-		bin = p
-	}
-	return fmt.Sprintf(`{
-  "mcpServers": {
-    "agent-local": {
-      "command": %q,
-      "args": ["mcp"]
-    }
-  }
-}
-`, bin)
+	bin := agentLocalBinaryPath()
+	entry := mcpServerEntry(bin)
+	out, _ := json.MarshalIndent(map[string]interface{}{
+		"mcpServers": map[string]interface{}{"agent-local": entry},
+	}, "", "  ")
+	return string(out) + "\n"
 }
 
 func mcpHandle(req *mcpReq) *mcpResp {
