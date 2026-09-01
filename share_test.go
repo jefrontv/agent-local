@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,5 +110,43 @@ func TestShareExpiryFieldRoundtrip(t *testing.T) {
 	}
 	if (&Share{}).ExpiresAt != nil {
 		t.Fatal("zero share carries an expiry")
+	}
+}
+
+// A shared site's media fallback must survive the tunnel: the Host header
+// there is the tunnel's, which matches no site, so the fallback lookup used
+// to come back empty — images 404ed exactly when someone outside was looking.
+func TestServeMediaFallbackThroughShare(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	docroot := filepath.Join(home, "site")
+	if err := os.MkdirAll(filepath.Join(docroot, "wp-content", "uploads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.PutSite(&Site{Slug: "s", Domain: "s.test", WPDir: docroot, MediaFallback: "https://origin.example"})
+	r := NewRouter(NewEngine(store))
+
+	sh := &Share{Slug: "s", Host: "x.trycloudflare.com", URL: "https://x.trycloudflare.com"}
+	shares.add(sh)
+	defer shares.remove(sh)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"http://x.trycloudflare.com/wp-content/uploads/2026/02/gone.png", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status through tunnel = %d, want 302", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "https://origin.example/wp-content/uploads/2026/02/gone.png" {
+		t.Errorf("Location = %q", loc)
+	}
+	// The tooling guard must still hold while media is configured.
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://x.trycloudflare.com"+MailPath, nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("mail over tunnel = %d, want 404", rec.Code)
 	}
 }

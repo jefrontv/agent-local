@@ -79,12 +79,14 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	wpdir, fpmID, _, ok := r.engine.Resolve(host)
 	// A tunnel host is not a vhost: resolve it through the share registry to
 	// the site being shared, and remember that this request came from outside.
-	shared := false
+	// mediaHost is who to consult for per-site settings — the media fallback
+	// looks a site up by domain, and the tunnel hostname matches none.
+	shared, mediaHost := false, host
 	if !ok {
 		if sh := shares.ForHost(host); sh != nil {
 			if site := r.engine.Store.Site(sh.Slug); site != nil {
 				wpdir, fpmID, _, ok = r.engine.Resolve(site.Domain)
-				shared = true
+				shared, mediaHost = true, site.Domain
 			} else {
 				// The site went away under the tunnel (a CLI-side delete
 				// cannot reach this registry): fold the share here.
@@ -120,7 +122,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	// A missing upload goes to the site's media fallback rather than to
 	// WordPress, which would only render a 404 page for an image.
-	if req.Method == "GET" && r.serveMediaFallback(w, req, host, wpdir) {
+	if req.Method == "GET" && r.serveMediaFallback(w, req, mediaHost, wpdir) {
 		return
 	}
 	// "/wp-admin" is a directory with its own index.php: add the slash the way
