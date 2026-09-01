@@ -27,11 +27,17 @@ USAGE
   agent-local open SLUG          open site in browser
   agent-local db SLUG [sql]      print DB creds or run SQL
   agent-local logs NAME [lines] tail a log (mysql, apache, daemon, fpm-SLUG…)
+  agent-local wpdebug SLUG [on|off]   WP_DEBUG -> ~/.agent-local/logs/wp-SLUG.log
+  agent-local mail SLUG [ID]     captured emails (--open UI, --clear empties)
+  agent-local share SLUG [--minutes N]   public URL via Cloudflare quick tunnel (--off stops)
   agent-local php SLUG VERSION   switch PHP version
   agent-local yield [secs]       free :80/:443 briefly (let LocalWP start)
   agent-local resolve [PATH]     which site owns a path (default: cwd)
   agent-local cert DOMAIN [--trust]   TLS state for a domain
   agent-local db SLUG [sql|import F|export [F]|reset|tables|gui]   database ops
+  agent-local db SLUG snapshot [NAME]     save a database save-point
+  agent-local db SLUG snapshots           list save-points
+  agent-local db SLUG restore [NAME]      restore one (default: newest)
   agent-local jobs               list recent long-running jobs
   agent-local job ID             show one job's status and progress
   agent-local media SLUG [URL]       missing uploads -> origin (--auto reads .htaccess, --off)
@@ -133,6 +139,14 @@ func main() {
 		err = RunFrontDaemon(rest)
 	case "media":
 		err = cmdMedia(rest)
+	case "wpdebug":
+		err = cmdWPDebug(rest)
+	case "mail":
+		err = cmdMail(rest)
+	case "sendmail":
+		err = runSendmail(rest)
+	case "share":
+		err = cmdShare(rest)
 	case "autostart":
 		err = cmdAutostart(rest)
 	case "sites-dir":
@@ -509,6 +523,7 @@ func cmdDelete(args []string) error {
 	if err := e.DeleteSite(slug, DeleteOpts{
 		KeepFiles:        hasFlag(args, "--keep-files"),
 		KeepDB:           hasFlag(args, "--keep-db"),
+		NoSnapshot:       hasFlag(args, "--no-snapshot"),
 		InteractiveHosts: true,
 	}); err != nil {
 		return err
@@ -564,9 +579,9 @@ func cmdDB(args []string) error {
 		switch pos[1] {
 		case "import":
 			if len(pos) < 3 {
-				return fmt.Errorf("usage: agent-local db SLUG import FILE.sql[.gz] [--keep-urls]")
+				return fmt.Errorf("usage: agent-local db SLUG import FILE.sql[.gz] [--keep-urls] [--no-snapshot]")
 			}
-			msg, err := e.ImportSQL(slug, pos[2], !hasFlag(args, "--keep-urls"))
+			msg, err := e.ImportSQL(slug, pos[2], !hasFlag(args, "--keep-urls"), !hasFlag(args, "--no-snapshot"))
 			if err != nil {
 				return err
 			}
@@ -583,11 +598,47 @@ func cmdDB(args []string) error {
 			}
 			fmt.Println(msg)
 			return nil
-		case "reset":
-			if err := e.ResetDB(slug); err != nil {
+		case "snapshot":
+			label := ""
+			if len(pos) > 2 {
+				label = pos[2]
+			}
+			snap, err := e.SnapshotDB(slug, label)
+			if err != nil {
 				return err
 			}
-			fmt.Println("database emptied: " + site.DBName)
+			fmt.Printf("%s  %s (%s)\n", snap.Name, snap.Path, humanBytes(snap.Size))
+			return nil
+		case "snapshots":
+			snaps, err := e.Snapshots(slug)
+			if err != nil {
+				return err
+			}
+			if len(snaps) == 0 {
+				fmt.Printf("no snapshots — take one: agent-local db %s snapshot\n", slug)
+				return nil
+			}
+			for _, s := range snaps {
+				fmt.Printf("%-42s %8s  %s\n", s.Name, humanBytes(s.Size), s.CreatedAt.Format("2006-01-02 15:04"))
+			}
+			return nil
+		case "restore":
+			name := ""
+			if len(pos) > 2 {
+				name = pos[2]
+			}
+			msg, err := e.RestoreSnapshot(slug, name, !hasFlag(args, "--no-snapshot"))
+			if err != nil {
+				return err
+			}
+			fmt.Println(msg)
+			return nil
+		case "reset":
+			msg, err := e.ResetDBBackup(slug, !hasFlag(args, "--no-snapshot"))
+			if err != nil {
+				return err
+			}
+			fmt.Println(msg)
 			return nil
 		case "tables":
 			out, err := e.DB(fmt.Sprintf("SELECT table_name, table_rows, ROUND(data_length/1024) AS kb "+
@@ -917,6 +968,179 @@ func cmdBranches(args []string) error {
 		strings.Join(res["local"].([]string), " "),
 		strings.Join(res["remote"].([]string), " "))
 	return nil
+}
+
+// cmdWPDebug shows or flips a site's WP_DEBUG. On points the log at
+// ~/.agent-local/logs/wp-<slug>.log so `agent-local logs wp-<slug>` tails it.
+func cmdWPDebug(args []string) error {
+	slug, err := slugArg(args)
+	if err != nil {
+		return err
+	}
+	store, e, err := openEnv()
+	if err != nil {
+		return err
+	}
+	site := store.Site(slug)
+	if site == nil {
+		return fmt.Errorf("no such site: %s", slug)
+	}
+	pos := positional(args)
+	if len(pos) > 1 {
+		on := false
+		switch pos[1] {
+		case "on":
+			on = true
+		case "off":
+		default:
+			return fmt.Errorf("usage: agent-local wpdebug SLUG [on|off]")
+		}
+		st, err := e.SetWPDebug(slug, on)
+		if err != nil {
+			return err
+		}
+		if st.Enabled {
+			fmt.Printf("WP_DEBUG on — log: %s\n", st.LogPath)
+			fmt.Printf("tail it: agent-local logs %s\n", st.LogName)
+		} else {
+			fmt.Println("WP_DEBUG off")
+		}
+		return nil
+	}
+	st := WPDebugStatus(site)
+	if !st.Enabled {
+		fmt.Println("WP_DEBUG off — enable: agent-local wpdebug " + slug + " on")
+		return nil
+	}
+	fmt.Printf("WP_DEBUG on — log: %s\n", st.LogPath)
+	if st.LogName != "" {
+		fmt.Printf("tail it: agent-local logs %s\n", st.LogName)
+	}
+	return nil
+}
+
+// cmdMail lists or shows a site's captured emails. Capture is automatic —
+// every pool routes PHP mail() back into `agent-local sendmail` — so this
+// only ever reads.
+func cmdMail(args []string) error {
+	slug, err := slugArg(args)
+	if err != nil {
+		return err
+	}
+	store, _, err := openEnv()
+	if err != nil {
+		return err
+	}
+	site := store.Site(slug)
+	if site == nil {
+		return fmt.Errorf("no such site: %s", slug)
+	}
+	pos := positional(args)
+	switch {
+	case hasFlag(args, "--clear"):
+		n, err := ClearMail(slug)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("cleared %d message(s)\n", n)
+		return nil
+	case hasFlag(args, "--open"):
+		url := MailURL(site.Domain)
+		fmt.Println(url)
+		return exec.Command("open", url).Start()
+	case len(pos) > 1:
+		msg, err := GetMail(slug, pos[1])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("subject  %s\nfrom     %s\nto       %s\ndate     %s\n",
+			msg.Subject, msg.From, msg.To, msg.Date.Format("2006-01-02 15:04:05"))
+		for _, a := range msg.Attachments {
+			fmt.Printf("attach   %s (%s, %s)\n", a.Filename, a.MIMEType, humanBytes(int64(a.Size)))
+		}
+		switch {
+		case msg.Text != "":
+			fmt.Println("\n" + msg.Text)
+		case msg.HTML != "":
+			fmt.Printf("\n(html only — view it: %s/msg/%s)\n", MailURL(site.Domain), msg.ID)
+		}
+		return nil
+	}
+	sums, err := ListMail(slug)
+	if err != nil {
+		return err
+	}
+	if len(sums) == 0 {
+		fmt.Printf("no mail captured for %s — every email the site sends lands here (%s)\n", slug, MailURL(site.Domain))
+		return nil
+	}
+	for _, s := range sums {
+		subject := s.Subject
+		if subject == "" {
+			subject = "(no subject)"
+		}
+		fmt.Printf("%s  %-8s %s → %s  %s\n", s.ID, mailAge(s.Date), s.From, s.To, subject)
+	}
+	return nil
+}
+
+// cmdShare opens, reports or closes a site's public tunnel. Shares are owned
+// by the daemon — they must outlive this command — so the CLI is a client
+// of the same API agents use. Opening is idempotent: a second call prints
+// the URL of the share already running.
+func cmdShare(args []string) error {
+	slug, err := slugArg(args)
+	if err != nil {
+		return err
+	}
+	EnsureRouterDaemonQuiet()
+	if hasFlag(args, "--off") {
+		res, isErr := apiDelete("/sites/" + slug + "/share")
+		if isErr {
+			return fmt.Errorf("%s", apiErrMsg(res))
+		}
+		fmt.Println(res)
+		return nil
+	}
+	body := map[string]interface{}{}
+	switch {
+	case hasFlag(args, "--forever"):
+		body["minutes"] = -1
+	case flagValue(args, "--minutes") != "":
+		body["minutes"] = atoi0(flagValue(args, "--minutes"))
+	}
+	res, isErr := apiPost("/sites/"+slug+"/share", body)
+	if isErr {
+		return fmt.Errorf("%s", apiErrMsg(res))
+	}
+	sh, _ := res.(map[string]interface{})
+	if sh == nil || sh["url"] == nil {
+		fmt.Println(res)
+		return nil
+	}
+	fmt.Println(sh["url"])
+	if exp, ok := sh["expires_at"].(string); ok {
+		if t, err := time.Parse(time.RFC3339Nano, exp); err == nil {
+			fmt.Printf("  expires %s (in %s) — stop early: agent-local share %s --off\n",
+				t.Format("15:04"), time.Until(t).Round(time.Minute), slug)
+			return nil
+		}
+	}
+	fmt.Printf("  until stopped: agent-local share %s --off\n", slug)
+	return nil
+}
+
+// apiErrMsg digs the error string out of an apiDo failure payload.
+func apiErrMsg(res interface{}) string {
+	switch m := res.(type) {
+	case map[string]interface{}:
+		if s, ok := m["error"].(string); ok {
+			return s
+		}
+	case map[string]string:
+		return m["error"]
+	}
+	return fmt.Sprint(res)
 }
 
 func cmdLogs(args []string) error {

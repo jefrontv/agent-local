@@ -282,6 +282,7 @@ pm.max_requests = 500
 catch_workers_output = yes
 clear_env = no
 env[HOME] = %s
+php_admin_value[sendmail_path] = %s sendmail --site %s
 php_admin_value[error_log] = %s
 php_admin_flag[log_errors] = on
 php_value[memory_limit] = 512M
@@ -296,8 +297,18 @@ php_value[opcache.revalidate_freq] = 2
 php_value[opcache.validate_timestamps] = 1
 `,
 		e.fpmLog(id), id, os.Getenv("USER"), e.fpmSock(id), os.Getenv("USER"),
-		HomeDir(), e.fpmLog(id))
+		HomeDir(), selfExe(), id, e.fpmLog(id))
 	return os.WriteFile(e.fpmConf(id), []byte(conf), 0o644)
+}
+
+// selfExe is the running binary's path, for generated config that must call
+// back into this app (a pool's sendmail_path). Pool configs are rewritten on
+// every start, so a moved binary heals on the next one.
+func selfExe() string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return exe
+	}
+	return AppName
 }
 
 // StartFPM launches a php-fpm pool for a site/worktree. It is idempotent: a

@@ -116,6 +116,10 @@ func RunDaemon(background bool) error {
 		log.Printf("swept %d orphaned php-fpm pool config(s)", n)
 	}
 
+	// Tunnels a previous daemon owned cannot be re-adopted — reap them and
+	// the mu-plugins they left, so no site keeps mapping a dead share host.
+	SweepShares(store)
+
 	// Bring back whatever was running before the machine went down — sites and
 	// their branch previews. Concurrently: each pool boot is about a second, and
 	// eight of them in series is a boot nobody waits for.
@@ -165,6 +169,9 @@ func RunDaemon(background bool) error {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	log.Printf("shutting down")
+	for _, sh := range shares.All() {
+		sh.shutdown()
+	}
 	return nil
 }
 
@@ -199,7 +206,11 @@ func ok(w http.ResponseWriter, data interface{}) {
 func (a *APIServer) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.store.ReloadIfChanged()
-		if r.URL.Path == "/healthz" {
+		// /mail-ui is the apache front's ProxyPass target for the inbox UI —
+		// the same pages the router serves unauthenticated on a site's own
+		// domain, so gating them here would only break one front of the two.
+		// Both listeners are loopback-only.
+		if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/mail-ui/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -262,6 +273,19 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("POST /sites/{slug}/db/export", a.handleDBExport)
 	mux.HandleFunc("POST /sites/{slug}/db/reset", a.handleDBReset)
 	mux.HandleFunc("GET /sites/{slug}/db/tables", a.handleDBTables)
+	mux.HandleFunc("POST /sites/{slug}/db/snapshot", a.handleDBSnapshot)
+	mux.HandleFunc("GET /sites/{slug}/db/snapshots", a.handleDBSnapshots)
+	mux.HandleFunc("POST /sites/{slug}/db/restore", a.handleDBRestore)
+	mux.HandleFunc("GET /sites/{slug}/wp-debug", a.handleWPDebug)
+	mux.HandleFunc("POST /sites/{slug}/wp-debug", a.handleWPDebug)
+	mux.HandleFunc("GET /sites/{slug}/mail", a.handleMailList)
+	mux.HandleFunc("GET /sites/{slug}/mail/{msg}", a.handleMailGet)
+	mux.HandleFunc("DELETE /sites/{slug}/mail", a.handleMailClear)
+	mux.HandleFunc("/mail-ui/{id}", a.handleMailUI)
+	mux.HandleFunc("/mail-ui/{id}/{rest...}", a.handleMailUI)
+	mux.HandleFunc("POST /sites/{slug}/share", a.handleShareStart)
+	mux.HandleFunc("GET /sites/{slug}/share", a.handleShareGet)
+	mux.HandleFunc("DELETE /sites/{slug}/share", a.handleShareStop)
 	mux.HandleFunc("GET /resolve", a.handleResolvePath)
 	mux.HandleFunc("GET /certs/{domain}", a.handleCertStatus)
 	mux.HandleFunc("POST /certs/{domain}/trust", a.handleCertTrust)
@@ -270,6 +294,128 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("GET /jobs/{id}", a.handleGetJob)
 	mux.HandleFunc("GET /sites/{slug}/adminer", a.handleAdminer)
 	return mux
+}
+
+// handleWPDebug reads or flips a site's WP_DEBUG. On points WP_DEBUG_LOG at
+// ~/.agent-local/logs/wp-<slug>.log, which get_logs can then tail by the
+// returned log_name.
+func (a *APIServer) handleWPDebug(w http.ResponseWriter, r *http.Request) {
+	site := a.requireSite(w, r)
+	if site == nil {
+		return
+	}
+	if r.Method == "GET" {
+		ok(w, WPDebugStatus(site))
+		return
+	}
+	var req struct {
+		On bool `json:"on"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, 400, "body must be {\"on\": true|false}")
+		return
+	}
+	st, err := a.engine.SetWPDebug(site.Slug, req.On)
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	ok(w, st)
+}
+
+// handleMailList, handleMailGet and handleMailClear are the agent-facing
+// inbox: submit a form with a browser, then read the email it produced —
+// a complete end-to-end check with no human mailbox involved.
+func (a *APIServer) handleMailList(w http.ResponseWriter, r *http.Request) {
+	site := a.requireSite(w, r)
+	if site == nil {
+		return
+	}
+	sums, err := ListMail(site.Slug)
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	ok(w, sums)
+}
+
+func (a *APIServer) handleMailGet(w http.ResponseWriter, r *http.Request) {
+	site := a.requireSite(w, r)
+	if site == nil {
+		return
+	}
+	msg, err := GetMail(site.Slug, r.PathValue("msg"))
+	if err != nil {
+		fail(w, 404, err.Error())
+		return
+	}
+	ok(w, msg)
+}
+
+func (a *APIServer) handleMailClear(w http.ResponseWriter, r *http.Request) {
+	site := a.requireSite(w, r)
+	if site == nil {
+		return
+	}
+	n, err := ClearMail(site.Slug)
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	ok(w, map[string]int{"cleared": n})
+}
+
+// handleMailUI renders the browser inbox for the apache front, whose vhosts
+// ProxyPass /.agent-local/mail here. Pages link relative to the
+// browser-facing path, which is why base is MailPath and not this route —
+// hitting /mail-ui directly is not a supported way in.
+func (a *APIServer) handleMailUI(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rest := r.PathValue("rest")
+	if rest != "" {
+		rest = "/" + rest
+	}
+	serveMailUI(w, r, id, MailPath, rest, id)
+}
+
+type shareReq struct {
+	Minutes int `json:"minutes"`
+}
+
+// handleShareStart opens (or reports — it is idempotent) a site's public
+// tunnel. Wrapped in a job because the first run may brew-install cloudflared.
+func (a *APIServer) handleShareStart(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
+	var req shareReq
+	json.NewDecoder(r.Body).Decode(&req)
+	slug := r.PathValue("slug")
+	a.runJob(w, r, "share", func(cb func(string, string)) (any, error) {
+		return a.engine.StartShare(slug, req.Minutes, cb)
+	})
+}
+
+func (a *APIServer) handleShareGet(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
+	if sh := shares.ForSlug(r.PathValue("slug")); sh != nil {
+		ok(w, sh)
+		return
+	}
+	ok(w, map[string]bool{"active": false})
+}
+
+func (a *APIServer) handleShareStop(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
+	if a.engine.StopShare(r.PathValue("slug")) {
+		ok(w, "share stopped")
+		return
+	}
+	ok(w, "not shared")
 }
 
 func wantAsync(r *http.Request) bool {
@@ -706,8 +852,9 @@ func (a *APIServer) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	if err := a.engine.DeleteSite(r.PathValue("slug"), DeleteOpts{
-		KeepFiles: q.Get("files") == "keep",
-		KeepDB:    q.Get("db") == "keep",
+		KeepFiles:  q.Get("files") == "keep",
+		KeepDB:     q.Get("db") == "keep",
+		NoSnapshot: q.Get("snapshot") == "off",
 	}); err != nil {
 		fail(w, 500, err.Error())
 		return
@@ -839,8 +986,9 @@ func (a *APIServer) handleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 type sqlFileReq struct {
-	Path     string `json:"path"`
-	KeepURLs bool   `json:"keep_urls"` // skip domain search-replace
+	Path       string `json:"path"`
+	KeepURLs   bool   `json:"keep_urls"`   // skip domain search-replace
+	NoSnapshot bool   `json:"no_snapshot"` // skip the automatic pre-import snapshot
 }
 
 // handleDBImport replaces a site's database contents with a .sql/.sql.gz dump.
@@ -857,7 +1005,7 @@ func (a *APIServer) handleDBImport(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	a.runJob(w, r, "db-import", func(cb func(string, string)) (any, error) {
 		cb("database", "loading "+req.Path)
-		return a.engine.ImportSQL(slug, req.Path, !req.KeepURLs)
+		return a.engine.ImportSQL(slug, req.Path, !req.KeepURLs, !req.NoSnapshot)
 	})
 }
 func (a *APIServer) handleDBExport(w http.ResponseWriter, r *http.Request) {
@@ -878,11 +1026,59 @@ func (a *APIServer) handleDBReset(w http.ResponseWriter, r *http.Request) {
 	if a.requireSite(w, r) == nil {
 		return
 	}
-	if err := a.engine.ResetDB(r.PathValue("slug")); err != nil {
+	var req snapshotReq
+	json.NewDecoder(r.Body).Decode(&req)
+	msg, err := a.engine.ResetDBBackup(r.PathValue("slug"), !req.NoSnapshot)
+	if err != nil {
 		fail(w, 500, err.Error())
 		return
 	}
-	ok(w, "database emptied")
+	ok(w, msg)
+}
+
+type snapshotReq struct {
+	Name       string `json:"name"`
+	NoSnapshot bool   `json:"no_snapshot"`
+}
+
+// handleDBSnapshot saves a database save-point.
+func (a *APIServer) handleDBSnapshot(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
+	var req snapshotReq
+	json.NewDecoder(r.Body).Decode(&req)
+	slug := r.PathValue("slug")
+	a.runJob(w, r, "db-snapshot", func(cb func(string, string)) (any, error) {
+		cb("database", "snapshotting "+slug)
+		return a.engine.SnapshotDB(slug, req.Name)
+	})
+}
+
+func (a *APIServer) handleDBSnapshots(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
+	snaps, err := a.engine.Snapshots(r.PathValue("slug"))
+	if err != nil {
+		fail(w, 500, err.Error())
+		return
+	}
+	ok(w, snaps)
+}
+
+// handleDBRestore loads a save-point back, the newest when no name is given.
+func (a *APIServer) handleDBRestore(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
+	var req snapshotReq
+	json.NewDecoder(r.Body).Decode(&req)
+	slug := r.PathValue("slug")
+	a.runJob(w, r, "db-restore", func(cb func(string, string)) (any, error) {
+		cb("database", "restoring "+slug)
+		return a.engine.RestoreSnapshot(slug, req.Name, !req.NoSnapshot)
+	})
 }
 
 // handleDBTables lists tables with row counts and size, the orientation query

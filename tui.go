@@ -1736,6 +1736,11 @@ func (m *model) sitePanel(s *Site) string {
 		}
 		rows = append(rows, [2]string{"media", stDim.Render("missing uploads → ") + eff + note})
 	}
+	// Only when something was caught: an empty inbox is the normal state and
+	// does not need a row saying so.
+	if n, latest := MailCount(s.Slug); n > 0 {
+		rows = append(rows, [2]string{"mail", fmt.Sprintf("%d caught", n) + stDim.Render("  "+mailAge(latest)+"  ") + MailURL(s.Domain)})
+	}
 	var body strings.Builder
 	for i, r := range rows {
 		if i > 0 {

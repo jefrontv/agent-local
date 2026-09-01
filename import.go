@@ -595,7 +595,9 @@ func (e *Engine) loadSQLFile(site *Site, path string) error {
 // With rewriteURLs, the domains the dump was recorded under are search-replaced
 // to this site's domain, so an imported dump serves on its own host instead of
 // redirecting to wherever it came from.
-func (e *Engine) ImportSQL(slug, path string, rewriteURLs bool) (string, error) {
+// With snapshot, the current contents are saved first — the dump about to be
+// replaced is often the only copy of local work.
+func (e *Engine) ImportSQL(slug, path string, rewriteURLs, snapshot bool) (string, error) {
 	site := e.Store.Site(slug)
 	if site == nil {
 		return "", fmt.Errorf("no such site: %s", slug)
@@ -603,13 +605,23 @@ func (e *Engine) ImportSQL(slug, path string, rewriteURLs bool) (string, error) 
 	if !fileExists(path) {
 		return "", fmt.Errorf("no such file: %s", path)
 	}
+	saved := ""
+	if snapshot {
+		took, err := e.autoSnapshot(slug, "import")
+		if err != nil {
+			return "", fmt.Errorf("pre-import snapshot: %w (--no-snapshot / no_snapshot skips it)", err)
+		}
+		if took != "" {
+			saved = "saved " + took + ", "
+		}
+	}
 	if err := e.ResetDB(slug); err != nil {
 		return "", err
 	}
 	if err := e.loadSQLFile(site, path); err != nil {
 		return "", err
 	}
-	msg := fmt.Sprintf("imported %s into %s (%d tables)", filepath.Base(path), site.DBName, e.tableCount(site))
+	msg := fmt.Sprintf("%simported %s into %s (%d tables)", saved, filepath.Base(path), site.DBName, e.tableCount(site))
 	if !rewriteURLs {
 		return msg, nil
 	}
@@ -717,9 +729,6 @@ func (e *Engine) ExportSQL(slug, path string) (string, error) {
 	if site == nil {
 		return "", fmt.Errorf("no such site: %s", slug)
 	}
-	if err := e.EnsureDB(); err != nil {
-		return "", err
-	}
 	if path == "" {
 		dir := filepath.Join(P().Root, "dumps")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -727,27 +736,39 @@ func (e *Engine) ExportSQL(slug, path string) (string, error) {
 		}
 		path = filepath.Join(dir, fmt.Sprintf("%s-%s.sql", slug, time.Now().Format("20060102-150405")))
 	}
+	f, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if err := e.dumpDB(site, f); err != nil {
+		return "", err
+	}
+	fi, _ := f.Stat()
+	return fmt.Sprintf("%s (%d bytes)", path, fi.Size()), nil
+}
+
+// dumpDB streams a logical dump of a site's database into w — the one place
+// mariadb-dump is spawned, shared by exports and snapshots.
+func (e *Engine) dumpDB(site *Site, w io.Writer) error {
+	if err := e.EnsureDB(); err != nil {
+		return err
+	}
 	inv := e.Store.Inventory()
 	bindir := filepath.Dir(inv.MySQL.Bin)
 	dump := filepath.Join(bindir, "mariadb-dump")
 	if !fileExists(dump) {
 		dump = filepath.Join(bindir, "mysqldump")
 	}
-	f, err := os.Create(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
 	cmd := exec.Command(dump, "--no-defaults", "-uroot", "--password="+DBRootPassword(), "-h127.0.0.1",
 		"-P", fmt.Sprint(DefaultDBPort), "--single-transaction", "--quick",
 		"--default-character-set=utf8mb4", site.DBName)
 	var errb strings.Builder
-	cmd.Stdout, cmd.Stderr = f, &errb
+	cmd.Stdout, cmd.Stderr = w, &errb
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("dump: %v: %s", err, tail(dropClientNoise(errb.String()), 300))
+		return fmt.Errorf("dump: %v: %s", err, tail(dropClientNoise(errb.String()), 300))
 	}
-	fi, _ := f.Stat()
-	return fmt.Sprintf("%s (%d bytes)", path, fi.Size()), nil
+	return nil
 }
 
 // ResetDB drops and recreates a site's database, keeping its user and grants.

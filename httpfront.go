@@ -165,7 +165,7 @@ Listen 127.0.0.1:%d
 	for _, m := range []string{
 		"mpm_event", "authz_core", "authz_host", "authz_user", "authn_core",
 		"auth_basic", "access_compat", "log_config", "env", "proxy",
-		"proxy_fcgi", "unixd", "dir", "mime", "rewrite", "alias", "filter",
+		"proxy_fcgi", "proxy_http", "unixd", "dir", "mime", "rewrite", "alias", "filter",
 		"headers", "setenvif", "expires", "deflate", "ssl", "socache_shmcb",
 	} {
 		rel := filepath.Join("lib", "httpd", "modules", "mod_"+m+".so")
@@ -192,7 +192,7 @@ DirectoryIndex index.php index.html
 `, p.ApachePid(), p.Log("apache"), os.Getenv("USER"), mimeTypesPath(prefix)))
 
 	adminerDir := P().AdminerDir()
-	emit := func(domain, docroot, sock, adminerBoot string) {
+	emit := func(id, domain, docroot, sock, adminerBoot string) {
 		vhost := func(port int, tls bool) {
 			b.WriteString(fmt.Sprintf("<VirtualHost 127.0.0.1:%d>\n  ServerName %s\n  DocumentRoot \"%s\"\n", port, domain, docroot))
 			if tls {
@@ -202,6 +202,10 @@ DirectoryIndex index.php index.html
 			if adminerBoot != "" {
 				b.WriteString(fmt.Sprintf("  Alias %s \"%s\"\n", AdminerPath, adminerBoot))
 			}
+			// The inbox UI is rendered by the daemon; apache only forwards.
+			// The pool id keys the inbox, so previews keep their own.
+			b.WriteString(fmt.Sprintf("  ProxyPass %s http://127.0.0.1:%d/mail-ui/%s\n  ProxyPassReverse %s http://127.0.0.1:%d/mail-ui/%s\n",
+				MailPath, DefaultAPIPort, id, MailPath, DefaultAPIPort, id))
 			b.WriteString(fmt.Sprintf(`  <FilesMatch \.php$>
     SetHandler "proxy:unix:%s|fcgi://localhost"
   </FilesMatch>
@@ -233,13 +237,13 @@ DirectoryIndex index.php index.html
 	e := NewEngine(store)
 	for _, site := range store.Sites() {
 		boot := adminerBootIfReady(site)
-		emit(site.Domain, site.WPDir, e.fpmSock(site.Slug), boot)
+		emit(site.Slug, site.Domain, site.WPDir, e.fpmSock(site.Slug), boot)
 		for _, a := range site.Aliases {
-			emit(a, site.WPDir, e.fpmSock(site.Slug), boot)
+			emit(site.Slug, a, site.WPDir, e.fpmSock(site.Slug), boot)
 		}
 	}
 	for _, w := range store.Data.Worktrees {
-		emit(w.Domain, e.wtServeDir(w), e.fpmSock(w.ID), adminerBootIfReady(store.Site(w.Site)))
+		emit(w.ID, w.Domain, e.wtServeDir(w), e.fpmSock(w.ID), adminerBootIfReady(store.Site(w.Site)))
 	}
 	return os.WriteFile(p.ApacheConf(), []byte(b.String()), 0o644)
 }

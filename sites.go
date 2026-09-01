@@ -525,6 +525,8 @@ type DeleteOpts struct {
 	// KeepDB leaves the schema and user in place, so a detached folder whose
 	// wp-config still points here can be re-adopted without recreating it.
 	KeepDB bool
+	// NoSnapshot skips the automatic pre-delete database snapshot.
+	NoSnapshot bool
 	// InteractiveHosts allows a password prompt for the /etc/hosts edit.
 	InteractiveHosts bool
 }
@@ -538,13 +540,24 @@ func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 		return fmt.Errorf("no such site: %s", slug)
 	}
 	_ = e.StopSite(slug)
+	e.StopShare(slug) // no site, no tunnel
 	for _, w := range e.Store.WorktreesFor(slug) {
 		_ = e.RemoveWorktree(w.ID)
 	}
 	// Drop the generated pool config too, or php-fpm keeps parsing a pool whose
 	// work_dir no longer exists on every later start.
 	e.RemovePool(slug)
+	// The inbox is transient capture, not user data: it goes with the site.
+	os.RemoveAll(P().MailDir(slug))
 	if !o.KeepDB {
+		// The schema about to be dropped is often the only copy of local work,
+		// so it is saved under ~/.agent-local/snapshots/<slug>/ first — that
+		// directory deliberately survives the delete.
+		if !o.NoSnapshot {
+			if _, err := e.autoSnapshot(slug, "delete"); err != nil {
+				return fmt.Errorf("pre-delete snapshot: %w (--no-snapshot skips it)", err)
+			}
+		}
 		if err := e.DropSiteDB(site); err != nil {
 			return fmt.Errorf("drop db: %w", err)
 		}
@@ -1206,7 +1219,8 @@ func (e *Engine) RemoveWorktree(id string) error {
 		return fmt.Errorf("no such worktree: %s", id)
 	}
 	_ = e.StopWorktree(id)
-	e.RemovePool(id) // same reason as DeleteSite: don't leave a dead pool config
+	e.RemovePool(id)              // same reason as DeleteSite: don't leave a dead pool config
+	os.RemoveAll(P().MailDir(id)) // and its captured mail
 	site := e.Store.Site(w.Site)
 	if site != nil {
 		repoDir := siteRepoDir(site)

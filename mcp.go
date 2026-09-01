@@ -224,10 +224,11 @@ func mcpTools() []mcpTool {
 		{"start_site", "Start a site (db + php-fpm + http)", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},
 		{"stop_site", "Stop a site", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},
 		{"restart_site", "Restart a site", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},
-		{"delete_site", "Delete a site. By default drops its database and removes files we created (an imported external checkout is only detached). keep_files/keep_db leave those behind so the folder can be re-adopted.", schema(map[string]interface{}{
-			"slug":       prop("string", "site slug"),
-			"keep_files": prop("boolean", "leave the checkout on disk"),
-			"keep_db":    prop("boolean", "leave the schema and user in place")}, "slug")},
+		{"delete_site", "Delete a site. By default drops its database — after saving an automatic snapshot under ~/.agent-local/snapshots/<slug>/ — and removes files we created (an imported external checkout is only detached). keep_files/keep_db leave those behind so the folder can be re-adopted.", schema(map[string]interface{}{
+			"slug":        prop("string", "site slug"),
+			"keep_files":  prop("boolean", "leave the checkout on disk"),
+			"keep_db":     prop("boolean", "leave the schema and user in place"),
+			"no_snapshot": prop("boolean", "skip the automatic pre-delete snapshot")}, "slug")},
 		{"switch_php", "Switch a site to another PHP version, installing or repairing that runtime first if it is not usable (default). An install runs brew and can take minutes, so pass async=1 style polling via get_job if you do not want to wait: the job id is in X-Job-Id. Versions homebrew-core has dropped (7.4, 8.0) need tap=true.", schema(map[string]interface{}{
 			"slug":    prop("string", "site slug"),
 			"version": prop("string", "php version, e.g. 7.4 or 8.3"),
@@ -241,14 +242,25 @@ func mcpTools() []mcpTool {
 		{"db_query", "Run SQL as root. Pass slug to make that site's database the default schema; omit it for server-wide SQL (CREATE/DROP DATABASE, cross-db joins). Returns TSV with a header row. Any statement is allowed, including DDL and multi-statement scripts.", schema(map[string]interface{}{
 			"sql":  prop("string", "SQL statement(s), semicolon-separated"),
 			"slug": prop("string", "optional site slug: use its DB as default schema")}, "sql")},
-		{"db_import", "Load a .sql or .sql.gz dump into a site's database, replacing current contents (streamed, so dump size does not matter). By default the dump's domains are search-replaced to this site's domain so it serves locally.", schema(map[string]interface{}{
-			"slug":      prop("string", "site slug"),
-			"path":      prop("string", "absolute path to .sql or .sql.gz"),
-			"keep_urls": prop("boolean", "skip domain rewrite, keep URLs exactly as dumped")}, "slug", "path")},
+		{"db_import", "Load a .sql or .sql.gz dump into a site's database, replacing current contents (streamed, so dump size does not matter). By default the dump's domains are search-replaced to this site's domain so it serves locally, and the current contents are saved as an automatic snapshot first.", schema(map[string]interface{}{
+			"slug":        prop("string", "site slug"),
+			"path":        prop("string", "absolute path to .sql or .sql.gz"),
+			"keep_urls":   prop("boolean", "skip domain rewrite, keep URLs exactly as dumped"),
+			"no_snapshot": prop("boolean", "skip the automatic pre-import snapshot")}, "slug", "path")},
 		{"db_export", "Dump a site's database to a .sql file (default: ~/.agent-local/dumps/<slug>-<timestamp>.sql)", schema(map[string]interface{}{
 			"slug": prop("string", "site slug"), "path": prop("string", "optional output path")}, "slug")},
-		{"db_reset", "Empty a site's database (drop + recreate, grants preserved)", schema(map[string]interface{}{
+		{"db_reset", "Empty a site's database (drop + recreate, grants preserved). The current contents are saved as an automatic snapshot first.", schema(map[string]interface{}{
+			"slug":        prop("string", "site slug"),
+			"no_snapshot": prop("boolean", "skip the automatic pre-reset snapshot")}, "slug")},
+		{"db_snapshot", "Save a snapshot of a site's database: a gzipped dump under ~/.agent-local/snapshots/<slug>/. Automatic snapshots are also taken before db_import, db_reset, db_restore and delete_site; this is the manual save-point.", schema(map[string]interface{}{
+			"slug": prop("string", "site slug"),
+			"name": prop("string", "optional label; the returned timestamped name is what db_restore takes")}, "slug")},
+		{"db_snapshots", "List a site's database snapshots, newest first", schema(map[string]interface{}{
 			"slug": prop("string", "site slug")}, "slug")},
+		{"db_restore", "Restore a database snapshot into a site, replacing current contents (default: the newest snapshot). A pre-restore snapshot is saved first, so a mis-aimed restore is itself restorable.", schema(map[string]interface{}{
+			"slug":        prop("string", "site slug"),
+			"name":        prop("string", "snapshot name from db_snapshots (default: newest)"),
+			"no_snapshot": prop("boolean", "skip the automatic pre-restore snapshot")}, "slug")},
 		{"db_tables", "List a site's tables with row counts and size in KB", schema(map[string]interface{}{
 			"slug": prop("string", "site slug")}, "slug")},
 		{"resolve_path", "Which managed site (or branch preview) owns a filesystem path — the lookup for integrations that key sites by checkout directory. Returns slug, url, docroot, php version, live DB connection details and cert state.", schema(map[string]interface{}{
@@ -276,8 +288,13 @@ func mcpTools() []mcpTool {
 		}, "what")},
 		{"doctor", "Run health checks", schema(nil)},
 		{"doctor_fix", "Auto-fix health issues that don't need a password prompt", schema(nil)},
-		{"get_logs", "Tail a log: mysql, apache, daemon, fpm-<slug>, fpm-<worktree-id>, or <slug>", schema(map[string]interface{}{
+		{"get_logs", "Tail a log: mysql, apache, daemon, fpm-<slug>, fpm-<worktree-id>, wp-<slug> (WordPress debug log, see set_wp_debug), or <slug>", schema(map[string]interface{}{
 			"name": prop("string", "log name"), "lines": prop("number", "tail this many lines (default 100)")}, "name")},
+		{"get_wp_debug", "A site's WP_DEBUG state and where its debug log goes", schema(map[string]interface{}{
+			"slug": prop("string", "site slug")}, "slug")},
+		{"set_wp_debug", "Flip a site's WP_DEBUG. On points WP_DEBUG_LOG at ~/.agent-local/logs/wp-<slug>.log (readable via get_logs with the returned log_name) and keeps errors out of rendered pages (WP_DEBUG_DISPLAY off). The go-to move when a site white-screens or misbehaves: turn it on, reproduce, read the log.", schema(map[string]interface{}{
+			"slug": prop("string", "site slug"),
+			"on":   prop("boolean", "true = enable, false = disable")}, "slug", "on")},
 		{"get_http_front", "Which HTTP front is active (router|apache) and whether apache is installed", schema(nil)},
 		{"set_http_front", "Switch the HTTP front; ports rebind within seconds", schema(map[string]interface{}{
 			"front": prop("string", "router|apache")}, "front")},
@@ -295,6 +312,20 @@ func mcpTools() []mcpTool {
 		{"get_job", "Status, progress steps and result of one job", schema(map[string]interface{}{
 			"id": prop("string", "job id from X-Job-Id or an async start")}, "id")},
 		{"open_adminer", "URL of the per-site Adminer database GUI (served at /.agent-local/adminer)", schema(map[string]interface{}{
+			"slug": prop("string", "site slug")}, "slug")},
+		{"list_mail", "Emails a site has sent, newest first. Every wp_mail()/PHP mail() is captured into a per-site inbox instead of vanishing into a mail server, so submitting a form and then reading the email it produced is a complete end-to-end check. Browser UI: /.agent-local/mail on the site's domain.", schema(map[string]interface{}{
+			"slug": prop("string", "site slug")}, "slug")},
+		{"get_mail", "One captured email in full: decoded text and HTML bodies, headers, attachment metadata", schema(map[string]interface{}{
+			"slug": prop("string", "site slug"),
+			"id":   prop("string", "message id from list_mail")}, "slug", "id")},
+		{"clear_mail", "Empty a site's captured-mail inbox", schema(map[string]interface{}{
+			"slug": prop("string", "site slug")}, "slug")},
+		{"share_local_site", "Open a public URL for a local site through a Cloudflare quick tunnel — no account or token; anyone with the random https://….trycloudflare.com address can view the site while the tunnel is up. WordPress is mapped onto the tunnel host for tunnel requests only, so local URLs are untouched, and /.agent-local tooling (mail inbox, database GUI) stays local-only. Idempotent: an active share is returned rather than doubled. Auto-stops after minutes (default 60). Needs the router front; may brew-install cloudflared on first use — pass async and poll get_job if you do not want to wait.", schema(map[string]interface{}{
+			"slug":    prop("string", "site slug"),
+			"minutes": prop("number", "auto-stop after this many minutes (default 60; -1 = until stopped)"),
+			"async":   prop("boolean", "return a job id immediately and poll get_job instead of waiting"),
+		}, "slug")},
+		{"unshare_local_site", "Close a site's public tunnel", schema(map[string]interface{}{
 			"slug": prop("string", "site slug")}, "slug")},
 	}
 }
@@ -403,6 +434,9 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		if args["keep_db"] == true {
 			q = append(q, "db=keep")
 		}
+		if args["no_snapshot"] == true {
+			q = append(q, "snapshot=off")
+		}
 		path := "/sites/" + get("slug")
 		if len(q) > 0 {
 			path += "?" + strings.Join(q, "&")
@@ -429,11 +463,20 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		return apiPost("/db/query", map[string]string{"sql": get("sql")})
 	case "db_import":
 		return apiPost("/sites/"+get("slug")+"/db/import", map[string]interface{}{
-			"path": get("path"), "keep_urls": args["keep_urls"] == true})
+			"path": get("path"), "keep_urls": args["keep_urls"] == true,
+			"no_snapshot": args["no_snapshot"] == true})
 	case "db_export":
 		return apiPost("/sites/"+get("slug")+"/db/export", map[string]string{"path": get("path")})
 	case "db_reset":
-		return apiPost("/sites/"+get("slug")+"/db/reset", nil)
+		return apiPost("/sites/"+get("slug")+"/db/reset", map[string]interface{}{
+			"no_snapshot": args["no_snapshot"] == true})
+	case "db_snapshot":
+		return apiPost("/sites/"+get("slug")+"/db/snapshot", map[string]string{"name": get("name")})
+	case "db_snapshots":
+		return apiGet("/sites/" + get("slug") + "/db/snapshots")
+	case "db_restore":
+		return apiPost("/sites/"+get("slug")+"/db/restore", map[string]interface{}{
+			"name": get("name"), "no_snapshot": args["no_snapshot"] == true})
 	case "resolve_path":
 		return apiGet("/resolve?path=" + url.QueryEscape(get("path")))
 	case "cert_status":
@@ -479,6 +522,10 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		return apiGet("/doctor")
 	case "doctor_fix":
 		return apiPost("/doctor/fix", nil)
+	case "get_wp_debug":
+		return apiGet("/sites/" + get("slug") + "/wp-debug")
+	case "set_wp_debug":
+		return apiPost("/sites/"+get("slug")+"/wp-debug", map[string]interface{}{"on": args["on"] == true})
 	case "get_logs":
 		q := "/logs/" + get("name")
 		if n, okn := args["lines"].(float64); okn && n > 0 {
@@ -507,6 +554,24 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		return apiGet("/jobs/" + get("id"))
 	case "open_adminer":
 		return apiGet("/sites/" + get("slug") + "/adminer")
+	case "list_mail":
+		return apiGet("/sites/" + get("slug") + "/mail")
+	case "get_mail":
+		return apiGet("/sites/" + get("slug") + "/mail/" + get("id"))
+	case "clear_mail":
+		return apiDelete("/sites/" + get("slug") + "/mail")
+	case "share_local_site":
+		body := map[string]interface{}{}
+		if n, okn := args["minutes"].(float64); okn {
+			body["minutes"] = int(n)
+		}
+		path := "/sites/" + get("slug") + "/share"
+		if args["async"] == true {
+			path += "?async=1"
+		}
+		return apiPost(path, body)
+	case "unshare_local_site":
+		return apiDelete("/sites/" + get("slug") + "/share")
 	default:
 		return map[string]string{"error": "unknown tool: " + name}, true
 	}

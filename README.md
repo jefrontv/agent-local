@@ -22,7 +22,8 @@ missing — Homebrew, PHP, MariaDB, Apache, wp-cli — the app detects and insta
 
 - [Install](#install) · [Quick start](#quick-start) · [Zero prompts](#zero-prompts-recommended-one-time)
 - [Create a site](#create-a-site) · [Import an existing site](#import-an-existing-site) · [Domains](#domains)
-- [PHP versions](#php-versions) · [Databases](#databases) · [Branch previews](#branch-previews-git-worktrees)
+- [PHP versions](#php-versions) · [Databases](#databases) · [Snapshots](#snapshots) · [Branch previews](#branch-previews-git-worktrees)
+- [Outgoing mail](#outgoing-mail) · [WP_DEBUG](#wp_debug-without-the-ritual) · [Sharing publicly](#sharing-a-site-publicly)
 - [For agents](#for-agents) · [HTTP fronts](#http-fronts) · [CLI reference](#cli-reference)
 - [Layout & ports](#layout--ports) · [How it works](#how-it-works) · [Troubleshooting](#troubleshooting) · [Releasing](#releasing) · [Uninstall](#uninstall)
 
@@ -246,6 +247,92 @@ A `GET` under `/wp-content/uploads/` with no local file gets a 302 to the origin
 a redirect, not a proxy, so behaviour matches the `.htaccess` exactly and nothing
 is cached locally. Local files always win, and paths outside `uploads/` still 404
 so genuine mistakes stay visible.
+
+## Outgoing mail
+
+Every email a site sends is captured into a per-site inbox instead of being
+handed to macOS's usually-dead postfix, where it used to vanish silently —
+password resets and form notifications on local sites simply did not work.
+Capture is one line of generated pool config (`sendmail_path` points back at
+`agent-local sendmail`), so nothing inside the site changes and every plugin
+that sends mail the normal way is caught. Existing sites gain it on their
+next restart.
+
+```sh
+agent-local mail mysite            # list captured messages
+agent-local mail mysite <id>       # read one: headers, text body, attachments
+agent-local mail mysite --open     # browser inbox
+agent-local mail mysite --clear
+```
+
+The browser inbox lives at `https://<domain>/.agent-local/mail` on every
+site — the same reserved path idea as the database GUI, HTML rendered by the
+router itself (the apache front proxies it), auto-refreshing so a form
+submission shows up as you alt-tab. HTML bodies render in a sandboxed iframe;
+the raw `.eml` is one click away.
+
+For agents this closes a loop: drive the site with a browser, submit the
+form, then `list_mail` / `get_mail` and assert the email that came out —
+recipient, subject, decoded body — no human mailbox involved. Inboxes keep
+the newest 200 messages (branch previews get their own, keyed by worktree id)
+and are removed with the site.
+
+Plugins that bypass `mail()` for a real SMTP/ESP connection (WP Mail SMTP,
+FluentSMTP) are not intercepted — they are configured to deliver for real,
+and that stays your call.
+
+## WP_DEBUG without the ritual
+
+```sh
+agent-local wpdebug mysite on      # WP_DEBUG, log → ~/.agent-local/logs/wp-mysite.log
+agent-local logs wp-mysite 50      # read it
+agent-local wpdebug mysite off
+```
+
+`on` rewrites the constants in wp-config.php (inserted above the "stop
+editing" line when absent) and keeps `WP_DEBUG_DISPLAY` off, so notices land
+in a tailable file rather than the middle of a rendered page. The white-screen
+loop becomes: turn it on, reproduce, `logs wp-<slug>` — or for an agent,
+`set_wp_debug` then `get_logs`.
+
+## Sharing a site publicly
+
+```sh
+agent-local share mysite              # → https://<random>.trycloudflare.com
+agent-local share mysite --minutes 480
+agent-local share mysite --off
+```
+
+A Cloudflare quick tunnel — no account, no token, no config. Anyone with the
+random URL sees the site while the tunnel is up: a client on their phone, a
+form-testing service, a colleague. `cloudflared` is installed through
+Homebrew on first use like every other dependency.
+
+What makes it work without a search-replace: the tunnel keeps its own
+hostname end-to-end, the router resolves it to the shared site, and an
+mu-plugin maps `home`/`siteurl` onto the tunnel host **for tunnel requests
+only** — pinned at `PHP_INT_MAX` like branch previews, so canonical-host
+security plugins cannot drag visitors back to a domain their machine cannot
+resolve. Local browsing keeps local URLs throughout, and the plugin is
+removed when the share stops.
+
+The boundaries:
+
+- **Auto-stops after 60 minutes** by default (`--minutes N` to change,
+  `--forever` to keep it until `--off`). A tunnel nobody remembers is still
+  a public URL to your machine.
+- **`/.agent-local/*` answers 404 to tunnel traffic** — the share exposes
+  the site, never the database GUI or the mail inbox.
+- **Shares belong to the daemon** and die with it; a replaced daemon reaps
+  any tunnel its predecessor left. `agent-local logs share-<slug>` has
+  cloudflared's own output.
+- **Router front only** — apache's vhosts cannot route a hostname that did
+  not exist when the config was rendered.
+- Quick tunnels are Cloudflare's best-effort service for exactly this use;
+  for a stable subdomain you would bring your own tunnel token (not built in).
+
+For agents: `share_local_site {"slug":"mysite"}` returns the URL (idempotent
+while active), `unshare_local_site` closes it.
 
 ## The dashboard
 
@@ -497,6 +584,33 @@ agent-local db mysite reset                       # empty it (grants kept)
   target's `wp-content/themes` and WordPress renders blank — the import result
   says so. For a whole site, use `import` (files + database together).
 
+### Snapshots
+
+Save-points for the one database that exists nowhere else — taken
+automatically before anything destructive, or by hand before you try
+something:
+
+```sh
+agent-local db mysite snapshot pre-migration   # save (label optional)
+agent-local db mysite snapshots                # list, newest first
+agent-local db mysite restore                  # put the newest back
+agent-local db mysite restore 20260901-105748-pre-migration
+```
+
+- **Destructive operations snapshot first.** `db import`, `db reset`,
+  `restore` and `delete` each save the current contents before touching
+  anything (`--no-snapshot` / `no_snapshot` opts out — and a snapshot that
+  fails stops the operation, because a safety net that silently misses is
+  worse than none). Automatic save-points are pruned to the newest five per
+  site; named ones are kept until you delete the files.
+- **A snapshot is a plain `.sql.gz`** under `~/.agent-local/snapshots/<slug>/`,
+  loadable anywhere. Restore streams it back through the same collation-fixing
+  loader as imports, so size does not matter.
+- **The directory survives deleting the site.** The snapshot taken before
+  `delete` is the way back: recreate the site and `db <slug> restore`, or
+  `db <new-slug> import` the file into a different one.
+- **Restores never rewrite URLs** — the dump came from this same site.
+
 ## Branch previews (git worktrees)
 
 Serve a branch of a site's repo on its own domain, next to the running site:
@@ -558,7 +672,7 @@ looking hung. To exercise it without a client:
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | agent-local mcp
 ```
 
-46 tools — everything the CLI can do, no shell required:
+59 tools — everything the CLI can do, no shell required:
 
 | Area | Tools |
 |---|---|
@@ -568,11 +682,12 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | agent-local mcp
 | domains | `set_domain`, `get_domain_suffix`, `set_domain_suffix`, `add_hosts_entries`, `remove_hosts_entries` |
 | media | `get_media_fallback`, `set_media_fallback` |
 | layout | `get_sites_dir`, `set_sites_dir`, `attach_site` |
-| database | `db_creds`, `db_query`, `db_tables`, `db_import`, `db_export`, `db_reset` |
-| wordpress | `wp_cli`, `worktree_wp_cli` |
+| database | `db_creds`, `db_query`, `db_tables`, `db_import`, `db_export`, `db_reset`, `db_snapshot`, `db_snapshots`, `db_restore` |
+| wordpress | `wp_cli`, `worktree_wp_cli`, `get_wp_debug`, `set_wp_debug` |
+| mail | `list_mail`, `get_mail`, `clear_mail` |
 | previews | `add_worktree`, `list_worktrees`, `start_worktree`, `stop_worktree`, `remove_worktree` |
 | ops | `get_logs`, `doctor`, `doctor_fix` |
-| integration | `resolve_path`, `cert_status`, `cert_trust`, `yield_ports` |
+| integration | `resolve_path`, `cert_status`, `cert_trust`, `yield_ports`, `share_local_site`, `unshare_local_site` |
 
 Design notes that matter when driving this from an agent:
 
@@ -604,9 +719,11 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 
 | Group | Endpoints |
 |---|---|
-| sites | `GET /status`, `GET\|POST /sites`, `GET /sites/{slug}`, `DELETE /sites/{slug}[?files=keep&db=keep]`, `POST /sites/{slug}/{start,stop,restart,php,domain,wp-cli}` |
+| sites | `GET /status`, `GET\|POST /sites`, `GET /sites/{slug}`, `DELETE /sites/{slug}[?files=keep&db=keep&snapshot=off]`, `POST /sites/{slug}/{start,stop,restart,php,domain,wp-cli}`, `GET\|POST /sites/{slug}/wp-debug` |
 | import | `POST /import` |
-| database | `POST /sites/{slug}/db`, `POST /sites/{slug}/db/query`, `POST /sites/{slug}/db/{import,export,reset}`, `GET /sites/{slug}/db/tables`, `POST /db/query` |
+| database | `POST /sites/{slug}/db`, `POST /sites/{slug}/db/query`, `POST /sites/{slug}/db/{import,export,reset,snapshot,restore}`, `GET /sites/{slug}/db/{tables,snapshots}`, `POST /db/query` |
+| mail | `GET /sites/{slug}/mail`, `GET /sites/{slug}/mail/{id}`, `DELETE /sites/{slug}/mail` |
+| share | `POST /sites/{slug}/share`, `GET /sites/{slug}/share`, `DELETE /sites/{slug}/share` |
 | previews | `GET /sites/{slug}/branches`, `GET\|POST /sites/{slug}/worktrees`, `POST /sites/{slug}/worktrees/{id}/{start,stop,wp-cli}`, `DELETE /sites/{slug}/worktrees/{id}` |
 | platform | `GET /runtimes`, `POST /install`, `GET\|POST /front`, `GET\|POST /suffix`, `GET /doctor`, `POST /doctor/fix`, `GET /logs/{name}?lines=N`, `POST\|DELETE /hosts` |
 | integration | `GET /resolve?path=…`, `GET /certs/{domain}`, `POST /certs/{domain}/trust`, `POST /yield` |
@@ -648,12 +765,16 @@ agent-local tui [--frame W] [--tab T]  print one frame (design/debug)
 agent-local create NAME [--domain d] [--php v] [--repo url]
                        [--admin-user u] [--admin-pass p] [--admin-email e] [--title t]
 agent-local list | start SLUG | stop SLUG | restart SLUG | open SLUG [--db]
-agent-local delete SLUG [--yes] [--keep-files] [--keep-db]
+agent-local delete SLUG [--yes] [--keep-files] [--keep-db] [--no-snapshot]
 agent-local import SOURCE [--name n] [--domain d] [--php v] [--copy]
                          [--sql file] [--serve-only]
                          [--db-host h] [--db-port p] [--db-user u] [--db-pass p] [--db-name n]
 agent-local localwp-sites              list importable LocalWP sites
 agent-local db SLUG [sql | tables | import FILE [--keep-urls] | export [FILE] | reset | gui]
+agent-local db SLUG snapshot [NAME] | snapshots | restore [NAME] [--no-snapshot]
+agent-local mail SLUG [ID] [--open] [--clear]  captured outgoing email
+agent-local wpdebug SLUG [on|off]      WP_DEBUG with the log in ~/.agent-local/logs
+agent-local share SLUG [--minutes N | --forever] [--off]   public quick-tunnel URL
 agent-local jobs | job ID              long-running create/import status
 agent-local php SLUG VERSION           switch PHP (live)
 agent-local domain SLUG NAME           change a site's domain
@@ -686,6 +807,8 @@ agent-local api-token | version
 | Generated config (fpm pools, apache, pf) | `~/.agent-local/conf/` |
 | Logs | `~/.agent-local/logs/` |
 | Dumps from `db export` | `~/.agent-local/dumps/` |
+| Captured mail | `~/.agent-local/mail/<slug or worktree id>/` |
+| DB snapshots (survive delete) | `~/.agent-local/snapshots/<slug>/` |
 | State, API token, DB root password | `~/.agent-local/sites.json`, `~/.agent-local/token`, `~/.agent-local/db-root-pass` (all `0600` where secret) |
 
 | Port | Service |
@@ -728,6 +851,10 @@ Common cases:
 - **A password dialog appeared** → run `agent-local sudo` once; it won't come back.
 - **Another local-dev app is running** → fine. agent-local binds specific
   addresses and its own ports, so both coexist.
+- **White screen or misbehaving plugin** → `agent-local wpdebug <slug> on`,
+  reproduce, `agent-local logs wp-<slug>`.
+- **"Where did the confirmation email go?"** → `agent-local mail <slug>` — every
+  email the site sends is captured there, nothing is delivered.
 - **Imported site redirects somewhere else** → its database still holds the old
   domain; `agent-local db <slug> tables` then re-import, or
   `agent-local wp <slug> -- search-replace old.host <slug>.test --all-tables`.
