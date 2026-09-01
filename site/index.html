@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-local — local WordPress for humans and agents</title>
+<meta name="description" content="One Go binary that creates, serves and manages WordPress sites on macOS. No Docker, no prerequisites, and a full agent API — 59 MCP tools.">
+<meta property="og:title" content="agent-local — local WordPress for humans and agents">
+<meta property="og:description" content="A site from nothing to serving in ~15 seconds. No Docker. 59 MCP tools so your coding agent can do everything you can.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,340;9..144,420;9..144,560;9..144,640&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="tabs" aria-label="Sections">
+  <div class="tabs__inner">
+    <span class="tabs__brand"><span class="lamp lamp--on" aria-hidden="true"></span>agent-local</span>
+    <div class="tabs__links">
+      <a href="#speed">Speed</a>
+      <a href="#agents">Agents</a>
+      <a href="#features">Features</a>
+      <a href="#compared">Compared</a>
+      <a href="#install">Install</a>
+    </div>
+    <a class="tabs__gh" href="https://github.com/jefrontv/agent-local">GitHub ↗</a>
+  </div>
+  <div class="tabs__rule" aria-hidden="true"><span class="tabs__thumb"></span></div>
+</nav>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="wrap hero__grid">
+    <div class="hero__copy">
+      <p class="eyebrow">A single Go binary for macOS · no Docker · nothing to configure</p>
+      <h1>Local WordPress,<br>for humans <em>and&nbsp;agents.</em></h1>
+      <p class="hero__lede">agent-local creates, serves and manages WordPress sites natively —
+        per-site PHP versions, an embedded MariaDB, real domains without port suffixes.
+        A site goes from nothing to serving in about fifteen seconds, and a coding agent
+        can drive every part of it that you can.</p>
+      <div class="hero__actions">
+        <code class="install-chip" data-copy="brew install jefrontv/tap/agent-local">
+          <span class="install-chip__dollar">$</span> brew install jefrontv/tap/agent-local
+          <button class="install-chip__btn" type="button" aria-label="Copy install command">copy</button>
+        </code>
+      </div>
+      <p class="hero__fine">Free and open source · Apple Silicon &amp; Intel, one universal binary</p>
+    </div>
+
+    <div class="term" id="hero-term" aria-label="Terminal demo: creating and sharing a site">
+      <div class="term__bar" aria-hidden="true">
+        <span class="term__dot"></span><span class="term__dot"></span><span class="term__dot"></span>
+        <span class="term__title">~/Sites</span>
+      </div>
+      <pre class="term__screen" id="term-screen" aria-hidden="true"></pre>
+      <noscript><pre class="term__screen">$ agent-local create demo
+  ● Site ready: https://demo.test   15s</pre></noscript>
+    </div>
+  </div>
+</header>
+
+<!-- ============ SPEED ============ -->
+<section class="section" id="speed">
+  <div class="wrap">
+    <p class="eyebrow">Native beats virtualized</p>
+    <h2>Milliseconds, because there is<br>no virtual machine in the way.</h2>
+    <p class="section__lede">Every Docker-based tool pays the macOS filesystem tax on each request.
+      agent-local serves from real processes on real files, so the numbers below are the whole story —
+      measured, not estimated.</p>
+
+    <div class="bench" role="table" aria-label="Benchmarks">
+      <div class="bench__row bench__row--head" role="row">
+        <span role="columnheader">operation</span><span role="columnheader">before</span><span role="columnheader" class="bench__now">now</span>
+      </div>
+      <div class="bench__row" role="row"><span>agent-local list</span><span class="dim">889 ms</span><span class="bench__now">28 ms</span></div>
+      <div class="bench__row" role="row"><span>dashboard first frame</span><span class="dim">601 ms</span><span class="bench__now">36 ms</span></div>
+      <div class="bench__row" role="row"><span>doctor, six sites</span><span class="dim">~9 s</span><span class="bench__now">1.7 s</span></div>
+      <div class="bench__row" role="row"><span>serve a static file</span><span class="dim">—</span><span class="bench__now">2.9 ms</span></div>
+      <div class="bench__row" role="row"><span>cached PHP page, FastCGI</span><span class="dim">—</span><span class="bench__now">4.6 ms</span></div>
+      <div class="bench__row" role="row"><span>create → WordPress serving</span><span class="dim">—</span><span class="bench__now">~15 s</span></div>
+    </div>
+    <p class="footnote">Toolchain scans are cached and re-run only when they stop being true; per-site probes run concurrently.
+      Sites come back by themselves after a reboot.</p>
+  </div>
+</section>
+
+<!-- ============ AGENTS ============ -->
+<section class="section section--agents" id="agents">
+  <div class="wrap">
+    <p class="eyebrow">The part nobody else built</p>
+    <h2>Your agent can do everything you can.</h2>
+    <p class="section__lede">Existing local-dev apps assume a human is clicking. agent-local exposes the
+      <em>same engine</em> three ways — a dashboard for you, a CLI for scripts, and an MCP server plus HTTP API
+      for Claude, Codex, or anything that speaks JSON-RPC. Not a wrapper around the GUI: the engine itself.</p>
+
+    <div class="agents__grid">
+      <div class="agents__points">
+        <div class="point"><span class="lamp lamp--on" aria-hidden="true"></span>
+          <div><h3>59 tools, no shell required</h3>
+          <p>Create, import, snapshot, share, query the database, read the mail a form just sent —
+             every capability is a typed tool call.</p></div></div>
+        <div class="point"><span class="lamp lamp--on" aria-hidden="true"></span>
+          <div><h3>Errors carry the fixing call</h3>
+          <p>A failed call names what to run next, in both CLI and MCP form — an agent with no hands
+             always has somewhere to go.</p></div></div>
+        <div class="point"><span class="lamp lamp--on" aria-hidden="true"></span>
+          <div><h3>No prompts, ever</h3>
+          <p>After one-time setup, nothing asks for a password. Agents and daemons cannot answer a dialog,
+             so there are none.</p></div></div>
+        <div class="point"><span class="lamp lamp--on" aria-hidden="true"></span>
+          <div><h3>Closed-loop testing</h3>
+          <p>Submit a form with a browser tool, then <code>get_mail</code> and assert on the email it produced —
+             recipient, subject, decoded body. No human inbox involved.</p></div></div>
+      </div>
+
+      <div class="term term--agent">
+        <div class="term__bar" aria-hidden="true">
+          <span class="term__dot"></span><span class="term__dot"></span><span class="term__dot"></span>
+          <span class="term__title">mcp · stdio</span>
+        </div>
+<pre class="term__screen term__screen--static">
+<span class="t-dim">→ tools/call</span> submit contact form <span class="t-dim">(browser)</span>
+<span class="t-dim">→ tools/call</span> <span class="t-key">list_mail</span> {"slug":"client-site"}
+<span class="t-ok">←</span> [{"subject":"New enquiry — Chronicle",
+<span class="t-ok"> </span>   "to":"studio@client.com","id":"17882…"}]
+<span class="t-dim">→ tools/call</span> <span class="t-key">get_mail</span> {"id":"17882…"}
+<span class="t-ok">←</span> "text":"Name: Ada\nBudget: 30–50k…"
+<span class="t-ok">●</span> form → email → assertion, end to end</pre>
+      </div>
+    </div>
+
+    <details class="tools">
+      <summary><span class="lamp lamp--on" aria-hidden="true"></span>All 59 tools</summary>
+      <div class="tools__grid" id="tool-grid"></div>
+    </details>
+  </div>
+</section>
+
+<!-- ============ FEATURES ============ -->
+<section class="section" id="features">
+  <div class="wrap">
+    <p class="eyebrow">Built for agency WordPress work</p>
+    <h2>The things you actually do, made one command each.</h2>
+
+    <div class="cards">
+      <article class="card"><h3><span class="lamp lamp--on"></span>Outgoing mail, captured</h3>
+        <p>Every email a site sends lands in a per-site inbox instead of vanishing — password resets,
+           form notifications, receipts. Browse it at <code>/.agent-local/mail</code>, or let an agent read it.</p></article>
+      <article class="card"><h3><span class="lamp lamp--on"></span>Database snapshots</h3>
+        <p>Save-points taken automatically before anything destructive — import, reset, restore, delete.
+           A snapshot is a plain <code>.sql.gz</code>, and the one taken before a delete survives it.</p></article>
+      <article class="card"><h3><span class="lamp lamp--on"></span>Share a work-in-progress</h3>
+        <p>One command, one public URL — a Cloudflare quick tunnel, no account. WordPress is mapped onto
+           the tunnel host automatically, and the link is verified serving before you get it.</p></article>
+      <article class="card"><h3><span class="lamp lamp--on"></span>Branch previews</h3>
+        <p>Any git branch on its own domain, next to the running site — same database, copy-on-write files
+           (a 555&nbsp;MB preview costs ~60&nbsp;MB and ~10&nbsp;s). The difference between them is code.</p></article>
+      <article class="card"><h3><span class="lamp lamp--on"></span>Per-site PHP, 7.4 → 8.5</h3>
+        <p>Each site runs its own php-fpm pool, so versions never conflict. Switching installs — or repairs —
+           the runtime it needs, including releases Homebrew has dropped.</p></article>
+      <article class="card"><h3><span class="lamp lamp--on"></span>Imports that stream</h3>
+        <p>A 7&nbsp;GB LocalWP site imports in place with zero copy time. Dumps stream through a collation fixer
+           with flat memory, and every stored domain is rewritten — serialized data included.</p></article>
+      <article class="card"><h3><span class="lamp lamp--on"></span>Missing uploads, solved</h3>
+        <p>A local database references thousands of images the disk doesn't have. The <code>.htaccess</code> rule
+           already in your repo is honoured automatically: local files win, the rest 302 to production.</p></article>
+      <article class="card"><h3><span class="lamp lamp--on"></span>WP_DEBUG without the ritual</h3>
+        <p><code>wpdebug on</code> rewrites the constants and points the log somewhere tailable. White screen →
+           reproduce → read the log. Errors never render into pages.</p></article>
+      <article class="card"><h3><span class="lamp lamp--on"></span>Plays well on port 80</h3>
+        <p>Binds specific addresses instead of the wildcard, so LocalWP or MAMP can run beside it.
+           <code>yield</code> hands the ports over for a moment and takes them back.</p></article>
+      <article class="card"><h3><span class="lamp lamp--on"></span>A doctor that fixes</h3>
+        <p>Every check reports with the exact command that repairs it, and <code>doctor --fix</code> applies
+           the lot — broken PHP kegs, stale hosts entries, untrusted certs.</p></article>
+    </div>
+  </div>
+</section>
+
+<!-- ============ COMPARISON (paper) ============ -->
+<section class="section section--paper" id="compared">
+  <div class="wrap">
+    <p class="eyebrow eyebrow--paper">Spec sheet</p>
+    <h2>Compared, honestly.</h2>
+    <p class="section__lede">Every tool below is good at something. This is where they differ —
+      including the row where DDEV wins.</p>
+
+    <p class="spec__hint" aria-hidden="true">swipe → for LocalWP · MAMP · DDEV</p>
+    <div class="spec" role="table" aria-label="Comparison with LocalWP, MAMP and DDEV">
+      <div class="spec__row spec__row--head" role="row">
+        <span role="columnheader">&nbsp;</span><span role="columnheader">agent-local</span>
+        <span role="columnheader">LocalWP</span><span role="columnheader">MAMP</span><span role="columnheader">DDEV</span>
+      </div>
+      <div class="spec__row" role="row"><span>Runs on</span><span class="spec__us">native processes</span><span>Electron + bundled services</span><span>bundled Apache/MySQL</span><span>Docker containers</span></div>
+      <div class="spec__row" role="row"><span>Prerequisites</span><span class="spec__us">none — installs what's missing</span><span>app download</span><span>app download</span><span>Docker Desktop / Colima</span></div>
+      <div class="spec__row" role="row"><span>Drive it from a coding agent</span><span class="spec__us">59 MCP tools + HTTP API</span><span>—</span><span>—</span><span>CLI with JSON output</span></div>
+      <div class="spec__row" role="row"><span>New WordPress site</span><span class="spec__us">~15 seconds</span><span>about a minute</span><span>manual setup</span><span>fast after first image pull</span></div>
+      <div class="spec__row" role="row"><span>Branch previews on their own URLs</span><span class="spec__us">✓ shared DB, CoW files</span><span>—</span><span>—</span><span>second project by hand</span></div>
+      <div class="spec__row" role="row"><span>Outgoing mail capture</span><span class="spec__us">✓ and agents can read it</span><span>✓</span><span>—</span><span>✓ Mailpit</span></div>
+      <div class="spec__row" role="row"><span>Database snapshots</span><span class="spec__us">automatic before destructive ops</span><span>—</span><span>—</span><span>manual</span></div>
+      <div class="spec__row" role="row"><span>Public share links</span><span class="spec__us">✓ verified, no account</span><span>✓ account required</span><span>—</span><span>✓ ngrok / cloudflared</span></div>
+      <div class="spec__row" role="row"><span>Coexists with the others on :80</span><span class="spec__us">✓ by design</span><span>port conflicts</span><span>port conflicts</span><span>port conflicts</span></div>
+      <div class="spec__row" role="row"><span>Beyond WordPress</span><span class="spec__us">WordPress only, on purpose</span><span>WordPress only</span><span>any LAMP app</span><span>✓ Drupal, Laravel, TYPO3…</span></div>
+      <div class="spec__row" role="row"><span>Source &amp; price</span><span class="spec__us">free, open source</span><span>free, closed</span><span>freemium</span><span>free, open source</span></div>
+    </div>
+    <p class="footnote footnote--paper">If your week is Drupal and Laravel, use DDEV — it's excellent.
+      If your week is WordPress on a Mac, most of that table is your Tuesday.</p>
+  </div>
+</section>
+
+<!-- ============ HOW ============ -->
+<section class="section" id="how">
+  <div class="wrap how__grid">
+    <div>
+      <p class="eyebrow">Under the hood</p>
+      <h2>Boring architecture,<br>deliberately.</h2>
+      <p class="section__lede">One shared front routes by Host header to a per-site php-fpm pool over a unix
+        socket. One embedded MariaDB backs every site. State is a single JSON file written atomically, so the
+        CLI, the dashboard, the daemon and several agents can act at once without clobbering each other.
+        Processes are supervised, reaped, and de-duplicated — repeated restarts can't leave orphans.</p>
+      <p class="section__lede">Root is needed for exactly two things — hosts entries and trusting a TLS cert —
+        and a one-time scoped allowlist removes even that prompt.</p>
+    </div>
+<pre class="how__diagram" aria-label="Architecture diagram">
+ browser ──▶ :80 / :443 <span class="t-dim">(127.0.0.2)</span>
+                │
+                ▼
+        <span class="t-key">Go router</span> <span class="t-dim">· Host header</span>
+        │ static files <span class="t-dim">2.9 ms</span>
+        ▼
+   php-fpm pool <span class="t-dim">· one per site</span>
+        │ FastCGI <span class="t-dim">4.6 ms</span>
+        ▼
+     MariaDB <span class="t-dim">· embedded, shared</span>
+
+ state <span class="t-dim">──</span> sites.json <span class="t-dim">· atomic, flocked</span>
+ agents <span class="t-dim">──</span> MCP stdio + HTTP :10809</pre>
+  </div>
+</section>
+
+<!-- ============ INSTALL ============ -->
+<section class="section section--install" id="install">
+  <div class="wrap">
+    <p class="eyebrow">Two minutes, start to serving</p>
+    <h2>Install it, make a site,<br>hand your agent the keys.</h2>
+    <div class="steps">
+      <div class="step">
+        <span class="step__k">install</span>
+        <code data-copy="brew install jefrontv/tap/agent-local">brew install jefrontv/tap/agent-local</code>
+      </div>
+      <div class="step">
+        <span class="step__k">create</span>
+        <code data-copy="agent-local create mysite">agent-local create mysite   <span class="t-dim"># → https://mysite.test</span></code>
+      </div>
+      <div class="step">
+        <span class="step__k">agents</span>
+        <code data-copy="agent-local mcp --config">agent-local mcp --config    <span class="t-dim"># paste into Claude / Codex</span></code>
+      </div>
+    </div>
+    <p class="hero__fine">macOS · Apple Silicon &amp; Intel · everything lives in <code>~/.agent-local</code> ·
+      <code>brew uninstall --zap</code> removes every trace</p>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="wrap footer__inner">
+    <span><span class="lamp lamp--on" aria-hidden="true"></span>agent-local</span>
+    <span class="dim">local WordPress for humans and agents</span>
+    <a href="https://github.com/jefrontv/agent-local">github.com/jefrontv/agent-local</a>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>
