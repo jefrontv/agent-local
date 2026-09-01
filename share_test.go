@@ -77,8 +77,13 @@ func TestWriteShareMU(t *testing.T) {
 	if !strings.Contains(src, "ob_start") || !strings.Contains(src, "'s.test', 'alias.test'") {
 		t.Errorf("mu-plugin missing output rewrite of local domains:\n%s", src)
 	}
-}
+	// Percent-encoded URLs (image proxies: wsrv.nl/?url=https%3A%2F%2F…)
+	// must be rewritten too, or the proxy is sent to an unreachable host.
+	if !strings.Contains(src, "'%3A%2F%2F'") {
+		t.Errorf("mu-plugin missing percent-encoded rewrite:\n%s", src)
+	}
 
+}
 func TestStartShareNeedsRouterFront(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	store, err := OpenStore()

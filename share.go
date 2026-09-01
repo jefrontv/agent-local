@@ -304,14 +304,22 @@ if ( isset( $_SERVER['HTTP_HOST'] ) && '%s' === $_SERVER['HTTP_HOST'] ) {
 	}
 	add_filter( 'redirect_canonical', '__return_false', PHP_INT_MAX );
 	// Rewrite what the filters cannot reach: WP_CONTENT_URL (fixed before
-	// mu-plugins load) and URLs baked into content. Plain and JSON-escaped.
+	// mu-plugins load) and URLs baked into content. Four spellings: plain,
+	// JSON-escaped, percent-encoded — image proxies like wsrv.nl receive the
+	// image URL inside a query string (url=https%%3A%%2F%%2F…), and a local
+	// domain there sends the proxy to a host only this machine can resolve —
+	// and scheme-relative (//host), which resource hints use. That pass runs
+	// last, once every scheme-carrying form has already been converted.
 	ob_start( function ( $al_out ) use ( $al_share_host ) {
 		foreach ( array( %s ) as $al_d ) {
-			$al_out = str_replace(
-				array( 'https://' . $al_d, 'http://' . $al_d, 'https:\/\/' . $al_d, 'http:\/\/' . $al_d ),
-				array( 'https://' . $al_share_host, 'https://' . $al_share_host, 'https:\/\/' . $al_share_host, 'https:\/\/' . $al_share_host ),
-				$al_out
-			);
+			foreach ( array( '://', ':\/\/', '%%3A%%2F%%2F', '%%3a%%2f%%2f' ) as $al_sep ) {
+				$al_out = str_replace(
+					array( 'https' . $al_sep . $al_d, 'http' . $al_sep . $al_d ),
+					'https' . $al_sep . $al_share_host,
+					$al_out
+				);
+			}
+			$al_out = str_replace( '//' . $al_d, '//' . $al_share_host, $al_out );
 		}
 		return $al_out;
 	} );
