@@ -3,93 +3,55 @@
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 
-/* ---------- ascii planet: a shaded, rotating world with a twinkling
-   atmosphere, in the register of ghostty.org's hero. Two layers so the
-   body and the aura carry different colors without per-cell spans. */
-const planetBody = document.getElementById("planet-body");
-const planetAura = document.getElementById("planet-aura");
+/* ---------- the field: a full-hero ocean of characters, moved by slow
+   interference of a few sine waves. Abstract on purpose: a curated shape
+   would fight the wordmark, and procedural planets read as mud. ---------- */
+const field = document.getElementById("wave-field");
 
-const RAMP = " .,:;!i1tfLCG08%@";
+const FIELD_RAMP = " ..::-=+*";
+const CELL_W = 8.1;  // 13.5px IBM Plex Mono advance width
+const CELL_H = 17.5; // 13.5px at line-height 1.3
 
-// Deterministic hash noise: cheap, seamless when sampled on sphere coords.
-function hash3(x, y, z) {
-  let n = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
-  return n - Math.floor(n);
-}
-function vnoise(x, y, z) {
-  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
-  const xf = x - xi, yf = y - yi, zf = z - zi;
-  const s = (v) => v * v * (3 - 2 * v);
-  const u = s(xf), v = s(yf), w = s(zf);
-  let acc = 0;
-  for (let dz = 0; dz <= 1; dz++)
-    for (let dy = 0; dy <= 1; dy++)
-      for (let dx = 0; dx <= 1; dx++)
-        acc += hash3(xi + dx, yi + dy, zi + dz) *
-          (dx ? u : 1 - u) * (dy ? v : 1 - v) * (dz ? w : 1 - w);
-  return acc;
-}
-function fbm(x, y, z) {
-  return 0.65 * vnoise(x, y, z) + 0.35 * vnoise(x * 2.3 + 5, y * 2.3 + 5, z * 2.3 + 5);
-}
-
-function planetFrame(t, w = 76, h = 34) {
-  const body = [], aura = [];
-  const cx = w / 2 - 0.5, cy = h / 2 - 0.5;
-  const R = h / 2 - 2.5;
-  const aspect = 2.0;
-  const tick = Math.floor(t * 2.2);
-  for (let y = 0; y < h; y++) {
-    let brow = "", arow = "";
-    for (let x = 0; x < w; x++) {
-      const dx = (x - cx) / (R * aspect);
-      const dy = (y - cy) / R;
-      const rr = dx * dx + dy * dy;
-      if (rr <= 1) {
-        const dz = Math.sqrt(1 - rr);
-        const lon = Math.atan2(dx, dz) + t;
-        const lat = Math.asin(dy);
-        // Texture rides rotated sphere coordinates, so it wraps seamlessly.
-        const tex = fbm(Math.cos(lon) * 1.7, lat * 2.4, Math.sin(lon) * 1.7);
-        // Key light from the upper left, limb darkening from dz.
-        const light = Math.max(0, -0.5 * dx - 0.38 * dy + 0.78 * dz);
-        const v = Math.min(0.999, light * (0.32 + 0.78 * tex) * 1.35);
-        brow += RAMP[Math.floor(v * RAMP.length)];
-        arow += " ";
-      } else if (rr <= 1.55) {
-        // Twinkling atmosphere: sparse, re-seeded a couple of times a second.
-        const p = hash3(x * 3.1, y * 7.7, tick);
-        const edge = rr <= 1.16;
-        arow += p > (edge ? 0.72 : 0.955) ? (p > 0.985 ? "+" : edge ? "=" : ".") : " ";
-        brow += " ";
-      } else {
-        brow += " ";
-        arow += " ";
-      }
+function fieldFrame(t, cols, rows) {
+  const out = [];
+  for (let y = 0; y < rows; y++) {
+    let row = "";
+    for (let x = 0; x < cols; x++) {
+      // Three travelling waves and one slow radial swell.
+      const v =
+        Math.sin(x * 0.09 + t) +
+        Math.sin(y * 0.16 - t * 0.62) +
+        Math.sin((x * 0.045 + y * 0.075) + t * 0.4) +
+        Math.sin(Math.hypot(x - cols / 2, (y - rows / 2) * 2.1) * 0.11 - t * 0.8);
+      const n = (v + 4) / 8;
+      row += FIELD_RAMP[Math.max(0, Math.min(FIELD_RAMP.length - 1, Math.floor(n * FIELD_RAMP.length)))];
     }
-    body.push(brow);
-    aura.push(arow);
+    out.push(row);
   }
-  return [body.join("\n"), aura.join("\n")];
+  return out.join("\n");
 }
 
-if (planetBody && planetAura) {
-  const draw = (t) => {
-    const [b, a] = planetFrame(t);
-    planetBody.textContent = b;
-    planetAura.textContent = a;
+if (field) {
+  let cols = 0, rows = 0;
+  const size = () => {
+    const host = field.parentElement;
+    cols = Math.ceil(host.clientWidth / CELL_W) + 1;
+    rows = Math.ceil(host.clientHeight / CELL_H) + 1;
   };
+  size();
+  let resizeTimer;
+  addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(size, 200); });
   if (reduced) {
-    draw(0.8);
+    field.textContent = fieldFrame(1.7, cols, rows);
   } else {
     let t = 0;
-    let spinning = true;
-    new IntersectionObserver((es) => { spinning = es[0].isIntersecting; }).observe(planetBody);
+    let visible = true;
+    new IntersectionObserver((es) => { visible = es[0].isIntersecting; }).observe(field);
     setInterval(() => {
-      if (!spinning) return;
-      t += 0.035;
-      draw(t);
-    }, 95);
+      if (!visible) return;
+      t += 0.055;
+      field.textContent = fieldFrame(t, cols, rows);
+    }, 100);
   }
 }
 /* ---------- terminal: human scene, then agent scene ---------- */

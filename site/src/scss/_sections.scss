@@ -59,25 +59,26 @@
 		margin-top: 3em;
 		line-height: 1.8;
 	}
-	&__art {
-		display: grid;
-		place-items: center;
-		margin: 0 auto 38px;
-		font-size: clamp(6px, 1.05vw, 11.5px);
-		min-height: 37em; // 34 rows plus breathing room: no layout shift
+	&__field {
+		position: absolute;
+		inset: 0;
+		overflow: hidden;
+		pointer-events: none;
 
 		pre {
-			grid-area: 1 / 1;
 			margin: 0;
 			font-family: $mono;
-			font-size: inherit;
-			line-height: 1.08;
+			font-size: 13.5px;
+			line-height: 1.3;
 			letter-spacing: 0;
-			user-select: none;
+			color: $dim;
+			opacity: 0.38;
+			// A calm pocket for the copy; the field lives at the edges.
+			mask-image: radial-gradient(ellipse 58% 52% at 50% 44%, transparent 34%, #000 82%);
+			-webkit-mask-image: radial-gradient(ellipse 58% 52% at 50% 44%, transparent 34%, #000 82%);
 		}
-		#planet-body { color: rgba($text, 0.82); }
-		#planet-aura { color: rgba($lamp, 0.5); }
 	}
+	&__copy, &__mark { position: relative; z-index: 1; }
 	&__mark {
 		@include display(clamp(56px, 9.8vw, 200px));
 		color: $mark;

@@ -53,8 +53,8 @@ $defaults = array(
 
 <!-- hero -->
 <section class="hero">
+	<div class="hero__field" aria-hidden="true"><pre id="wave-field"></pre></div>
 	<div class="hero__copy">
-		<div class="hero__art" aria-hidden="true"><pre id="planet-aura"></pre><pre id="planet-body"></pre></div>
 		<?php echo wp_kses_post( wpautop( al_field( 'hero_intro', $defaults['hero_intro'] ) ) ); ?>
 		<p class="hero__note"><?php echo esc_html( al_field( 'hero_note', $defaults['hero_note'] ) ); ?></p>
 	</div>
@@ -109,12 +109,6 @@ $benchmark_defaults = array(
 		'al' => '52', 'al_note' => 'the whole 34-site rack is 142 MB',
 		'lw' => '601', 'lw_note' => 'including the 493 MB app window',
 		'dd' => '2488', 'dd_note' => 'Docker VM, freshly booted',
-	),
-	array(
-		'label' => 'Bring over a LocalWP site', 'unit' => 's',
-		'al' => '8.4', 'al_note' => 'served in place, database copied',
-		'lw' => '', 'lw_note' => '',
-		'dd' => '', 'dd_note' => 'manual export and import',
 	),
 );
 $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
