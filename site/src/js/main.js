@@ -2,6 +2,58 @@
 
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+
+/* ---------- ascii globe: a small rotating wireframe, the hero's only motion ---------- */
+const globe = document.getElementById("ascii-globe");
+
+function globeFrame(t, w = 30, h = 14) {
+  const grid = Array.from({ length: h }, () => Array(w).fill(" "));
+  const R = (h - 1) / 2;
+  const aspect = 2.05; // mono cells are taller than wide
+  const put = (x3, y3, z3, ch) => {
+    const px = Math.round(w / 2 + x3 * R * aspect * 0.98);
+    const py = Math.round(h / 2 + y3 * R * 0.98);
+    if (px >= 0 && px < w && py >= 0 && py < h) grid[py][px] = ch;
+  };
+  const shade = (z) => (z > 0.55 ? "o" : z > 0.15 ? ":" : ".");
+  // latitude and longitude grid, rotated around the vertical axis
+  for (let la = -75; la <= 75; la += 15) {
+    const lar = (la * Math.PI) / 180;
+    for (let lo = 0; lo < 360; lo += 10) {
+      const lor = (lo * Math.PI) / 180 + t;
+      const x = Math.cos(lar) * Math.cos(lor);
+      const z = Math.cos(lar) * Math.sin(lor);
+      if (z > -0.1 && lo % 30 === 0) put(x, -Math.sin(lar), z, shade(z));
+    }
+  }
+  // equator drawn denser, so the rotation reads
+  for (let lo = 0; lo < 360; lo += 6) {
+    const lor = (lo * Math.PI) / 180 + t;
+    const z = Math.sin(lor);
+    if (z > -0.1) put(Math.cos(lor), 0, z, shade(z));
+  }
+  // silhouette ring
+  for (let a = 0; a < 360; a += 5) {
+    const ar = (a * Math.PI) / 180;
+    put(Math.cos(ar), Math.sin(ar), 0.12, ".");
+  }
+  return grid.map((r) => r.join("")).join("\n");
+}
+
+if (globe) {
+  if (reduced) {
+    globe.textContent = globeFrame(0.6);
+  } else {
+    let t = 0;
+    let spinning = true;
+    new IntersectionObserver((es) => { spinning = es[0].isIntersecting; }).observe(globe);
+    setInterval(() => {
+      if (!spinning) return;
+      t += 0.045;
+      globe.textContent = globeFrame(t);
+    }, 90);
+  }
+}
 /* ---------- terminal: human scene, then agent scene ---------- */
 const scenes = [
   [

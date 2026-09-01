@@ -59,6 +59,16 @@
 		margin-top: 3em;
 		line-height: 1.8;
 	}
+	&__globe {
+		font-family: $mono;
+		font-size: 10px;
+		line-height: 1.1;
+		letter-spacing: 0.04em;
+		color: $dim;
+		margin: 0 auto 30px;
+		user-select: none;
+		min-height: 15.4em; // 14 rows: no layout shift while frames draw
+	}
 	&__mark {
 		@include display(clamp(56px, 9.8vw, 200px));
 		color: $mark;

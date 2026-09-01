@@ -54,7 +54,7 @@ $defaults = array(
 <!-- hero -->
 <section class="hero">
 	<div class="hero__copy">
-		<span class="lamp lamp--lg" aria-hidden="true"></span>
+		<pre class="hero__globe" id="ascii-globe" aria-hidden="true"></pre>
 		<?php echo wp_kses_post( wpautop( al_field( 'hero_intro', $defaults['hero_intro'] ) ) ); ?>
 		<p class="hero__note"><?php echo esc_html( al_field( 'hero_note', $defaults['hero_note'] ) ); ?></p>
 	</div>
@@ -108,7 +108,7 @@ $benchmark_defaults = array(
 		'label' => 'Memory while serving', 'unit' => 'MB',
 		'al' => '194', 'al_note' => 'thirty-five sites',
 		'lw' => '227', 'lw_note' => 'the app alone, one site running',
-		'dd' => '5193', 'dd_note' => 'Docker VM, two sites',
+		'dd' => '2488', 'dd_note' => 'Docker VM, one site, freshly booted',
 	),
 	array(
 		'label' => 'Bring over a LocalWP site', 'unit' => 's',
@@ -160,7 +160,8 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 	</div>
 	<p class="bench__method">Apple M3, macOS, September 2026. One HTTP client for every provider, interleaved
 		samples, medians of thirty for latency and three for lifecycle. DDEV 1.24 on Colima with 4 CPUs and
-		6 GB; LocalWP 9. Where a result was a tie we say so: fresh-install homepage time was 30 ms here,
+		6 GB; LocalWP 9. VM memory is the freshly booted steady state, not the 5 GB it peaks at while
+		pulling images. Where a result was a tie we say so: fresh-install homepage time was 30 ms here,
 		29 ms on DDEV. Published as measured.</p>
 </section>
 
@@ -223,7 +224,7 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 
 <!-- install -->
 <section class="install" id="install">
-	<h2 class="statement__display statement__display--sm rv-scale">TWO MINUTES.</h2>
+	<h2 class="statement__display statement__display--sm rv-scale">ONE BINARY.</h2>
 	<div class="install__steps">
 		<?php foreach ( al_rows( 'install_steps', $defaults['install_steps'] ) as $step ) : ?>
 		<button class="install__step" type="button" data-copy="<?php echo esc_attr( $step['command'] ); ?>">
