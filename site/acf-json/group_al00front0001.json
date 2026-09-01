@@ -1,0 +1,136 @@
+{
+    "key": "group_al00front0001",
+    "title": "Front Page",
+    "fields": [
+        {
+            "key": "field_al0hero0intro",
+            "label": "Hero intro",
+            "name": "hero_intro",
+            "type": "textarea",
+            "instructions": "Optional",
+            "rows": 4,
+            "new_lines": "wpautop"
+        },
+        {
+            "key": "field_al0hero0note0",
+            "label": "Hero note",
+            "name": "hero_note",
+            "type": "text",
+            "instructions": "Optional"
+        },
+        {
+            "key": "field_al0stats00000",
+            "label": "Stats",
+            "name": "stats",
+            "type": "repeater",
+            "instructions": "Optional",
+            "layout": "table",
+            "button_label": "Add stat",
+            "sub_fields": [
+                { "key": "field_al0stat0value", "label": "Value", "name": "value", "type": "text", "parent_repeater": "field_al0stats00000" },
+                { "key": "field_al0stat0unit0", "label": "Unit", "name": "unit", "type": "text", "instructions": "Optional", "parent_repeater": "field_al0stats00000" },
+                { "key": "field_al0stat0label", "label": "Label", "name": "label", "type": "text", "parent_repeater": "field_al0stats00000" }
+            ]
+        },
+        {
+            "key": "field_al0benchmark0",
+            "label": "Benchmarks",
+            "name": "benchmarks",
+            "type": "repeater",
+            "instructions": "Optional. Leave a provider value empty to show its note instead of a bar.",
+            "layout": "row",
+            "button_label": "Add benchmark",
+            "sub_fields": [
+                { "key": "field_al0bm0label00", "label": "Metric", "name": "label", "type": "text", "parent_repeater": "field_al0benchmark0" },
+                { "key": "field_al0bm0unit000", "label": "Unit", "name": "unit", "type": "text", "parent_repeater": "field_al0benchmark0" },
+                { "key": "field_al0bm0alval00", "label": "agent-local value", "name": "al", "type": "text", "parent_repeater": "field_al0benchmark0" },
+                { "key": "field_al0bm0alnote0", "label": "agent-local note", "name": "al_note", "type": "text", "instructions": "Optional", "parent_repeater": "field_al0benchmark0" },
+                { "key": "field_al0bm0lwval00", "label": "LocalWP value", "name": "lw", "type": "text", "instructions": "Optional", "parent_repeater": "field_al0benchmark0" },
+                { "key": "field_al0bm0lwnote0", "label": "LocalWP note", "name": "lw_note", "type": "text", "instructions": "Optional", "parent_repeater": "field_al0benchmark0" },
+                { "key": "field_al0bm0ddval00", "label": "DDEV value", "name": "dd", "type": "text", "instructions": "Optional", "parent_repeater": "field_al0benchmark0" },
+                { "key": "field_al0bm0ddnote0", "label": "DDEV note", "name": "dd_note", "type": "text", "instructions": "Optional", "parent_repeater": "field_al0benchmark0" }
+            ]
+        },
+        {
+            "key": "field_al0state10000",
+            "label": "Statement one",
+            "name": "statement_one",
+            "type": "text",
+            "instructions": "Optional"
+        },
+        {
+            "key": "field_al0state1copy",
+            "label": "Statement one copy",
+            "name": "statement_one_copy",
+            "type": "textarea",
+            "instructions": "Optional",
+            "rows": 3
+        },
+        {
+            "key": "field_al0state20000",
+            "label": "Statement two",
+            "name": "statement_two",
+            "type": "text",
+            "instructions": "Optional"
+        },
+        {
+            "key": "field_al0state2copy",
+            "label": "Statement two copy",
+            "name": "statement_two_copy",
+            "type": "textarea",
+            "instructions": "Optional",
+            "rows": 3
+        },
+        {
+            "key": "field_al0features00",
+            "label": "Features",
+            "name": "features",
+            "type": "repeater",
+            "instructions": "Optional",
+            "layout": "row",
+            "button_label": "Add feature",
+            "sub_fields": [
+                { "key": "field_al0feat0title", "label": "Title", "name": "title", "type": "text", "parent_repeater": "field_al0features00" },
+                { "key": "field_al0feat0body0", "label": "Body", "name": "body", "type": "textarea", "rows": 2, "parent_repeater": "field_al0features00" }
+            ]
+        },
+        {
+            "key": "field_al0compare000",
+            "label": "Comparison rows",
+            "name": "compare_rows",
+            "type": "repeater",
+            "instructions": "Optional",
+            "layout": "table",
+            "button_label": "Add row",
+            "sub_fields": [
+                { "key": "field_al0cmp0label0", "label": "Row", "name": "label", "type": "text", "parent_repeater": "field_al0compare000" },
+                { "key": "field_al0cmp0self00", "label": "agent-local", "name": "agentlocal", "type": "text", "parent_repeater": "field_al0compare000" },
+                { "key": "field_al0cmp0local0", "label": "LocalWP", "name": "localwp", "type": "text", "parent_repeater": "field_al0compare000" },
+                { "key": "field_al0cmp0mamp00", "label": "MAMP", "name": "mamp", "type": "text", "parent_repeater": "field_al0compare000" },
+                { "key": "field_al0cmp0ddev00", "label": "DDEV", "name": "ddev", "type": "text", "parent_repeater": "field_al0compare000" }
+            ]
+        },
+        {
+            "key": "field_al0install000",
+            "label": "Install steps",
+            "name": "install_steps",
+            "type": "repeater",
+            "instructions": "Optional",
+            "layout": "table",
+            "button_label": "Add step",
+            "sub_fields": [
+                { "key": "field_al0inst0label", "label": "Label", "name": "label", "type": "text", "parent_repeater": "field_al0install000" },
+                { "key": "field_al0inst0cmd00", "label": "Command", "name": "command", "type": "text", "parent_repeater": "field_al0install000" }
+            ]
+        }
+    ],
+    "location": [
+        [
+            { "param": "page_type", "operator": "==", "value": "front_page" }
+        ]
+    ],
+    "position": "normal",
+    "style": "default",
+    "active": true,
+    "description": "Copy for the agent-local marketing site. Every field is optional — anything left empty falls back to the defaults shipped in the theme."
+}

@@ -1,0 +1,391 @@
+@use "tokens" as *;
+
+// ---------------------------------------------------------------- nav
+.nav {
+	position: fixed;
+	inset: 0 0 auto;
+	z-index: 10;
+	display: flex;
+	align-items: center;
+	gap: 40px;
+	padding: 24px clamp(20px, 4vw, 56px);
+	mix-blend-mode: difference;
+
+	&__mark {
+		font-variation-settings: "wdth" 125;
+		font-weight: 800;
+		font-size: 14px;
+		letter-spacing: 0.04em;
+	}
+	&__links {
+		display: flex;
+		gap: 28px;
+		flex: 1;
+		justify-content: center;
+		font-size: 13px;
+		a { color: $dim; }
+		a:hover { color: $text; }
+	}
+	&__cta {
+		border: 1px solid $text;
+		padding: 9px 18px;
+		font-size: 13px;
+		span { display: inline-block; transition: transform 0.25s ease; }
+		&:hover { color: $bg; background: $text; }
+		&:hover span { transform: translate(2px, -2px); }
+	}
+}
+
+// ---------------------------------------------------------------- hero
+.hero {
+	min-height: 100svh;
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-end;
+	overflow: hidden;
+	position: relative;
+
+	&__copy {
+		text-align: center;
+		max-width: 42ch;
+		margin: auto;
+		padding: 140px 24px 60px;
+		font-size: 17px;
+		line-height: 1.75;
+		p + p { margin-top: 1.3em; }
+	}
+	&__note {
+		@include label;
+		margin-top: 3em;
+		line-height: 1.8;
+	}
+	&__mark {
+		@include display(clamp(56px, 9.8vw, 200px));
+		color: $mark;
+		text-align: center;
+		white-space: nowrap;
+		transform: translateY(0.2em);
+		user-select: none;
+	}
+}
+
+// ---------------------------------------------------------------- stats
+.stats {
+	padding: clamp(100px, 15vh, 170px) clamp(20px, 4vw, 56px);
+	border-top: 1px solid $hairline;
+
+	&__row {
+		margin-top: 56px;
+		display: grid;
+		grid-template-columns: repeat(4, 1fr);
+		gap: 40px;
+	}
+}
+.stat {
+	border-left: 1px solid $hairline;
+	padding-left: 28px;
+
+	&__value {
+		@include display(clamp(48px, 6vw, 88px));
+		display: inline-block;
+	}
+	&__unit {
+		font-family: $sans;
+		font-variation-settings: "wdth" 100;
+		font-weight: 500;
+		font-size: clamp(16px, 1.6vw, 22px);
+		color: $dim;
+		margin-left: 6px;
+	}
+	&__label {
+		@include label;
+		display: block;
+		margin-top: 16px;
+		line-height: 1.8;
+	}
+}
+
+
+// ---------------------------------------------------------------- benchmarks
+.bench {
+	padding: clamp(100px, 15vh, 170px) clamp(20px, 4vw, 56px);
+	border-top: 1px solid $hairline;
+
+	&__heading {
+		@include display(clamp(34px, 4.6vw, 68px));
+		margin-top: 26px;
+	}
+	&__list {
+		margin-top: 64px;
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 56px clamp(40px, 6vw, 96px);
+	}
+	&__metric { min-width: 0; }
+	&__label {
+		font-variation-settings: "wdth" 116;
+		font-weight: 680;
+		font-size: 19px;
+		text-transform: uppercase;
+		letter-spacing: 0.01em;
+		padding-bottom: 14px;
+		border-bottom: 1px solid $hairline;
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+	}
+	&__lower { @include label; font-size: 10px; }
+	&__row {
+		display: grid;
+		grid-template-columns: 96px 1fr;
+		grid-template-rows: auto auto;
+		align-items: center;
+		column-gap: 16px;
+		padding: 13px 0 0;
+	}
+	&__who { @include label; font-size: 10.5px; grid-row: 1 / span 2; }
+	&__track { display: block; height: 10px; position: relative; }
+	&__fill {
+		position: absolute;
+		inset: 0 auto 0 0;
+		width: 0;
+		background: $dim;
+		transition: width 1.1s cubic-bezier(0.2, 0.6, 0.2, 1);
+	}
+	.is-in &__fill { width: var(--w); }
+	&__row--us &__fill { background: $lamp; }
+	&__val {
+		font-family: $mono;
+		font-size: 12px;
+		color: $text;
+		padding-top: 5px;
+		em { font-style: normal; color: $dim; }
+	}
+	&__row--us &__val { color: $lamp; }
+	&__na {
+		font-family: $mono;
+		font-size: 12px;
+		color: $mark;
+		padding: 8px 0;
+	}
+	&__method {
+		@include label;
+		margin-top: 64px;
+		line-height: 2;
+		max-width: 86ch;
+		text-transform: none;
+		letter-spacing: 0.04em;
+		font-size: 12px;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		&__fill { width: var(--w); }
+	}
+}
+@media (max-width: 900px) {
+	.bench__list { grid-template-columns: 1fr; }
+}
+// ---------------------------------------------------------------- statements
+.statement {
+	padding: clamp(120px, 18vh, 220px) clamp(20px, 4vw, 56px);
+	text-align: center;
+	overflow: hidden;
+
+	&__display {
+		@include display(clamp(46px, 9vw, 156px));
+		line-height: 0.96;
+	}
+	&__display--sm { font-size: clamp(40px, 6.5vw, 104px); }
+	&__copy {
+		max-width: 50ch;
+		margin: 56px auto 0;
+		color: $dim;
+		font-size: 16px;
+		line-height: 1.8;
+	}
+	&__term {
+		margin-top: 72px;
+		display: grid;
+		place-items: center;
+	}
+	.label { margin-top: 48px; }
+}
+
+.term {
+	width: min(600px, 90vw);
+	background: $panel;
+	border: 1px solid $hairline;
+	text-align: left;
+
+	pre {
+		margin: 0;
+		padding: 28px 30px;
+		font-family: $mono;
+		font-size: 12.5px;
+		line-height: 1.9;
+		min-height: 270px;
+		white-space: pre-wrap;
+		word-break: break-word;
+		color: $dim;
+
+		.t-ok { color: $lamp; }
+		.t-cmd { color: $text; }
+	}
+}
+.t-cursor {
+	display: inline-block;
+	width: 7px; height: 13px;
+	vertical-align: -2px;
+	background: $lamp;
+	animation: blink 1.1s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+// ---------------------------------------------------------------- features index
+.index {
+	padding: clamp(100px, 15vh, 170px) clamp(20px, 4vw, 56px);
+	border-top: 1px solid $hairline;
+
+	&__list { margin-top: 56px; }
+	&__row {
+		display: grid;
+		grid-template-columns: 72px minmax(0, 0.75fr) minmax(0, 1.25fr);
+		gap: 32px;
+		align-items: baseline;
+		padding: 34px 0;
+		border-top: 1px solid $hairline;
+		&:last-child { border-bottom: 1px solid $hairline; }
+	}
+	&__no { @include label; }
+	&__title {
+		font-variation-settings: "wdth" 116;
+		font-weight: 680;
+		font-size: clamp(19px, 2vw, 25px);
+		line-height: 1.15;
+		text-transform: uppercase;
+		letter-spacing: 0.01em;
+		transition: color 0.3s ease;
+	}
+	&__row:hover &__title { color: $lamp; }
+	&__body { color: $dim; font-size: 15px; line-height: 1.75; max-width: 58ch; }
+}
+
+// ---------------------------------------------------------------- compare
+.compare {
+	padding: clamp(100px, 15vh, 170px) clamp(20px, 4vw, 56px);
+	border-top: 1px solid $hairline;
+
+	&__scroll { overflow-x: auto; margin-top: 56px; }
+	&__table {
+		width: 100%;
+		min-width: 820px;
+		border-collapse: collapse;
+		font-family: $mono;
+		font-size: 12.5px;
+		text-align: left;
+
+		th, td {
+			padding: 16px 20px 16px 0;
+			border-top: 1px solid $hairline;
+			vertical-align: baseline;
+			font-weight: 400;
+			color: $dim;
+		}
+		thead th {
+			@include label;
+			border-top: none;
+			padding-bottom: 12px;
+		}
+		tbody th {
+			font-family: $sans;
+			font-size: 15px;
+			font-weight: 450;
+			color: $text;
+			padding-right: 32px;
+		}
+		tbody tr:last-child th, tbody tr:last-child td { border-bottom: 1px solid $hairline; }
+	}
+	&__us { color: $text !important; font-weight: 500; }
+	&__note {
+		@include label;
+		margin-top: 34px;
+		line-height: 1.9;
+		max-width: 72ch;
+	}
+}
+
+// ---------------------------------------------------------------- install
+.install {
+	padding: clamp(120px, 18vh, 210px) clamp(20px, 4vw, 56px);
+	border-top: 1px solid $hairline;
+	text-align: center;
+
+	&__steps {
+		max-width: 600px;
+		margin: 64px auto 48px;
+		display: grid;
+		gap: 12px;
+	}
+	&__step {
+		display: grid;
+		grid-template-columns: 84px 1fr auto;
+		align-items: center;
+		gap: 20px;
+		background: none;
+		border: 1px solid $hairline;
+		padding: 18px 22px;
+		color: $text;
+		font: inherit;
+		text-align: left;
+		cursor: copy;
+
+		code { font-size: 13.5px; }
+		&:hover { border-color: $dim; }
+		&.is-done .install__copy { color: $lamp; }
+	}
+	&__k { @include label; }
+	&__copy { @include label; font-size: 10px; }
+}
+
+// ---------------------------------------------------------------- footer
+.footer {
+	border-top: 1px solid $hairline;
+	overflow: hidden;
+
+	&__meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 20px;
+		align-items: baseline;
+		padding: 32px clamp(20px, 4vw, 56px) 0;
+	}
+	&__links {
+		margin-left: auto;
+		display: flex;
+		gap: 26px;
+		font-size: 13px;
+		a { color: $dim; }
+		a:hover { color: $text; }
+	}
+	&__mark {
+		@include display(clamp(56px, 9.8vw, 200px));
+		color: $mark;
+		text-align: center;
+		white-space: nowrap;
+		margin-top: 48px;
+		transform: translateY(0.2em);
+		user-select: none;
+	}
+}
+
+// ---------------------------------------------------------------- responsive
+@media (max-width: 900px) {
+	.nav__links { display: none; }
+	.stats__row { grid-template-columns: 1fr 1fr; gap: 48px 28px; }
+	.index__row { grid-template-columns: 52px 1fr; }
+	.index__body { grid-column: 2; }
+}
+@media (max-width: 560px) {
+	.stats__row { grid-template-columns: 1fr; }
+	.install__step { grid-template-columns: 1fr; gap: 8px; }
+	.install__copy { display: none; }
+}

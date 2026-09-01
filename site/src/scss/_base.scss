@@ -1,0 +1,63 @@
+@use "tokens" as *;
+
+* { box-sizing: border-box; }
+
+html {
+	scroll-behavior: smooth;
+	@media (prefers-reduced-motion: reduce) { scroll-behavior: auto; }
+}
+
+body {
+	margin: 0;
+	background: $bg;
+	color: $text;
+	font-family: $sans;
+	font-size: 15.5px;
+	line-height: 1.7;
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+}
+
+a { color: $text; text-decoration: none; }
+a:hover { color: $lamp; }
+:focus-visible { outline: 1px solid $lamp; outline-offset: 4px; }
+
+code { font-family: $mono; font-size: 0.9em; }
+
+h1, h2, h3, p { margin: 0; }
+
+.label {
+	@include label;
+	display: block;
+}
+.label--center { text-align: center; }
+
+.lamp {
+	display: inline-block;
+	width: 7px; height: 7px;
+	border-radius: 50%;
+	background: $lamp;
+	margin-right: 10px;
+	vertical-align: 1px;
+	box-shadow: 0 0 9px rgba($lamp, 0.4);
+	animation: lamp-breathe 3.4s ease-in-out infinite;
+}
+.lamp--lg { width: 9px; height: 9px; margin: 0 0 26px; }
+
+@keyframes lamp-breathe {
+	50% { box-shadow: 0 0 2px rgba($lamp, 0.15); }
+}
+
+// Reveal: statements scale in, everything else rises quietly.
+.rv, .rv-scale {
+	opacity: 0;
+	transition: opacity 0.9s ease, transform 0.9s cubic-bezier(0.2, 0.6, 0.2, 1);
+}
+.rv { transform: translateY(16px); }
+.rv-scale { transform: scale(0.94); }
+.rv.is-in, .rv-scale.is-in { opacity: 1; transform: none; }
+
+@media (prefers-reduced-motion: reduce) {
+	*, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+	.rv, .rv-scale { opacity: 1; transform: none; }
+}

@@ -1,0 +1,33 @@
+// agent-local site: monochrome, one voice.
+// Charcoal field, warm gray ink, a single green lamp as the only color.
+
+$bg:        #0e0e0c;
+$text:      #e9e6de;
+$dim:       #8b887c;
+$hairline:  #26251f;
+$mark:      #45443e;   // the giant wordmark gray
+$panel:     #141412;
+$lamp:      #8fce9b;
+
+$mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+$sans: "Archivo", "Helvetica Neue", Arial, sans-serif;
+
+// Display type: Archivo pushed wide and heavy: the statement voice.
+@mixin display($size) {
+	font-family: $sans;
+	font-variation-settings: "wdth" 125;
+	font-weight: 860;
+	font-size: $size;
+	line-height: 0.92;
+	letter-spacing: -0.015em;
+	text-transform: uppercase;
+}
+
+@mixin label {
+	font-family: $mono;
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: $dim;
+}

@@ -1,0 +1,16 @@
+{
+  "name": "agent-local-site",
+  "private": true,
+  "description": "Marketing site theme for agent-local. Compile with `npm run build`.",
+  "scripts": {
+    "build:css": "sass src/scss/main.scss dist/main.css --style=compressed --no-source-map",
+    "build:js": "esbuild src/js/main.js --bundle --minify --outfile=dist/main.js",
+    "build": "npm run build:css && npm run build:js",
+    "watch": "concurrently -r \"sass --watch src/scss/main.scss dist/main.css\" \"esbuild src/js/main.js --bundle --outfile=dist/main.js --watch\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "esbuild": "^0.24.0",
+    "sass": "^1.80.0"
+  }
+}
