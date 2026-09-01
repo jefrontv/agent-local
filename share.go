@@ -2,7 +2,11 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -135,7 +139,9 @@ func sharePidFile(slug string) string {
 
 // StartShare opens a public tunnel to a site. Idempotent: an active share is
 // returned rather than doubled. minutes 0 means the default window; negative
-// means until stopped.
+// means until stopped. The URL is proven reachable through the edge before it
+// comes back; a tunnel that never routes is torn down and retried once with
+// a fresh hostname.
 func (e *Engine) StartShare(slug string, minutes int, cb func(string, string)) (*Share, error) {
 	site := e.Store.Site(slug)
 	if site == nil {
@@ -156,8 +162,25 @@ func (e *Engine) StartShare(slug string, minutes int, cb func(string, string)) (
 	if err := e.StartSite(slug); err != nil {
 		return nil, err
 	}
+	sh, err := e.openShare(site, bin, minutes, cb)
+	if err != nil && errors.Is(err, errTunnelUnreachable) {
+		// The edge occasionally never picks a quick tunnel up. A fresh spawn
+		// gets a fresh hostname, which is the manual workaround, automated.
+		cb("tunnel", "tunnel never became reachable — retrying with a fresh one")
+		sh, err = e.openShare(site, bin, minutes, cb)
+	}
+	return sh, err
+}
+
+// errTunnelUnreachable marks a tunnel whose public hostname the edge never
+// routed — the one failure worth one automatic retry.
+var errTunnelUnreachable = errors.New("tunnel unreachable")
+
+// openShare is one attempt: spawn, map, register, prove reachable.
+func (e *Engine) openShare(site *Site, bin string, minutes int, cb func(string, string)) (*Share, error) {
+	slug := site.Slug
 	cb("tunnel", "opening quick tunnel via "+filepath.Base(bin))
-	cmd, url, exited, err := spawnQuickTunnel(bin,
+	cmd, url, registered, exited, err := spawnQuickTunnel(bin,
 		fmt.Sprintf("http://127.0.0.1:%d", DefaultHTTPPort), P().Log("share-"+slug))
 	if err != nil {
 		return nil, err
@@ -184,13 +207,87 @@ func (e *Engine) StartShare(slug string, minutes int, cb func(string, string)) (
 		sh.ExpiresAt = &exp
 		sh.timer = time.AfterFunc(time.Until(exp), sh.shutdown)
 	}
+	// Register before probing: the probe arrives through the router, which
+	// resolves the tunnel hostname from this registry.
 	shares.add(sh)
 	go func() {
 		<-exited // tunnel died on its own (or was killed): fold the share
 		sh.shutdown()
 	}()
+	// Do not query the hostname before the edge has accepted the tunnel:
+	// an early NXDOMAIN gets negative-cached by the OS resolver, and then
+	// every retry is answered from that cache — the probe itself would
+	// manufacture the dead link it exists to prevent.
+	cb("tunnel", "waiting for the edge to route "+host)
+	select {
+	case <-registered:
+	case <-exited:
+		return nil, fmt.Errorf("%w: cloudflared exited before registering", errTunnelUnreachable)
+	case <-time.After(shareReadyWait):
+		sh.shutdown()
+		return nil, fmt.Errorf("%w: tunnel never registered with the edge", errTunnelUnreachable)
+	}
+	if err := awaitShareReachable(url, shareReadyWait); err != nil {
+		sh.shutdown()
+		return nil, fmt.Errorf("%w: %v", errTunnelUnreachable, err)
+	}
 	cb("tunnel", url)
 	return sh, nil
+}
+
+// shareReadyWait bounds how long a fresh hostname gets to start resolving.
+// Normal propagation is a few seconds; a tunnel the edge has not picked up
+// by now never will be.
+const shareReadyWait = 45 * time.Second
+
+// awaitShareReachable proves a share end to end: DNS for a fresh quick-tunnel
+// hostname lags its own banner by seconds, and occasionally the edge never
+// routes it at all — handing out the URL on the banner alone is how "the
+// share link is dead" reports happen. Any HTTP status except 530 (Cloudflare
+// for "tunnel not found") is the edge reaching this machine; redirects count,
+// so a canonical 301 from WordPress passes without being followed.
+//
+// Resolution deliberately skips the OS resolver: a fresh name is NXDOMAIN
+// for its first seconds, and macOS negative-caches that answer — one early
+// lookup would poison every retry. Asking Cloudflare's own resolver directly
+// sees the record the moment it exists, and leaves the local cache clean for
+// the browser that opens the link next.
+func awaitShareReachable(url string, wait time.Duration) error {
+	client := &http.Client{
+		Timeout:       10 * time.Second,
+		Transport:     &http.Transport{DialContext: (&net.Dialer{Resolver: shareProbeResolver}).DialContext},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	deadline := time.Now().Add(wait)
+	var last error
+	for {
+		resp, err := client.Get(url)
+		switch {
+		case err != nil:
+			last = err // usually NXDOMAIN while the name propagates
+		case resp.StatusCode == 530:
+			resp.Body.Close()
+			last = fmt.Errorf("edge answers 530 (tunnel not routed)")
+		default:
+			resp.Body.Close()
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return last
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// shareProbeResolver asks Cloudflare's public resolver directly — the
+// authority-adjacent view of a *.trycloudflare.com name, uncontaminated by
+// local negative caching.
+var shareProbeResolver = &net.Resolver{
+	PreferGo: true,
+	Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+		d := net.Dialer{Timeout: 5 * time.Second}
+		return d.DialContext(ctx, network, "1.1.1.1:53")
+	},
 }
 
 // StopShare closes a site's tunnel. Stopping a site that is not shared is a
@@ -223,23 +320,26 @@ func SweepShares(store *Store) {
 }
 
 // spawnQuickTunnel starts cloudflared and waits for it to print the public
-// URL. Its output streams to logPath for the lifetime of the tunnel; exited
-// closes when the process ends, after being reaped.
-func spawnQuickTunnel(bin, target, logPath string) (*exec.Cmd, string, chan struct{}, error) {
+// URL. Its output streams to logPath for the lifetime of the tunnel;
+// registered closes once the edge has accepted a tunnel connection, exited
+// when the process ends, after being reaped.
+func spawnQuickTunnel(bin, target, logPath string) (*exec.Cmd, string, chan struct{}, chan struct{}, error) {
 	cmd := exec.Command(bin, "tunnel", "--url", target, "--no-autoupdate")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, nil, err
 	}
 	cmd.Stdout = cmd.Stderr // cloudflared logs to stderr; catch strays too
 	if err := cmd.Start(); err != nil {
-		return nil, "", nil, fmt.Errorf("cloudflared: %w", err)
+		return nil, "", nil, nil, fmt.Errorf("cloudflared: %w", err)
 	}
 	logf, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	urlCh := make(chan string, 1)
+	registered := make(chan struct{})
 	exited := make(chan struct{})
 	go func() {
+		regDone := false
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
 			line := sc.Text()
@@ -252,6 +352,10 @@ func spawnQuickTunnel(bin, target, logPath string) (*exec.Cmd, string, chan stru
 				default:
 				}
 			}
+			if !regDone && strings.Contains(line, "Registered tunnel connection") {
+				regDone = true
+				close(registered)
+			}
 		}
 		if logf != nil {
 			logf.Close()
@@ -261,12 +365,12 @@ func spawnQuickTunnel(bin, target, logPath string) (*exec.Cmd, string, chan stru
 	}()
 	select {
 	case u := <-urlCh:
-		return cmd, u, exited, nil
+		return cmd, u, registered, exited, nil
 	case <-exited:
-		return nil, "", nil, fmt.Errorf("cloudflared exited before producing a URL — its log: agent-local logs %s", filepath.Base(strings.TrimSuffix(logPath, ".log")))
+		return nil, "", nil, nil, fmt.Errorf("cloudflared exited before producing a URL — its log: agent-local logs %s", filepath.Base(strings.TrimSuffix(logPath, ".log")))
 	case <-time.After(shareMaxWait):
 		cmd.Process.Kill()
-		return nil, "", nil, fmt.Errorf("no tunnel URL within %s (network down, or trycloudflare unreachable) — its log: agent-local logs %s",
+		return nil, "", nil, nil, fmt.Errorf("no tunnel URL within %s (network down, or trycloudflare unreachable) — its log: agent-local logs %s",
 			shareMaxWait, filepath.Base(strings.TrimSuffix(logPath, ".log")))
 	}
 }

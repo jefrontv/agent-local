@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -153,5 +154,36 @@ func TestServeMediaFallbackThroughShare(t *testing.T) {
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://x.trycloudflare.com"+MailPath, nil))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("mail over tunnel = %d, want 404", rec.Code)
+	}
+}
+
+// The probe decides when a share URL may be handed out: any answer except
+// Cloudflare's 530 counts, redirects included, and a hostname that never
+// routes comes back as an error instead of a dead link.
+func TestAwaitShareReachable(t *testing.T) {
+	status := int32(530)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(int(atomic.LoadInt32(&status)))
+	}))
+	defer srv.Close()
+
+	// Stuck on 530 past the deadline: the error names what the edge said.
+	if err := awaitShareReachable(srv.URL, 10*time.Millisecond); err == nil || !strings.Contains(err.Error(), "530") {
+		t.Errorf("530 probe error = %v", err)
+	}
+
+	// Redirects count as reachable and are not followed.
+	atomic.StoreInt32(&status, http.StatusMovedPermanently)
+	if err := awaitShareReachable(srv.URL, time.Second); err != nil {
+		t.Errorf("301 counted as unreachable: %v", err)
+	}
+	atomic.StoreInt32(&status, http.StatusOK)
+	if err := awaitShareReachable(srv.URL, time.Second); err != nil {
+		t.Errorf("200 counted as unreachable: %v", err)
+	}
+
+	// A host that never resolves reports the dial error, not a nil.
+	if err := awaitShareReachable("http://127.0.0.1:1", 10*time.Millisecond); err == nil {
+		t.Error("dead host probe returned nil")
 	}
 }
