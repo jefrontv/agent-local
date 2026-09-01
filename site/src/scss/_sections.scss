@@ -213,24 +213,32 @@
 }
 
 .term {
-	width: min(600px, 90vw);
+	width: min(620px, 90vw);
 	background: $panel;
 	border: 1px solid $hairline;
 	text-align: left;
 
 	pre {
 		margin: 0;
-		padding: 28px 30px;
+		padding: 30px 34px;
 		font-family: $mono;
 		font-size: 12.5px;
-		line-height: 1.9;
-		min-height: 270px;
+		line-height: 2;
+		min-height: 330px;
 		white-space: pre-wrap;
 		word-break: break-word;
 		color: $dim;
 
-		.t-ok { color: $lamp; }
-		.t-cmd { color: $text; }
+		// One transcript grammar: a prompt, tool calls, their results, and
+		// the assistant's prose. Prefixes are drawn here so every line kind
+		// carries its mark in the right color.
+		.t-user { color: $text; }
+		.t-user::before { content: "> "; color: $lamp; }
+		.t-tool { color: $text; }
+		.t-tool::before { content: "\25CF\00A0\00A0"; color: $lamp; }
+		.t-res { color: $dim; }
+		.t-res::before { content: "  \23BF  "; color: $mark; }
+		.t-assist { color: $text; }
 	}
 }
 .t-cursor {
@@ -384,4 +392,55 @@
 	.stats__row { grid-template-columns: 1fr; }
 	.install__step { grid-template-columns: 1fr; gap: 8px; }
 	.install__copy { display: none; }
+}
+
+// ---------------------------------------------------------------- harness marquee
+.harness {
+	margin-top: 64px;
+	overflow: hidden;
+	mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+	-webkit-mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+
+	&__track {
+		display: flex;
+		width: max-content;
+		animation: harness-scroll 42s linear infinite;
+	}
+	&:hover &__track { animation-play-state: paused; }
+	&__half {
+		display: flex;
+		align-items: center;
+		gap: 64px;
+		padding-right: 64px;
+	}
+	&__item {
+		display: inline-flex;
+		align-items: center;
+		gap: 12px;
+		color: $dim;
+		transition: color 0.3s ease;
+		&:hover { color: $text; }
+		svg { width: 22px; height: 22px; flex: none; }
+	}
+	&__glyph {
+		font-family: $mono;
+		font-size: 15px;
+		font-weight: 600;
+		min-width: 22px;
+		text-align: center;
+	}
+	&__name {
+		font-family: $mono;
+		font-size: 12px;
+		letter-spacing: 0.08em;
+		white-space: nowrap;
+	}
+}
+@keyframes harness-scroll {
+	to { transform: translateX(-50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+	.harness { overflow-x: auto; mask-image: none; -webkit-mask-image: none; }
+	.harness__track { animation: none; }
+	.harness__half[aria-hidden] { display: none; }
 }

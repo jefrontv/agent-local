@@ -2,10 +2,8 @@
 
 * { box-sizing: border-box; }
 
-html {
-	scroll-behavior: smooth;
-	@media (prefers-reduced-motion: reduce) { scroll-behavior: auto; }
-}
+// Scroll smoothing is lenis's job; CSS smooth would fight it.
+html { scroll-behavior: auto; }
 
 body {
 	margin: 0;

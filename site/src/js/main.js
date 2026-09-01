@@ -1,8 +1,24 @@
+import Lenis from "lenis";
+
 /* agent-local site: terminal, counters, reveals, copy. Reduced motion gets final frames. */
 
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 
+
+/* ---------- soft scrolling: lenis drives the wheel, and in-page anchors
+   route through it so nav clicks glide instead of jumping. ---------- */
+if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  const lenis = new Lenis({ autoRaf: true, lerp: 0.085, wheelMultiplier: 0.95 });
+  for (const a of document.querySelectorAll('a[href^="#"]')) {
+    a.addEventListener("click", (e) => {
+      const target = document.querySelector(a.getAttribute("href"));
+      if (!target) return;
+      e.preventDefault();
+      lenis.scrollTo(target, { offset: -8, duration: 1.4 });
+    });
+  }
+}
 /* ---------- the field: a full-hero ocean of characters, moved by slow
    interference of a few sine waves. Abstract on purpose: a curated shape
    would fight the wordmark, and procedural planets read as mud. ---------- */
@@ -41,44 +57,43 @@ if (field) {
   size();
   let resizeTimer;
   addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(size, 200); });
-  if (reduced) {
-    field.textContent = fieldFrame(1.7, cols, rows);
-  } else {
-    let t = 0;
-    let visible = true;
-    new IntersectionObserver((es) => { visible = es[0].isIntersecting; }).observe(field);
-    setInterval(() => {
-      if (!visible) return;
-      t += 0.055;
-      field.textContent = fieldFrame(t, cols, rows);
-    }, 100);
-  }
+	if (reduced) {
+		field.textContent = fieldFrame(1.7, cols, rows);
+	} else {
+		// Time-based phase off requestAnimationFrame: the wave moves at the
+		// same speed everywhere and never steps, throttled to ~30 fps since
+		// a text reflow at 60 buys nothing visible.
+		let visible = true;
+		let last = 0;
+		new IntersectionObserver((es) => { visible = es[0].isIntersecting; }).observe(field);
+		const loop = (now) => {
+			if (visible && now - last > 32) {
+				last = now;
+				field.textContent = fieldFrame(now / 1600, cols, rows);
+			}
+			requestAnimationFrame(loop);
+		};
+		requestAnimationFrame(loop);
+	}
 }
-/* ---------- terminal: human scene, then agent scene ---------- */
+/* ---------- the agent transcript: one looping session in the register of
+   a coding-agent chat. Prefixes come from CSS ::before so each line kind
+   carries two colors without per-character spans. ---------- */
 const scenes = [
   [
-    ["$ agent-local create demo", "t-cmd", 400, true],
-    ["  ◓ installing WordPress into ~/Sites/demo", "", 500],
-    ["    files     GET wordpress.org/latest.tar.gz", "", 700],
-    ["    database  al_demo created, user granted", "", 600],
-    ["    tls       demo.test issued + trusted", "", 600],
-    ["  ● Site ready: https://demo.test          15s", "t-ok", 700],
-    ["", "", 300],
-    ["$ agent-local share demo", "t-cmd", 900, true],
-    ["  ● https://gilded-poem-wander.trycloudflare.com", "t-ok", 1600],
-    ["    verified serving, expires in 60m", "", 300],
-  ],
-  [
-    ["# the same engine, driven over MCP", "", 500],
-    ["→ create_site {\"name\":\"client-qa\"}", "t-cmd", 700],
-    ["← {\"ok\":true, \"url\":\"https://client-qa.test\"}", "t-ok", 1500],
-    ["→ db_import {\"path\":\"prod.sql.gz\"}", "t-cmd", 800],
-    ["← saved auto-import snapshot, 214 tables,", "t-ok", 1500],
-    ["  urls prod.client.com → client-qa.test", "t-ok", 300],
-    ["→ list_mail {\"slug\":\"client-qa\"}", "t-cmd", 900],
-    ["← [{\"subject\":\"Password Reset\", \"to\":\"admin@…\"}]", "t-ok", 1300],
-    ["", "", 300],
-    ["  59 tools, each one a human command", "", 500],
+    ["qa copy of sulo, and prove the contact form emails work", "t-user", 700, true],
+    ["", "", 500],
+    ["create_site(name: \"sulo-qa\")", "t-tool", 700],
+    ["https://sulo-qa.test · serving · 15s", "t-res", 1500],
+    ["db_import(path: \"prod.sql.gz\")", "t-tool", 900],
+    ["saved auto-import snapshot · 214 tables · urls rewritten", "t-res", 1700],
+    ["browser · submit /contact with a test enquiry", "t-tool", 900],
+    ["302 → /contact?sent=1", "t-res", 1200],
+    ["get_mail(slug: \"sulo-qa\")", "t-tool", 900],
+    ["\"New enquiry\" → studio@client.com · body matches", "t-res", 1400],
+    ["", "", 500],
+    ["The QA copy is live and its contact form delivers.", "t-assist", 800],
+    ["If anything drifts, db_restore puts the snapshot back.", "t-assist", 400],
   ],
 ];
 
@@ -156,11 +171,24 @@ const io = new IntersectionObserver((entries) => {
 }, { threshold: 0.15 });
 for (const el of [...rvAuto, ...document.querySelectorAll(".rv-scale")]) io.observe(el);
 
-/* ---------- copy steps ---------- */
+/* ---------- copy steps. navigator.clipboard exists only on secure origins,
+   and a local dev domain is plain http, so fall back to a selection copy. */
+function copyText(text) {
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.cssText = "position:fixed;opacity:0";
+  document.body.appendChild(ta);
+  ta.select();
+  const ok = document.execCommand("copy");
+  ta.remove();
+  return ok ? Promise.resolve() : Promise.reject(new Error("copy refused"));
+}
+
 for (const el of document.querySelectorAll("[data-copy]")) {
   el.addEventListener("click", async () => {
     try {
-      await navigator.clipboard.writeText(el.dataset.copy);
+      await copyText(el.dataset.copy);
       el.classList.add("is-done");
       const chip = el.querySelector(".install__copy");
       if (chip) chip.textContent = "copied";

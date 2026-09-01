@@ -171,6 +171,43 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 		</div>
 	</div>
 	<p class="label label--center">create · import · snapshot · share · mail · previews</p>
+
+	<?php
+	// The harnesses that speak MCP. Icons are @lobehub/icons (MIT), inlined
+	// so they take the page's palette; pi and Oh My Pi ship no public mark,
+	// so they get type tiles in the same register.
+	$harnesses = array(
+		array( 'icon' => 'claude', 'name' => 'Claude Code' ),
+		array( 'icon' => 'codex', 'name' => 'Codex' ),
+		array( 'icon' => 'gemini', 'name' => 'Gemini CLI' ),
+		array( 'icon' => 'antigravity', 'name' => 'Antigravity' ),
+		array( 'glyph' => 'π', 'name' => 'pi' ),
+		array( 'glyph' => 'omp', 'name' => 'Oh My Pi' ),
+		array( 'icon' => 'zai', 'name' => 'Z.ai' ),
+		array( 'icon' => 'qwen', 'name' => 'Qwen Code' ),
+		array( 'icon' => 'deepseek', 'name' => 'DeepSeek' ),
+		array( 'icon' => 'kimi', 'name' => 'Kimi CLI' ),
+		array( 'icon' => 'copilot', 'name' => 'Copilot' ),
+		array( 'icon' => 'cursor', 'name' => 'Cursor' ),
+		array( 'icon' => 'windsurf', 'name' => 'Windsurf' ),
+		array( 'icon' => 'grok', 'name' => 'Grok' ),
+		array( 'icon' => 'mistral', 'name' => 'Mistral' ),
+	);
+	$harness_half = '';
+	foreach ( $harnesses as $hx ) {
+		$mark = isset( $hx['glyph'] )
+			? '<span class="harness__glyph">' . esc_html( $hx['glyph'] ) . '</span>'
+			: file_get_contents( get_template_directory() . '/assets/harness/' . $hx['icon'] . '.svg' );
+		$harness_half .= '<span class="harness__item">' . $mark .
+			'<span class="harness__name">' . esc_html( $hx['name'] ) . '</span></span>';
+	}
+	?>
+	<div class="harness" aria-label="Agent harnesses that speak MCP">
+		<div class="harness__track">
+			<div class="harness__half"><?php echo $harness_half; ?></div>
+			<div class="harness__half" aria-hidden="true"><?php echo $harness_half; ?></div>
+		</div>
+	</div>
 </section>
 
 <!-- features index -->
