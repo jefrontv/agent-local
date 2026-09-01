@@ -166,8 +166,9 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 	<p class="statement__copy"><?php echo esc_html( al_field( 'statement_two_copy', $defaults['statement_two_copy'] ) ); ?></p>
 	<div class="statement__term">
 		<div class="term" aria-hidden="true">
-			<pre id="term-screen">$ agent-local create demo
-  ● Site ready: https://demo.test   15s</pre>
+			<div class="term__bar"><span class="lamp"></span>agent session · mcp</div>
+			<div class="term__viewport"><pre id="term-screen">$ agent-local create demo
+  ● Site ready: https://demo.test   15s</pre></div>
 		</div>
 	</div>
 	<p class="label label--center">create · import · snapshot · share · mail · previews</p>

@@ -213,32 +213,50 @@
 }
 
 .term {
-	width: min(620px, 90vw);
+	width: min(640px, 90vw);
 	background: $panel;
 	border: 1px solid $hairline;
+	border-radius: 10px;
+	overflow: hidden;
 	text-align: left;
 
+	&__bar {
+		@include label;
+		font-size: 10.5px;
+		display: flex;
+		align-items: center;
+		padding: 15px 22px;
+		border-bottom: 1px solid $hairline;
+	}
+	// Fixed viewport: the transcript tails inside it like a terminal, the
+	// card never resizes the page, and only the script may scroll it.
+	&__viewport {
+		height: 372px;
+		overflow: hidden;
+		pointer-events: none;
+	}
 	pre {
 		margin: 0;
-		padding: 30px 34px;
+		padding: 26px 28px 30px;
 		font-family: $mono;
 		font-size: 12.5px;
-		line-height: 2;
-		min-height: 330px;
+		line-height: 1.75;
 		white-space: pre-wrap;
 		word-break: break-word;
 		color: $dim;
 
 		// One transcript grammar: a prompt, tool calls, their results, and
 		// the assistant's prose. Prefixes are drawn here so every line kind
-		// carries its mark in the right color.
-		.t-user { color: $text; }
-		.t-user::before { content: "> "; color: $lamp; }
-		.t-tool { color: $text; }
+		// carries its mark in the right color; rhythm is margins, not blank lines.
+		.t-line { display: block; }
+		.t-user { color: $text; margin-bottom: 6px; }
+		.t-user::before { content: ">\00A0\00A0"; color: $lamp; }
+		.t-tool { color: $text; margin-top: 15px; }
 		.t-tool::before { content: "\25CF\00A0\00A0"; color: $lamp; }
-		.t-res { color: $dim; }
-		.t-res::before { content: "  \23BF  "; color: $mark; }
+		.t-res { color: $dim; padding-left: 3px; margin-top: 2px; }
+		.t-res::before { content: "\23BF\00A0\00A0"; color: $mark; }
 		.t-assist { color: $text; }
+		.t-assist:not(.t-assist + .t-assist) { margin-top: 20px; }
 	}
 }
 .t-cursor {

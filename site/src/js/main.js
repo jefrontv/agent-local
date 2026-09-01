@@ -82,8 +82,7 @@ if (field) {
 const scenes = [
   [
     ["qa copy of sulo, and prove the contact form emails work", "t-user", 700, true],
-    ["", "", 500],
-    ["create_site(name: \"sulo-qa\")", "t-tool", 700],
+    ["create_site(name: \"sulo-qa\")", "t-tool", 900],
     ["https://sulo-qa.test · serving · 15s", "t-res", 1500],
     ["db_import(path: \"prod.sql.gz\")", "t-tool", 900],
     ["saved auto-import snapshot · 214 tables · urls rewritten", "t-res", 1700],
@@ -91,35 +90,40 @@ const scenes = [
     ["302 → /contact?sent=1", "t-res", 1200],
     ["get_mail(slug: \"sulo-qa\")", "t-tool", 900],
     ["\"New enquiry\" → studio@client.com · body matches", "t-res", 1400],
-    ["", "", 500],
-    ["The QA copy is live and its contact form delivers.", "t-assist", 800],
+    ["The QA copy is live and its contact form delivers.", "t-assist", 900],
     ["If anything drifts, db_restore puts the snapshot back.", "t-assist", 400],
   ],
 ];
 
 const screen = document.getElementById("term-screen");
+const viewport = screen?.parentElement;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Lines are blocks, not newline-joined text: spacing between entries is the
+// stylesheet's job, and the fixed viewport tails like a terminal, so the
+// card never changes the page's height.
 function put(text, cls) {
   const el = document.createElement("span");
-  if (cls) el.className = cls;
-  el.textContent = text;
+  el.className = "t-line" + (cls ? " " + cls : "");
+  const txt = document.createElement("span");
+  txt.textContent = text;
+  el.appendChild(txt);
   screen.appendChild(el);
-  return el;
+  viewport.scrollTop = viewport.scrollHeight;
+  return txt;
 }
 
 async function typeLine(text, cls) {
-  const el = put("", cls);
+  const txt = put("", cls);
   const cur = document.createElement("span");
   cur.className = "t-cursor";
-  screen.appendChild(cur);
+  txt.after(cur);
   for (const ch of text) {
-    el.textContent += ch;
+    txt.textContent += ch;
     await sleep(26 + Math.random() * 38);
   }
   await sleep(160);
   cur.remove();
-  el.textContent += "\n";
 }
 
 async function play() {
@@ -128,16 +132,16 @@ async function play() {
     for (const [text, cls, delay, typed] of scenes[i]) {
       await sleep(delay);
       if (typed) await typeLine(text, cls);
-      else put(text + "\n", cls);
+      else put(text, cls);
     }
-    await sleep(4200);
+    await sleep(4600);
   }
 }
 
 if (screen) {
   if (reduced) {
     screen.textContent = "";
-    for (const [text, cls] of scenes[0]) put(text + "\n", cls);
+    for (const [text, cls] of scenes[0]) put(text, cls);
   } else play();
 }
 
