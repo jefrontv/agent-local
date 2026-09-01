@@ -184,6 +184,10 @@ type model struct {
 	// render every site, so on a short terminal the detail panel and the footer
 	// were pushed off the bottom and the cursor could sit somewhere unseen.
 	siteTop int
+	// docTop is the first finding drawn on the Doctor tab — same job as
+	// siteTop, for a report that outgrows the window (site/dns/media checks
+	// arrive per site, so with a rack of sites it always does).
+	docTop int
 	// pageRows is the size of the last window the Sites table drew, so page
 	// keys move by a screenful of the list actually on screen.
 	pageRows int
@@ -485,7 +489,7 @@ var spinFrames = []string{"◐", "◓", "◑", "◒"}
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	if nm, ok := next.(model); ok {
-		nm.layoutSites()
+		nm.layout()
 		return nm, cmd
 	}
 	return next, cmd
@@ -584,9 +588,17 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab", "right":
 		m.tab = tab((int(m.tab) + 1) % 4)
 		m.msg = ""
+		if m.tab == tabDoctor && m.doctor == nil {
+			// First visit: run the checks off the UI loop rather than let
+			// the view block on them.
+			return m.runDoctor("running checks")
+		}
 		return m, nil
 	case "shift+tab", "left":
 		m.tab = tab((int(m.tab) + 3) % 4)
+		if m.tab == tabDoctor && m.doctor == nil {
+			return m.runDoctor("running checks")
+		}
 		return m, nil
 	case "up", "k":
 		if c := m.cursorFor(m.tab); *c > 0 {
@@ -628,6 +640,11 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// TUI's in-memory snapshot back over the file and silently erased
 		// anything the CLI, the daemon or an agent had changed since the TUI
 		// opened — sites turning up "stopped" for no reason was this.
+		if m.tab == tabDoctor {
+			// This global match also swallowed the Doctor tab's advertised
+			// re-run key, so "r" must mean the checks here.
+			return m.runDoctor("re-running checks")
+		}
 		m.refresh()
 		m.setMsg("refreshed", false)
 		return m, nil
@@ -1259,13 +1276,20 @@ func (m model) handleRuntimesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// runDoctor probes off the UI loop; the report lands as an actionMsg payload
+// (see Update). Rendering must never call Doctor itself: a full probe of
+// every site inside View() froze the tab exactly when someone opened it —
+// and on a value receiver the report was discarded, so every frame paid for
+// it again.
+func (m model) runDoctor(label string) (tea.Model, tea.Cmd) {
+	store := m.store
+	return m.runActionWith(label, func(func(string, string)) (string, any, error) {
+		return "checks run", Doctor(store), nil
+	})
+}
+
 func (m model) handleDoctorKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
-	case "r":
-		store := m.store
-		return m.runActionWith("re-running checks", func(func(string, string)) (string, any, error) {
-			return "checks re-run", Doctor(store), nil
-		})
 	case "f":
 		store := m.store
 		return m.runActionWith("applying fixes", func(cb func(string, string)) (string, any, error) {
@@ -1617,6 +1641,82 @@ func (m *model) layoutSites() {
 	m.scrollSites(len(m.visibleSites()), rows)
 }
 
+// layout records the windows the next frame will draw, so paging and the
+// scroll positions survive between renders. View works on a value receiver,
+// so anything it computed would be thrown away with the copy.
+func (m *model) layout() {
+	m.layoutSites()
+	if m.tab == tabDoctor && m.doctor != nil {
+		budget := m.doctorBudget()
+		if budget < 0 {
+			m.pageRows, m.docTop = len(m.doctor.Findings), 0
+			return
+		}
+		m.docTop, _ = doctorWindow(m.doctor.Findings, m.docCur, m.docTop, budget)
+		m.pageRows = budget
+	}
+}
+
+// doctorBudget is the Doctor tab's share of the window: everything under the
+// summary block, less the line that says the list continues.
+func (m model) doctorBudget() int { return m.listRows(3) }
+
+// doctorWindow picks the findings a budget of lines can show while keeping
+// the cursor visible. A finding costs one line — two when it carries a fix
+// hint — so the budget is spent rather than divided.
+func doctorWindow(findings []Finding, cur, top, budget int) (newTop, end int) {
+	n := len(findings)
+	if n == 0 {
+		return 0, 0
+	}
+	if budget <= 0 {
+		return 0, n
+	}
+	cost := func(f Finding) int {
+		if f.Status != "ok" && f.FixCmd != "" {
+			return 2
+		}
+		return 1
+	}
+	if cur >= n {
+		cur = n - 1
+	}
+	if cur < 0 {
+		cur = 0
+	}
+	if top > cur {
+		top = cur
+	}
+	if top < 0 {
+		top = 0
+	}
+	// A stale top must not strand blank budget under the list — a re-run
+	// can shrink the report.
+	tail := func(from int) (lines int) {
+		for i := from; i < n; i++ {
+			lines += cost(findings[i])
+		}
+		return lines
+	}
+	for top > 0 && tail(top-1) <= budget {
+		top--
+	}
+	for {
+		lines, e := 0, top
+		for e < n {
+			c := cost(findings[e])
+			if lines+c > budget {
+				break
+			}
+			lines, e = lines+c, e+1
+		}
+		if cur < e || top == cur {
+			return top, e
+		}
+		top++
+	}
+}
+
 // pageStep is a screenful of list, minus a row of overlap so you keep your place.
 func (m model) pageStep() int {
 	n := m.pageRows - 1
@@ -1848,9 +1948,9 @@ func (m model) viewRuntimes() string {
 	return b.String()
 }
 
-func (m model) viewDoctor() string {
+func (m *model) viewDoctor() string {
 	if m.doctor == nil {
-		m.doctor = Doctor(m.store)
+		return "  " + stDim.Render("running checks…")
 	}
 	var b strings.Builder
 	var warn, fail int
@@ -1882,17 +1982,27 @@ func (m model) viewDoctor() string {
 	if nameW > 24 {
 		nameW = 24
 	}
-	for _, f := range m.doctor.Findings {
+	findings := m.doctor.Findings
+	top, end := 0, len(findings)
+	if budget := m.doctorBudget(); budget >= 0 {
+		m.docTop, end = doctorWindow(findings, m.docCur, m.docTop, budget)
+		top = m.docTop
+	}
+	for i := top; i < end; i++ {
+		f := findings[i]
 		detail := f.Detail
 		if f.Status == "ok" {
 			detail = stDim.Render(detail) // failures should be the loud ones
 		}
 		line := fmt.Sprintf("%-*s", nameW, trunc(f.Check, nameW)) + "  " + detail
-		b.WriteString(row(false, lampFor(f.Status)+" ", line))
+		b.WriteString(row(i == m.docCur, lampFor(f.Status)+" ", line))
 		if f.Status != "ok" && f.FixCmd != "" {
 			b.WriteString("\n" + strings.Repeat(" ", 4) + stDim.Render("fix: "+f.FixCmd))
 		}
 		b.WriteString("\n")
+	}
+	if top > 0 || end < len(findings) {
+		b.WriteString("    " + stDim.Render(fmt.Sprintf("%d–%d of %d   ↑↓ scroll", top+1, end, len(findings))) + "\n")
 	}
 	return b.String()
 }
@@ -2144,6 +2254,9 @@ func renderFrame(args []string) error {
 		m.tab = tabRuntimes
 	case "doctor":
 		m.tab = tabDoctor
+		// A one-shot frame has no Update loop to run the checks async, so
+		// pay for them here, where blocking is the point.
+		m.doctor = Doctor(m.store)
 	}
 	fmt.Println(m.View())
 	return nil
