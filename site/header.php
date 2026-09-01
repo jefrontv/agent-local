@@ -4,6 +4,13 @@
 <meta charset="<?php bloginfo( 'charset' ); ?>">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="One Go binary that creates, serves and manages WordPress sites on macOS. No Docker, no prerequisites, and a full agent API.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="agent-local: local WordPress for humans and agents">
+<meta property="og:description" content="One Go binary for macOS. No Docker, no prerequisites, a site serving in fifteen seconds, and 59 MCP tools for the agents working beside you.">
+<meta property="og:image" content="<?php echo esc_url( get_template_directory_uri() . '/assets/og-image.png' ); ?>">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
 <?php wp_head(); ?>
 </head>
 <body <?php body_class(); ?>>
