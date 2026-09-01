@@ -1,4 +1,6 @@
 import Lenis from "lenis";
+import gsap from "gsap";
+import { ScrollTrigger } from "gsap/ScrollTrigger";
 
 /* agent-local site: terminal, counters, reveals, copy. Reduced motion gets final frames. */
 
@@ -6,18 +8,43 @@ const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 
 
-/* ---------- soft scrolling: lenis drives the wheel, and in-page anchors
-   route through it so nav clicks glide instead of jumping. ---------- */
-if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
-  const lenis = new Lenis({ autoRaf: true, lerp: 0.085, wheelMultiplier: 0.95 });
+/* ---------- motion system: lenis owns the wheel, gsap owns entrances and
+   the scrubbed parallax, and scroll velocity feeds the ascii field. ---------- */
+let fieldEnergy = 0;
+
+if (!reduced) {
+  gsap.registerPlugin(ScrollTrigger);
+  const lenis = new Lenis({ lerp: 0.16, wheelMultiplier: 1.15 });
+  lenis.on("scroll", (e) => {
+    ScrollTrigger.update();
+    fieldEnergy = Math.min(3, Math.abs(e.velocity) / 45);
+  });
+  gsap.ticker.add((time) => lenis.raf(time * 1000));
+  gsap.ticker.lagSmoothing(0);
+
   for (const a of document.querySelectorAll('a[href^="#"]')) {
     a.addEventListener("click", (e) => {
       const target = document.querySelector(a.getAttribute("href"));
       if (!target) return;
       e.preventDefault();
-      lenis.scrollTo(target, { offset: -8, duration: 1.4 });
+      lenis.scrollTo(target, { offset: -8, duration: 0.9 });
     });
   }
+
+  // Statements arrive like the products of a keystroke: fast out of the
+  // gate, settling long. GSAP owns these, so the IO reveal must not.
+  for (const el of document.querySelectorAll(".statement__display")) {
+    el.classList.remove("rv-scale");
+    gsap.fromTo(el,
+      { y: 90, scale: 0.97, opacity: 0 },
+      { y: 0, scale: 1, opacity: 1, duration: 1.1, ease: "expo.out",
+        scrollTrigger: { trigger: el, start: "top 84%" } });
+  }
+  // The wordmarks ride the scroll: the hero's sinks away, the footer's rises.
+  gsap.to(".hero__mark", { yPercent: 26, ease: "none",
+    scrollTrigger: { trigger: ".hero", start: "bottom 99%", end: "bottom top", scrub: true } });
+  gsap.from(".footer__mark", { yPercent: 34, ease: "none",
+    scrollTrigger: { trigger: ".footer", start: "top bottom", end: "bottom bottom", scrub: true } });
 }
 /* ---------- the field: a full-hero ocean of characters, moved by slow
    interference of a few sine waves. Abstract on purpose: a curated shape
@@ -60,16 +87,20 @@ if (field) {
 	if (reduced) {
 		field.textContent = fieldFrame(1.7, cols, rows);
 	} else {
-		// Time-based phase off requestAnimationFrame: the wave moves at the
-		// same speed everywhere and never steps, throttled to ~30 fps since
-		// a text reflow at 60 buys nothing visible.
+		// Phase accumulates per frame so scroll velocity can pour energy in:
+		// the ocean stirs while you move and settles when you stop. ~30 fps,
+		// since a text reflow at 60 buys nothing visible.
 		let visible = true;
 		let last = 0;
+		let phase = 0;
 		new IntersectionObserver((es) => { visible = es[0].isIntersecting; }).observe(field);
 		const loop = (now) => {
-			if (visible && now - last > 32) {
+			const dt = now - last;
+			if (visible && dt > 32) {
 				last = now;
-				field.textContent = fieldFrame(now / 1600, cols, rows);
+				phase += dt * 0.0006 * (1 + fieldEnergy * 2.2);
+				fieldEnergy *= 0.92;
+				field.textContent = fieldFrame(phase, cols, rows);
 			}
 			requestAnimationFrame(loop);
 		};

@@ -18,5 +18,5 @@
 		<a href="#features">Features</a>
 		<a href="#compare">Compare</a>
 	</div>
-	<a class="nav__cta" href="#install">Install <span aria-hidden="true">↗</span></a>
+	<a class="nav__cta" href="#install">Install <span aria-hidden="true"><svg viewBox="0 0 14 14" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 11 11 3M4.5 3H11v6.5"/></svg></span></a>
 </nav>
