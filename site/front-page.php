@@ -7,8 +7,6 @@
 get_header();
 
 $defaults = array(
-	'hero_intro'     => "Local WordPress that works the way you do.\n\nOne Go binary for macOS. No Docker, no prerequisites, a new site serving in fifteen seconds.",
-	'hero_note'      => 'Built for developers, and for the agents working beside them.',
 	'stats'          => array(
 		array( 'value' => '2.9', 'unit' => 'ms', 'label' => 'to serve a static file' ),
 		array( 'value' => '15', 'unit' => 's', 'label' => 'to create a serving site' ),
@@ -54,10 +52,6 @@ $defaults = array(
 <!-- hero -->
 <section class="hero">
 	<div class="hero__field" aria-hidden="true"><pre id="wave-field"></pre></div>
-	<div class="hero__copy">
-		<?php echo wp_kses_post( wpautop( al_field( 'hero_intro', $defaults['hero_intro'] ) ) ); ?>
-		<p class="hero__note"><?php echo esc_html( al_field( 'hero_note', $defaults['hero_note'] ) ); ?></p>
-	</div>
 	<p class="hero__mark" aria-hidden="true">AGENT-LOCAL</p>
 </section>
 
@@ -214,7 +208,6 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 			</tbody>
 		</table>
 	</div>
-	<p class="compare__note">If your week is Drupal and Laravel, DDEV is excellent. If your week is WordPress on a Mac, this table is your Tuesday.</p>
 </section>
 
 <!-- install -->
