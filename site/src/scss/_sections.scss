@@ -59,15 +59,24 @@
 		margin-top: 3em;
 		line-height: 1.8;
 	}
-	&__globe {
-		font-family: $mono;
-		font-size: 10px;
-		line-height: 1.1;
-		letter-spacing: 0.04em;
-		color: $dim;
-		margin: 0 auto 30px;
-		user-select: none;
-		min-height: 15.4em; // 14 rows: no layout shift while frames draw
+	&__art {
+		display: grid;
+		place-items: center;
+		margin: 0 auto 38px;
+		font-size: clamp(6px, 1.05vw, 11.5px);
+		min-height: 37em; // 34 rows plus breathing room: no layout shift
+
+		pre {
+			grid-area: 1 / 1;
+			margin: 0;
+			font-family: $mono;
+			font-size: inherit;
+			line-height: 1.08;
+			letter-spacing: 0;
+			user-select: none;
+		}
+		#planet-body { color: rgba($text, 0.82); }
+		#planet-aura { color: rgba($lamp, 0.5); }
 	}
 	&__mark {
 		@include display(clamp(56px, 9.8vw, 200px));

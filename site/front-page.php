@@ -54,7 +54,7 @@ $defaults = array(
 <!-- hero -->
 <section class="hero">
 	<div class="hero__copy">
-		<pre class="hero__globe" id="ascii-globe" aria-hidden="true"></pre>
+		<div class="hero__art" aria-hidden="true"><pre id="planet-aura"></pre><pre id="planet-body"></pre></div>
 		<?php echo wp_kses_post( wpautop( al_field( 'hero_intro', $defaults['hero_intro'] ) ) ); ?>
 		<p class="hero__note"><?php echo esc_html( al_field( 'hero_note', $defaults['hero_note'] ) ); ?></p>
 	</div>
@@ -105,10 +105,10 @@ $benchmark_defaults = array(
 		'dd' => '4.9', 'dd_note' => '',
 	),
 	array(
-		'label' => 'Memory while serving', 'unit' => 'MB',
-		'al' => '194', 'al_note' => 'thirty-five sites',
-		'lw' => '227', 'lw_note' => 'the app alone, one site running',
-		'dd' => '2488', 'dd_note' => 'Docker VM, one site, freshly booted',
+		'label' => 'Memory to serve one site', 'unit' => 'MB',
+		'al' => '52', 'al_note' => 'the whole 34-site rack is 142 MB',
+		'lw' => '601', 'lw_note' => 'including the 493 MB app window',
+		'dd' => '2488', 'dd_note' => 'Docker VM, freshly booted',
 	),
 	array(
 		'label' => 'Bring over a LocalWP site', 'unit' => 's',
@@ -160,9 +160,10 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 	</div>
 	<p class="bench__method">Apple M3, macOS, September 2026. One HTTP client for every provider, interleaved
 		samples, medians of thirty for latency and three for lifecycle. DDEV 1.24 on Colima with 4 CPUs and
-		6 GB; LocalWP 9. VM memory is the freshly booted steady state, not the 5 GB it peaks at while
-		pulling images. Where a result was a tie we say so: fresh-install homepage time was 30 ms here,
-		29 ms on DDEV. Published as measured.</p>
+		6 GB; LocalWP 9. Memory is everything one site needs: daemon, database and PHP pool here;
+		app window plus site services for LocalWP; the freshly booted VM for DDEV, not the 5 GB it
+		peaks at while pulling images. Where a result was a tie we say so: fresh-install homepage
+		time was 30 ms here, 29 ms on DDEV. Published as measured.</p>
 </section>
 
 <!-- statement one -->
