@@ -8,7 +8,7 @@
 			<a href="https://github.com/jefrontv/agent-local#readme">Documentation</a>
 		</div>
 	</div>
-	<p class="footer__mark" aria-hidden="true">AGENT-LOCAL</p>
+	<p class="footer__mark" aria-hidden="true">AGENT-<br class="mark__br">LOCAL</p>
 </footer>
 
 <?php wp_footer(); ?>

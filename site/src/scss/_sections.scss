@@ -623,11 +623,59 @@ $how-cycle: 6s;
 }
 
 // ---------------------------------------------------------------- responsive
+// One place for the phone layout: tighter vertical rhythm, the wordmark
+// stacked to two lines so it fits instead of bleeding off the right edge,
+// and tables/labels that stop fighting for width they don't have.
+.mark__br { display: none; }
 @media (max-width: 900px) {
+	.nav { gap: 0; padding: 18px 20px; }
 	.nav__links { display: none; }
-	.stats__row { grid-template-columns: 1fr 1fr; gap: 48px 28px; }
-	.index__row { grid-template-columns: 52px 1fr; }
+	.nav__cta { margin-left: auto; }
+
+	.mark__br { display: inline; }
+	.hero__mark, .footer__mark {
+		font-size: 19vw;
+		line-height: 0.9;
+		transform: translateY(0.12em);
+	}
+	.footer__mark { margin-top: 36px; }
+
+	.stats, .bench, .how, .index, .compare { padding-top: 72px; padding-bottom: 72px; }
+	.statement, .install { padding-top: 88px; padding-bottom: 88px; }
+	.stats__row { grid-template-columns: 1fr 1fr; gap: 40px 24px; margin-top: 40px; }
+	.bench__list, .how__map, .index__list, .compare__scroll { margin-top: 40px; }
+
+	.bench__label {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 6px;
+		font-size: 17px;
+	}
+	.bench__row { grid-template-columns: 84px 1fr; }
+
+	.statement__copy { margin-top: 36px; font-size: 15px; }
+	.statement__term { margin-top: 48px; }
+	.term__viewport { height: 340px; }
+	.harness { margin-top: 48px; }
+
+	.index__row { grid-template-columns: 40px 1fr; gap: 12px 20px; padding: 26px 0; }
 	.index__body { grid-column: 2; }
+
+	// The row label stays put while the columns scroll under it.
+	.compare__table {
+		thead th:first-child, tbody th {
+			position: sticky;
+			left: 0;
+			z-index: 1;
+			background: $bg;
+			box-shadow: 1px 0 0 $hairline;
+			padding-right: 20px;
+		}
+	}
+
+	.install__steps { margin: 40px auto 32px; }
+	.footer__meta { flex-direction: column; align-items: flex-start; gap: 14px; }
+	.footer__links { margin-left: 0; }
 }
 @media (max-width: 560px) {
 	.stats__row { grid-template-columns: 1fr; }
