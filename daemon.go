@@ -336,6 +336,9 @@ func (a *APIServer) handleMailList(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, err.Error())
 		return
 	}
+	for i := range sums {
+		sums[i].URL = MailURL(site.Domain) + "/msg/" + sums[i].ID
+	}
 	ok(w, sums)
 }
 
@@ -349,6 +352,7 @@ func (a *APIServer) handleMailGet(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, err.Error())
 		return
 	}
+	mailLinks(site.Domain, msg)
 	ok(w, msg)
 }
 

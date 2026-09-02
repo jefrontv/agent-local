@@ -305,9 +305,9 @@ func mcpTools() []mcpTool {
 			"id": prop("string", "job id from X-Job-Id or an async start")}, "id")},
 		{"open_adminer", "URL of the per-site Adminer database GUI (served at /.agent-local/adminer)", schema(map[string]interface{}{
 			"slug": prop("string", "site slug")}, "slug")},
-		{"list_mail", "Emails a site has sent, newest first. Every wp_mail()/PHP mail() is captured into a per-site inbox instead of vanishing into a mail server, so submitting a form and then reading the email it produced is a complete end-to-end check. Browser UI: /.agent-local/mail on the site's domain.", schema(map[string]interface{}{
+		{"list_mail", "Emails a site has sent, newest first. Every wp_mail()/PHP mail() is captured into a per-site inbox instead of vanishing into a mail server, so submitting a form and then reading the email it produced is a complete end-to-end check. Each entry carries url: the message page in the browser inbox, for looking at it with a browser tool.", schema(map[string]interface{}{
 			"slug": prop("string", "site slug")}, "slug")},
-		{"get_mail", "One captured email in full: decoded text and HTML bodies, headers, attachment metadata", schema(map[string]interface{}{
+		{"get_mail", "One captured email in full: decoded text and HTML bodies, headers, attachment metadata, plus url (the message page) and html_url (just the rendered HTML part, sandboxed) to open in a browser and see the email as the recipient would.", schema(map[string]interface{}{
 			"slug": prop("string", "site slug"),
 			"id":   prop("string", "message id from list_mail")}, "slug", "id")},
 		{"clear_mail", "Empty a site's captured-mail inbox", schema(map[string]interface{}{

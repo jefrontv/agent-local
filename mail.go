@@ -115,7 +115,8 @@ func pruneMail(dir string, keep int) {
 	}
 }
 
-// MailSummary is one inbox line.
+// MailSummary is one inbox line. URL is where a browser (or an agent with
+// one) can open the message; the API fills it in for the site's domain.
 type MailSummary struct {
 	ID      string    `json:"id"`
 	From    string    `json:"from"`
@@ -123,6 +124,7 @@ type MailSummary struct {
 	Subject string    `json:"subject"`
 	Date    time.Time `json:"date"` // capture time, not the (often absent) Date header
 	Size    int64     `json:"size"`
+	URL     string    `json:"url,omitempty"`
 }
 
 // MailAttachment describes an attachment without carrying its bytes.
@@ -132,13 +134,23 @@ type MailAttachment struct {
 	Size     int    `json:"size"`
 }
 
-// MailMessage is one fully parsed message.
+// MailMessage is one fully parsed message. HTMLURL renders just the HTML
+// part, sandboxed, for looking at the email as the recipient would.
 type MailMessage struct {
 	MailSummary
 	Text        string            `json:"text,omitempty"`
 	HTML        string            `json:"html,omitempty"`
+	HTMLURL     string            `json:"html_url,omitempty"`
 	Headers     map[string]string `json:"headers"`
 	Attachments []MailAttachment  `json:"attachments,omitempty"`
+}
+
+// mailLinks fills the browser URLs for a message captured by a site.
+func mailLinks(domain string, m *MailMessage) {
+	m.URL = MailURL(domain) + "/msg/" + m.ID
+	if m.HTML != "" {
+		m.HTMLURL = m.URL + "/html"
+	}
 }
 
 // mailFile resolves a message id to its file, rejecting anything that is not
