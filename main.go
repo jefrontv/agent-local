@@ -112,9 +112,10 @@ func main() {
 	case "logs":
 		err = cmdLogs(rest)
 	case "version", "--version":
-		fmt.Printf("agent-local %s\n", Version)
+		outTitle(AppName, Version)
 		if buildCommit != "" {
-			fmt.Printf("  commit %s  built %s\n", buildCommit, buildDate)
+			outRow("commit", buildCommit)
+			outRow("built", buildDate)
 		}
 	case "update", "upgrade":
 		err = cmdUpdate(rest)
@@ -128,7 +129,7 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error: "+err.Error())
+		outFail(err.Error())
 		os.Exit(1)
 	}
 }
@@ -180,14 +181,18 @@ func atoi0(s string) int {
 func cmdAutostart(args []string) error {
 	if hasFlag(args, "--off") {
 		RemoveDaemonAutostart()
-		fmt.Println("autostart off — the daemon will only run when something asks for it")
+		outTitle(AppName, "autostart")
+		outRow("state", "off")
+		outNote("the daemon runs only while something asks for it")
 		return nil
 	}
 	if err := EnsureDaemonAutostart(); err != nil {
 		return err
 	}
-	fmt.Println("autostart on: " + shortHome(daemonAgentPath()))
-	fmt.Println("sites that were running at shutdown come back with it")
+	outTitle(AppName, "autostart")
+	outRow("state", stOK.Render("●")+" on")
+	outRow("agent", shortHome(daemonAgentPath()))
+	outNote("sites that were running at shutdown come back with it")
 	return nil
 }
 
@@ -216,19 +221,21 @@ func cmdMedia(args []string) error {
 		set = pos[1]
 	default:
 		// Report, and say what the site's own .htaccess implies.
+		outTitle(AppName, "media", slug)
 		switch eff := EffectiveMediaFallback(site); {
 		case eff == "" && site.MediaOff:
-			fmt.Println("media fallback: off by request — missing uploads 404")
+			outRow("fallback", dimf("off by request; missing uploads 404"))
 			if hint := e.MediaFallbackHint(slug); hint != "" {
-				fmt.Println(".htaccess asks for: " + hint + "   (agent-local media " + slug + " --auto to honour it)")
+				outRow("htaccess", hint)
+				outHint("honour", AppName+" media "+slug+" --auto")
 			}
 		case eff == "":
-			fmt.Println("media fallback: none — missing uploads 404")
-			fmt.Println("no uploads rewrite in this site's .htaccess; pass a URL to set one")
+			outRow("fallback", dimf("none; missing uploads 404"))
+			outNote("no uploads rewrite in this site's .htaccess; pass a URL to set one")
 		case site.MediaFallback != "":
-			fmt.Println("media fallback: " + eff + "   (set here)")
+			outRow("fallback", eff+"  "+dimf("set here"))
 		default:
-			fmt.Println("media fallback: " + eff + "   (honouring this site's .htaccess)")
+			outRow("fallback", eff+"  "+dimf("from this site's .htaccess"))
 		}
 		return nil
 	}
@@ -236,11 +243,13 @@ func cmdMedia(args []string) error {
 	if err != nil {
 		return err
 	}
+	outTitle(AppName, "media", slug)
 	if got == "" {
-		fmt.Println("media fallback off for " + slug)
+		outRow("fallback", dimf("off; missing uploads 404"))
 		return nil
 	}
-	fmt.Println("missing uploads on " + slug + " now redirect to " + got)
+	outRow("fallback", got)
+	outNote("missing uploads on " + slug + " now redirect there")
 	return nil
 }
 
@@ -255,24 +264,24 @@ func cmdSitesDir(args []string) error {
 		if err := store.SetSitesDir(""); err != nil {
 			return err
 		}
-		fmt.Println("new sites will be created in " + store.SitesDir())
+		outTitle(AppName, "sites-dir")
+		outRow("dir", store.SitesDir())
+		outNote("new sites are created here; existing sites stay where they are")
 		return nil
 	}
 	if len(pos) == 0 {
-		fmt.Println("sites directory: " + store.SitesDir())
-		fmt.Println("change it: agent-local sites-dir ~/Sites      (new sites only)")
-		fmt.Println("reset it:  agent-local sites-dir --default")
+		outTitle(AppName, "sites-dir")
+		outRow("dir", store.SitesDir())
+		outHint("change", AppName+" sites-dir ~/Sites")
+		outHint("reset", AppName+" sites-dir --default")
 		return nil
 	}
-	dir := pos[0]
-	if hasFlag(args, "--default") {
-		dir = ""
-	}
-	if err := store.SetSitesDir(dir); err != nil {
+	if err := store.SetSitesDir(pos[0]); err != nil {
 		return err
 	}
-	fmt.Println("new sites will be created in " + store.SitesDir())
-	fmt.Println("existing sites stay where they are")
+	outTitle(AppName, "sites-dir")
+	outRow("dir", store.SitesDir())
+	outNote("new sites are created here; existing sites stay where they are")
 	return nil
 }
 
@@ -283,15 +292,18 @@ func cmdSuffix(args []string) error {
 	}
 	pos := positional(args)
 	if len(pos) == 0 {
-		fmt.Println("default domain suffix: " + store.Suffix())
-		fmt.Println("change it: agent-local suffix .test   (new sites + worktrees)")
+		outTitle(AppName, "suffix")
+		outRow("suffix", store.Suffix())
+		outHint("change", AppName+" suffix .test")
 		return nil
 	}
 	if err := store.SetSuffix(pos[0]); err != nil {
 		return err
 	}
-	fmt.Println("default suffix set to " + store.Suffix())
-	fmt.Println("existing sites keep their domains; change one with: agent-local domain SLUG new" + store.Suffix())
+	outTitle(AppName, "suffix")
+	outRow("suffix", store.Suffix())
+	outNote("new sites and previews use it; existing sites keep their domains")
+	outHint("rename", AppName+" domain SLUG name"+store.Suffix())
 	return nil
 }
 
@@ -316,6 +328,7 @@ func cmdCreate(args []string) error {
 	if err != nil {
 		return err
 	}
+	outTitle(AppName, "create", pos[0])
 	site, err := e.CreateSite(CreateOpts{
 		Name:       pos[0],
 		Dir:        flagValue(args, "--dir"),
@@ -327,17 +340,17 @@ func cmdCreate(args []string) error {
 		AdminPass:  flagValue(args, "--admin-pass"),
 		AdminEmail: flagValue(args, "--admin-email"),
 		Title:      flagValue(args, "--title"),
-		Progress: func(stage, detail string) {
-			fmt.Printf("  [%s] %s\n", stage, detail)
-		},
+		Progress:   outStage,
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\nSite ready: %s\n", BareURL(site))
-	fmt.Printf("  https:  %s\n", site.SURL())
-	fmt.Printf("  admin:  %s/wp-admin  user=%s pass=%s\n", BareURL(site), site.AdminUser, site.AdminPass)
-	fmt.Printf("  php:    %s   db: %s\n", site.PHPVersion, site.DBName)
+	outBlank()
+	outRow("url", BareURL(site))
+	outRow("admin", BareURL(site)+"/wp-admin  "+dimf(site.AdminUser+" / "+site.AdminPass))
+	outRow("php", site.PHPVersion)
+	outRow("db", site.DBName)
+	outHint("next", AppName+" open "+site.Slug)
 	return nil
 }
 
@@ -352,22 +365,23 @@ func cmdAttach(args []string) error {
 	if err != nil {
 		return err
 	}
+	outTitle(AppName, "attach", pos[0])
 	site, err := e.AttachSite(AttachOpts{
-		Dir:    pos[0],
-		Name:   flagValue(args, "--name"),
-		Domain: flagValue(args, "--domain"),
-		PHPVer: flagValue(args, "--php"),
-		Progress: func(stage, detail string) {
-			fmt.Printf("  [%s] %s\n", stage, detail)
-		},
+		Dir:      pos[0],
+		Name:     flagValue(args, "--name"),
+		Domain:   flagValue(args, "--domain"),
+		PHPVer:   flagValue(args, "--php"),
+		Progress: outStage,
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\nAttached: %s\n", BareURL(site))
-	fmt.Printf("  docroot: %s\n", site.WPDir)
-	fmt.Printf("  db:      %s user=%s pass=%s host=127.0.0.1:%d\n", site.DBName, site.DBUser, site.DBPass, DefaultDBPort)
-	fmt.Printf("  php:     %s\n", site.PHPVersion)
+	outBlank()
+	outRow("url", BareURL(site))
+	outRow("docroot", site.WPDir)
+	outRow("php", site.PHPVersion)
+	outRow("db", fmt.Sprintf("%s  %s", site.DBName, dimf(fmt.Sprintf("%s / %s @ 127.0.0.1:%d", site.DBUser, site.DBPass, DefaultDBPort))))
+	outHint("next", AppName+" open "+site.Slug)
 	return nil
 }
 
@@ -378,24 +392,19 @@ func cmdList() error {
 	}
 	sites := store.Sites()
 	if len(sites) == 0 {
-		fmt.Println("no sites. create one: agent-local create mysite")
+		outTitle(AppName, "list")
+		outNote("no sites yet")
+		outHint("create", AppName+" create mysite")
 		return nil
 	}
-	fmt.Printf("%-20s %-8s %-24s %-8s %s\n", "SLUG", "PHP", "DOMAIN", "STATE", "URL")
+	var rows [][]string
 	for _, s := range sites {
-		state := "stopped"
-		if e.FPMRunning(s.Slug) {
-			state = "running"
-		}
-		fmt.Printf("%-20s %-8s %-24s %-8s %s\n", s.Slug, s.PHPVersion, s.Domain, state, BareURL(s))
+		rows = append(rows, []string{s.Slug, s.PHPVersion, outState(e.FPMRunning(s.Slug)), BareURL(s)})
 		for _, w := range store.WorktreesFor(s.Slug) {
-			wstate := "stopped"
-			if e.FPMRunning(w.ID) {
-				wstate = "running"
-			}
-			fmt.Printf("  └─ %-16s %-24s %-8s %s\n", w.Branch, w.Domain, wstate, BareDomainURL(w.Domain))
+			rows = append(rows, []string{dimf("  └ ") + w.Branch, dimf(s.PHPVersion), outState(e.FPMRunning(w.ID)), BareDomainURL(w.Domain)})
 		}
 	}
+	outTable([]string{"site", "php", "state", "url"}, rows)
 	return nil
 }
 
@@ -420,7 +429,9 @@ func cmdStart(args []string) error {
 		return err
 	}
 	site := e.Store.Site(slug)
-	fmt.Printf("running: %s\n", BareURL(site))
+	outTitle(AppName, "start", slug)
+	outRow("state", outState(true))
+	outRow("url", BareURL(site))
 	return nil
 }
 
@@ -433,7 +444,12 @@ func cmdStop(args []string) error {
 	if err != nil {
 		return err
 	}
-	return e.StopSite(slug)
+	if err := e.StopSite(slug); err != nil {
+		return err
+	}
+	outTitle(AppName, "stop", slug)
+	outRow("state", outState(false))
+	return nil
 }
 
 func cmdRestart(args []string) error {
@@ -446,7 +462,13 @@ func cmdRestart(args []string) error {
 		return err
 	}
 	_ = e.StopSite(slug)
-	return e.StartSite(slug)
+	if err := e.StartSite(slug); err != nil {
+		return err
+	}
+	outTitle(AppName, "restart", slug)
+	outRow("state", outState(true))
+	outRow("url", BareURL(e.Store.Site(slug)))
+	return nil
 }
 
 func cmdDelete(args []string) error {
@@ -458,8 +480,9 @@ func cmdDelete(args []string) error {
 	if err != nil {
 		return err
 	}
+	outTitle(AppName, "delete", slug)
 	if !hasFlag(args, "--yes") {
-		fmt.Printf("delete site %q (database + files)? [y/N] ", slug)
+		fmt.Print(stOutLbl.Render("confirm") + "  " + "delete " + slug + dimf(" (database and files; a snapshot is saved first)") + " [y/N] ")
 		var ans string
 		fmt.Scanln(&ans)
 		if strings.ToLower(ans) != "y" {
@@ -474,7 +497,10 @@ func cmdDelete(args []string) error {
 	}); err != nil {
 		return err
 	}
-	fmt.Println("deleted " + slug)
+	outStep("deleted " + slug)
+	if !hasFlag(args, "--no-snapshot") && !hasFlag(args, "--keep-db") {
+		outNote("its database snapshot is under " + shortHome(P().Root) + "/snapshots/" + slug)
+	}
 	return nil
 }
 
@@ -527,64 +553,76 @@ func cmdDB(args []string) error {
 			if len(pos) < 3 {
 				return fmt.Errorf("usage: agent-local db SLUG import FILE.sql[.gz] [--keep-urls] [--no-snapshot]")
 			}
+			outTitle(AppName, "db", slug, "import")
 			msg, err := e.ImportSQL(slug, pos[2], !hasFlag(args, "--keep-urls"), !hasFlag(args, "--no-snapshot"))
 			if err != nil {
 				return err
 			}
-			fmt.Println(msg)
+			outStep(msg)
 			return nil
 		case "export":
 			out := ""
 			if len(pos) > 2 {
 				out = pos[2]
 			}
+			outTitle(AppName, "db", slug, "export")
 			msg, err := e.ExportSQL(slug, out)
 			if err != nil {
 				return err
 			}
-			fmt.Println(msg)
+			outStep(msg)
 			return nil
 		case "snapshot":
 			label := ""
 			if len(pos) > 2 {
 				label = pos[2]
 			}
+			outTitle(AppName, "db", slug, "snapshot")
 			snap, err := e.SnapshotDB(slug, label)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("%s  %s (%s)\n", snap.Name, snap.Path, humanBytes(snap.Size))
+			outStep("saved " + snap.Name + "  " + dimf(humanBytes(snap.Size)))
+			outRow("path", shortHome(snap.Path))
+			outHint("restore", AppName+" db "+slug+" restore "+snap.Name)
 			return nil
 		case "snapshots":
 			snaps, err := e.Snapshots(slug)
 			if err != nil {
 				return err
 			}
+			outTitle(AppName, "db", slug, "snapshots")
 			if len(snaps) == 0 {
-				fmt.Printf("no snapshots — take one: agent-local db %s snapshot\n", slug)
+				outNote("no snapshots yet; automatic ones are taken before import, reset, restore and delete")
+				outHint("take one", AppName+" db "+slug+" snapshot")
 				return nil
 			}
+			var rows [][]string
 			for _, s := range snaps {
-				fmt.Printf("%-42s %8s  %s\n", s.Name, humanBytes(s.Size), s.CreatedAt.Format("2006-01-02 15:04"))
+				rows = append(rows, []string{s.Name, dimf(humanBytes(s.Size)), dimf(s.CreatedAt.Format("2006-01-02 15:04"))})
 			}
+			outTable([]string{"snapshot", "size", "taken"}, rows)
+			outHint("restore", AppName+" db "+slug+" restore [NAME]")
 			return nil
 		case "restore":
 			name := ""
 			if len(pos) > 2 {
 				name = pos[2]
 			}
+			outTitle(AppName, "db", slug, "restore")
 			msg, err := e.RestoreSnapshot(slug, name, !hasFlag(args, "--no-snapshot"))
 			if err != nil {
 				return err
 			}
-			fmt.Println(msg)
+			outStep(msg)
 			return nil
 		case "reset":
+			outTitle(AppName, "db", slug, "reset")
 			msg, err := e.ResetDBBackup(slug, !hasFlag(args, "--no-snapshot"))
 			if err != nil {
 				return err
 			}
-			fmt.Println(msg)
+			outStep(msg)
 			return nil
 		case "tables":
 			out, err := e.DB(fmt.Sprintf("SELECT table_name, table_rows, ROUND(data_length/1024) AS kb "+
@@ -599,16 +637,22 @@ func cmdDB(args []string) error {
 				return err
 			}
 			url := AdminerURL(site.Domain)
-			fmt.Println(url)
+			outTitle(AppName, "db", slug, "gui")
+			outRow("url", url)
 			return exec.Command("open", url).Start()
 		}
-		// anything else: raw SQL against this site's schema
+		// anything else: raw SQL against this site's schema; the result is
+		// data, printed as the server returned it.
 		out, err := e.DBIn(site.DBName, strings.Join(pos[1:], " "))
 		fmt.Print(out)
 		return err
 	}
-	fmt.Printf("host=127.0.0.1 port=%d db=%s user=%s pass=%s\n",
-		DefaultDBPort, site.DBName, site.DBUser, site.DBPass)
+	outTitle(AppName, "db", slug)
+	outRow("host", fmt.Sprintf("127.0.0.1:%d", DefaultDBPort))
+	outRow("db", site.DBName)
+	outRow("user", site.DBUser)
+	outRow("pass", site.DBPass)
+	outHint("gui", AppName+" db "+slug+" gui")
 	return nil
 }
 
@@ -621,20 +665,26 @@ func cmdPHP(args []string) error {
 		}
 		rescanPHP(store)
 		_ = store.Save()
-		fmt.Println("installed:", strings.Join(store.Inventory().Runtimes(), " "))
+		outTitle(AppName, "php")
+		outRow("installed", strings.Join(store.Inventory().Runtimes(), "  "))
 		for _, rt := range store.Inventory().BrokenPHPs {
-			fmt.Printf("broken:    %s at %s — %s\n", rt.Version, rt.Bin, rt.Broken)
+			outWarn(rt.Version + " at " + rt.Bin + " will not run: " + rt.Broken)
 		}
-		fmt.Println("installable:", strings.Join(PHPVersions, " "))
-		return fmt.Errorf("usage: agent-local php SLUG VERSION [--install] [--tap]")
+		outRow("available", dimf(strings.Join(PHPVersions, "  ")))
+		outHint("switch", AppName+" php SLUG VERSION")
+		return nil
 	}
 	_, e, err := openEnv()
 	if err != nil {
 		return err
 	}
 	install := hasFlag(args, "--install") || hasFlag(args, "--tap")
-	cb := func(line string) { fmt.Println("  " + line) }
-	return e.SwitchPHPEnsure(pos[0], pos[1], install, hasFlag(args, "--tap"), cb)
+	outTitle(AppName, "php", pos[0], pos[1])
+	if err := e.SwitchPHPEnsure(pos[0], pos[1], install, hasFlag(args, "--tap"), outSub); err != nil {
+		return err
+	}
+	outStep(pos[0] + " is on PHP " + NormalizePHPVersion(pos[1]))
+	return nil
 }
 
 func cmdImport(args []string) error {
@@ -646,6 +696,7 @@ func cmdImport(args []string) error {
 	if err != nil {
 		return err
 	}
+	outTitle(AppName, "import", pos[0])
 	site, err := e.ImportSite(ImportOpts{
 		Source:    pos[0],
 		Name:      flagValue(args, "--name"),
@@ -659,16 +710,17 @@ func cmdImport(args []string) error {
 		DBUser:    flagValue(args, "--db-user"),
 		DBPass:    flagValue(args, "--db-pass"),
 		DBName:    flagValue(args, "--db-name"),
-		Progress: func(stage, detail string) {
-			fmt.Printf("  [%s] %s\n", stage, detail)
-		},
+		Progress:  outStage,
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\nImported: %s\n", BareURL(site))
-	fmt.Printf("  admin: %s/wp-admin\n", BareURL(site))
-	fmt.Printf("  php:   %s   db: %s\n", site.PHPVersion, site.DBName)
+	outBlank()
+	outRow("url", BareURL(site))
+	outRow("admin", BareURL(site)+"/wp-admin")
+	outRow("php", site.PHPVersion)
+	outRow("db", site.DBName)
+	outHint("next", AppName+" open "+site.Slug)
 	return nil
 }
 
@@ -677,10 +729,17 @@ func cmdLocalWPSites() error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%-24s %-26s %s\n", "NAME", "DOMAIN", "PATH")
-	for _, s := range sites {
-		fmt.Printf("%-24s %-26s %s\n", s.Name, s.Domain, s.Path)
+	outTitle(AppName, "localwp-sites")
+	if len(sites) == 0 {
+		outNote("no LocalWP sites found")
+		return nil
 	}
+	var rows [][]string
+	for _, s := range sites {
+		rows = append(rows, []string{s.Name, s.Domain, dimf(shortHome(s.Path))})
+	}
+	outTable([]string{"name", "domain", "path"}, rows)
+	outHint("import", AppName+" import NAME")
 	return nil
 }
 
@@ -693,7 +752,13 @@ func cmdDomain(args []string) error {
 	if err != nil {
 		return err
 	}
-	return e.SetDomain(pos[0], pos[1])
+	if err := e.SetDomain(pos[0], pos[1]); err != nil {
+		return err
+	}
+	outTitle(AppName, "domain", pos[0])
+	outRow("url", BareDomainURL(pos[1]))
+	outNote("hosts entry and certificate follow the new name")
+	return nil
 }
 
 // cmdYield frees the bare-URL ports for a window so another local-dev app
@@ -708,8 +773,9 @@ func cmdYield(args []string) error {
 			secs = n
 		}
 	}
+	outTitle(AppName, "yield")
 	if !AliasActive() {
-		fmt.Println("bare URLs are not enabled — nothing holds :80/:443")
+		outNote("bare URLs are not enabled; nothing holds :80/:443")
 		return nil
 	}
 	deadline := time.Now().Add(time.Duration(secs) * time.Second)
@@ -719,8 +785,8 @@ func cmdYield(args []string) error {
 	if err := os.WriteFile(frontYieldPath(), []byte(fmt.Sprint(deadline.Unix())), 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("released :80/:443 for %ds — start your other app now\n", secs)
-	fmt.Println("bare URLs resume automatically; sites stay reachable on :" + fmt.Sprint(DefaultHTTPPort) + " throughout")
+	outStep(fmt.Sprintf("released :80/:443 for %ds; start the other app now", secs))
+	outNote(fmt.Sprintf("bare URLs resume on their own; sites stay reachable on :%d throughout", DefaultHTTPPort))
 	return nil
 }
 
@@ -747,11 +813,16 @@ func cmdResolve(args []string) error {
 		}
 		return fmt.Errorf("no site manages %s", target)
 	}
+	outTitle(AppName, "resolve", target)
 	if wt != nil {
-		fmt.Printf("%s (worktree %s) %s\n", site.Slug, wt.Branch, BareDomainURL(wt.Domain))
+		outRow("site", site.Slug+"  "+dimf("preview of "+wt.Branch))
+		outRow("url", BareDomainURL(wt.Domain))
 		return nil
 	}
-	fmt.Printf("%s  matched=%s  %s  php=%s  db=%s\n", site.Slug, matched, BareURL(site), site.PHPVersion, site.DBName)
+	outRow("site", site.Slug+"  "+dimf("matched "+matched))
+	outRow("url", BareURL(site))
+	outRow("php", site.PHPVersion)
+	outRow("db", site.DBName)
 	return nil
 }
 
@@ -772,19 +843,60 @@ func cmdCert(args []string) error {
 		}
 	}
 	st := InspectCert(domain)
-	fmt.Printf("%s  exists=%t trusted=%t expires=%s\n  %s\n", st.Domain, st.Exists, st.Trusted, st.NotAfter, st.CertPath)
+	outTitle(AppName, "cert", domain)
+	state := stWarn.Render("●") + " missing"
+	switch {
+	case st.Exists && st.Trusted:
+		state = stOK.Render("●") + " trusted"
+	case st.Exists:
+		state = stWarn.Render("●") + " issued, not trusted"
+	}
+	outRow("state", state)
+	if st.Exists {
+		outRow("expires", st.NotAfter)
+		outRow("path", shortHome(st.CertPath))
+	}
+	if !st.Trusted {
+		outHint("trust", AppName+" cert "+domain+" --trust")
+	}
 	return nil
 }
 
+// cmdJobs lists recent long-running jobs as a table; cmdJob shows one with
+// its steps. Machine-readable JSON is what the API is for.
 func cmdJobs() error {
 	EnsureRouterDaemonQuiet()
 	data, isErr := apiGet("/jobs")
 	if isErr {
 		return fmt.Errorf("%v", data)
 	}
-	b, _ := json.MarshalIndent(data, "", "  ")
-	fmt.Println(string(b))
+	var jobs []JobView
+	b, _ := json.Marshal(data)
+	_ = json.Unmarshal(b, &jobs)
+	outTitle(AppName, "jobs")
+	if len(jobs) == 0 {
+		outNote("no jobs yet; create, import and db import run as jobs")
+		return nil
+	}
+	var rows [][]string
+	for _, j := range jobs {
+		rows = append(rows, []string{j.ID, j.Op, jobStateCell(string(j.Status)), dimf(j.StartedAt.Local().Format("15:04:05"))})
+	}
+	outTable([]string{"id", "op", "status", "started"}, rows)
+	outHint("detail", AppName+" job ID")
 	return nil
+}
+
+func jobStateCell(status string) string {
+	switch status {
+	case "running":
+		return stWarn.Render("●") + " running"
+	case "failed", "error":
+		return stErr.Render("●") + " " + status
+	case "done", "succeeded", "ok":
+		return stOK.Render("●") + " " + status
+	}
+	return stGutter.Render("●") + " " + status
 }
 
 func cmdJob(args []string) error {
@@ -797,8 +909,27 @@ func cmdJob(args []string) error {
 	if isErr {
 		return fmt.Errorf("%v", data)
 	}
-	b, _ := json.MarshalIndent(data, "", "  ")
-	fmt.Println(string(b))
+	var j JobView
+	b, _ := json.Marshal(data)
+	_ = json.Unmarshal(b, &j)
+	outTitle(AppName, "job", j.ID)
+	outRow("op", j.Op)
+	outRow("status", jobStateCell(string(j.Status)))
+	outRow("started", j.StartedAt.Local().Format("2006-01-02 15:04:05"))
+	if j.FinishedAt != nil {
+		outRow("took", j.FinishedAt.Sub(j.StartedAt).Round(time.Millisecond*100).String())
+	}
+	for _, s := range j.Steps {
+		outStage(s.Stage, s.Detail)
+	}
+	if j.Error != "" {
+		outFail(j.Error)
+	}
+	if j.Result != nil {
+		rb, _ := json.MarshalIndent(j.Result, "  ", "  ")
+		outRow("result", "")
+		fmt.Println("  " + dimf(string(rb)))
+	}
 	return nil
 }
 
@@ -906,14 +1037,18 @@ func cmdWorktree(args []string) error {
 		if err := e.RemoveWorktree(id); err != nil {
 			return err
 		}
-		fmt.Println("removed " + id)
+		outTitle(AppName, "worktree", pos[0], pos[1])
+		outStep("preview removed; the branch is kept")
 		return nil
 	}
+	outTitle(AppName, "worktree", pos[0], pos[1])
 	w, err := e.AddWorktree(pos[0], pos[1])
 	if err != nil {
 		return err
 	}
-	fmt.Println("worktree ready: " + BareDomainURL(w.Domain))
+	outRow("url", BareDomainURL(w.Domain))
+	outNote("same database as " + pos[0] + "; the branch's files win, everything else comes from the site")
+	outHint("remove", AppName+" worktree "+pos[0]+" "+pos[1]+" --remove")
 	return nil
 }
 
@@ -930,10 +1065,14 @@ func cmdBranches(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("repo    %s\ncurrent %s\nlocal   %s\nremote  %s\n",
-		res["repo"], res["current"],
-		strings.Join(res["local"].([]string), " "),
-		strings.Join(res["remote"].([]string), " "))
+	outTitle(AppName, "branches", slug)
+	outRow("repo", shortHome(fmt.Sprint(res["repo"])))
+	outRow("current", fmt.Sprint(res["current"]))
+	outRow("local", strings.Join(res["local"].([]string), "  "))
+	if remote := res["remote"].([]string); len(remote) > 0 {
+		outRow("remote", dimf(strings.Join(remote, "  ")))
+	}
+	outHint("preview", AppName+" worktree "+slug+" BRANCH")
 	return nil
 }
 
@@ -966,22 +1105,27 @@ func cmdWPDebug(args []string) error {
 		if err != nil {
 			return err
 		}
+		outTitle(AppName, "wpdebug", slug)
 		if st.Enabled {
-			fmt.Printf("WP_DEBUG on — log: %s\n", st.LogPath)
-			fmt.Printf("tail it: agent-local logs %s\n", st.LogName)
+			outRow("state", stOK.Render("●")+" on")
+			outRow("log", shortHome(st.LogPath))
+			outHint("tail", AppName+" logs "+st.LogName)
 		} else {
-			fmt.Println("WP_DEBUG off")
+			outRow("state", outStateWord(false, "off"))
 		}
 		return nil
 	}
 	st := WPDebugStatus(site)
+	outTitle(AppName, "wpdebug", slug)
 	if !st.Enabled {
-		fmt.Println("WP_DEBUG off — enable: agent-local wpdebug " + slug + " on")
+		outRow("state", outStateWord(false, "off"))
+		outHint("enable", AppName+" wpdebug "+slug+" on")
 		return nil
 	}
-	fmt.Printf("WP_DEBUG on — log: %s\n", st.LogPath)
+	outRow("state", stOK.Render("●")+" on")
+	outRow("log", shortHome(st.LogPath))
 	if st.LogName != "" {
-		fmt.Printf("tail it: agent-local logs %s\n", st.LogName)
+		outHint("tail", AppName+" logs "+st.LogName)
 	}
 	return nil
 }
@@ -1009,27 +1153,36 @@ func cmdMail(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("cleared %d message(s)\n", n)
+		outTitle(AppName, "mail", slug)
+		outStep(fmt.Sprintf("cleared %d message(s)", n))
 		return nil
 	case hasFlag(args, "--open"):
 		url := MailURL(site.Domain)
-		fmt.Println(url)
+		outTitle(AppName, "mail", slug)
+		outRow("url", url)
 		return exec.Command("open", url).Start()
 	case len(pos) > 1:
 		msg, err := GetMail(slug, pos[1])
 		if err != nil {
 			return err
 		}
-		fmt.Printf("subject  %s\nfrom     %s\nto       %s\ndate     %s\n",
-			msg.Subject, msg.From, msg.To, msg.Date.Format("2006-01-02 15:04:05"))
+		mailLinks(site.Domain, msg)
+		outTitle(AppName, "mail", slug, msg.ID)
+		outRow("subject", msg.Subject)
+		outRow("from", msg.From)
+		outRow("to", msg.To)
+		outRow("date", msg.Date.Format("2006-01-02 15:04:05")+"  "+dimf(mailAge(msg.Date)))
 		for _, a := range msg.Attachments {
-			fmt.Printf("attach   %s (%s, %s)\n", a.Filename, a.MIMEType, humanBytes(int64(a.Size)))
+			outRow("attached", a.Filename+"  "+dimf(a.MIMEType+", "+humanBytes(int64(a.Size))))
 		}
+		outRow("view", msg.URL)
 		switch {
 		case msg.Text != "":
-			fmt.Println("\n" + msg.Text)
+			outBlank()
+			fmt.Println(msg.Text)
 		case msg.HTML != "":
-			fmt.Printf("\n(html only — view it: %s/msg/%s)\n", MailURL(site.Domain), msg.ID)
+			outBlank()
+			outNote("html only; open it in the inbox to read it as the recipient would")
 		}
 		return nil
 	}
@@ -1037,17 +1190,23 @@ func cmdMail(args []string) error {
 	if err != nil {
 		return err
 	}
+	outTitle(AppName, "mail", slug)
 	if len(sums) == 0 {
-		fmt.Printf("no mail captured for %s — every email the site sends lands here (%s)\n", slug, MailURL(site.Domain))
+		outNote("nothing captured yet; every email this site sends lands here")
+		outRow("inbox", MailURL(site.Domain))
 		return nil
 	}
+	var rows [][]string
 	for _, s := range sums {
 		subject := s.Subject
 		if subject == "" {
 			subject = "(no subject)"
 		}
-		fmt.Printf("%s  %-8s %s → %s  %s\n", s.ID, mailAge(s.Date), s.From, s.To, subject)
+		rows = append(rows, []string{dimf(mailAge(s.Date)), subject, dimf(s.To), dimf(s.ID)})
 	}
+	outTable([]string{"when", "subject", "to", "id"}, rows)
+	outHint("read", AppName+" mail "+slug+" ID")
+	outHint("inbox", MailURL(site.Domain))
 	return nil
 }
 
@@ -1061,12 +1220,13 @@ func cmdShare(args []string) error {
 		return err
 	}
 	EnsureRouterDaemonQuiet()
+	outTitle(AppName, "share", slug)
 	if hasFlag(args, "--off") {
 		res, isErr := apiDelete("/sites/" + slug + "/share")
 		if isErr {
 			return fmt.Errorf("%s", apiErrMsg(res))
 		}
-		fmt.Println(res)
+		outStep("share closed; the public URL no longer resolves")
 		return nil
 	}
 	body := map[string]interface{}{}
@@ -1085,15 +1245,17 @@ func cmdShare(args []string) error {
 		fmt.Println(res)
 		return nil
 	}
-	fmt.Println(sh["url"])
+	outRow("url", stOK.Render(fmt.Sprint(sh["url"])))
+	outNote("verified end to end before being handed over; anyone with the link can open the site")
 	if exp, ok := sh["expires_at"].(string); ok {
 		if t, err := time.Parse(time.RFC3339Nano, exp); err == nil {
-			fmt.Printf("  expires %s (in %s) — stop early: agent-local share %s --off\n",
-				t.Format("15:04"), time.Until(t).Round(time.Minute), slug)
+			outRow("expires", t.Format("15:04")+"  "+dimf("in "+time.Until(t).Round(time.Minute).String()))
+			outHint("stop", AppName+" share "+slug+" --off")
 			return nil
 		}
 	}
-	fmt.Printf("  until stopped: agent-local share %s --off\n", slug)
+	outRow("expires", dimf("when stopped"))
+	outHint("stop", AppName+" share "+slug+" --off")
 	return nil
 }
 
@@ -1145,13 +1307,18 @@ func cmdWorktrees(args []string) error {
 	if err != nil {
 		return err
 	}
-	for _, w := range store.WorktreesFor(slug) {
-		state := "stopped"
-		if e.FPMRunning(w.ID) {
-			state = "running"
-		}
-		fmt.Printf("%-24s %-8s %s\n", w.Branch, state, BareDomainURL(w.Domain))
+	wts := store.WorktreesFor(slug)
+	outTitle(AppName, "worktrees", slug)
+	if len(wts) == 0 {
+		outNote("no branch previews")
+		outHint("create", AppName+" worktree "+slug+" BRANCH")
+		return nil
 	}
+	var rows [][]string
+	for _, w := range wts {
+		rows = append(rows, []string{w.Branch, outState(e.FPMRunning(w.ID)), BareDomainURL(w.Domain)})
+	}
+	outTable([]string{"branch", "state", "url"}, rows)
 	return nil
 }
 
@@ -1193,20 +1360,20 @@ func cmdInstall(args []string) error {
 	if len(pos) < 1 {
 		return fmt.Errorf("usage: agent-local install brew|php VERSION [--tap]|mariadb|apache|wp-cli")
 	}
-	cb := func(line string) { fmt.Println("  " + line) }
+	outTitle(AppName, "install", strings.Join(pos, " "))
 	switch pos[0] {
 	case "brew", "homebrew":
-		err = InstallBrew(cb)
+		err = InstallBrew(outSub)
 	case "php":
 		v := latestBrewPHP()
 		if len(pos) > 1 {
 			v = NormalizePHPVersion(pos[1])
 		}
-		err = InstallPHP(store, v, hasFlag(args, "--tap"), cb)
+		err = InstallPHP(store, v, hasFlag(args, "--tap"), outSub)
 	case "mariadb", "mysql":
-		err = InstallMySQL(store, cb)
+		err = InstallMySQL(store, outSub)
 	case "apache", "httpd":
-		err = InstallApache(store, cb)
+		err = InstallApache(store, outSub)
 	case "wp-cli", "wp":
 		_, err = EnsureWPCLI()
 	default:
@@ -1218,7 +1385,7 @@ func cmdInstall(args []string) error {
 	DiscoverInventory(store)
 	store.Save()
 	_ = e
-	fmt.Println("installed.")
+	outStep(strings.Join(pos, " ") + " installed")
 	return nil
 }
 
@@ -1228,14 +1395,16 @@ func cmdDoctor(args []string) error {
 		return err
 	}
 	rep := Doctor(store)
+	outTitle(AppName, "doctor")
 	fmt.Print(rep.RenderReport())
 	if hasFlag(args, "--fix") {
+		outBlank()
 		done := DoctorFix(store, true)
 		if len(done) == 0 {
-			fmt.Println("nothing auto-fixable.")
+			outNote("nothing here is fixable without you")
 		}
 		for _, d := range done {
-			fmt.Println("fixed: " + d)
+			outStep(d)
 		}
 	}
 	return nil
@@ -1248,8 +1417,9 @@ func cmdFront(args []string) error {
 	}
 	pos := positional(args)
 	if len(pos) == 0 {
-		fmt.Println("http front: " + FrontKind(store))
-		fmt.Println("switch: agent-local front router|apache")
+		outTitle(AppName, "front")
+		outRow("front", FrontKind(store))
+		outHint("switch", AppName+" front router|apache")
 		return nil
 	}
 	want := pos[0]
@@ -1272,10 +1442,11 @@ func cmdFront(args []string) error {
 	if err := EnsureHTTPFront(store); err != nil {
 		return err
 	}
+	outTitle(AppName, "front", want)
 	if same {
-		fmt.Println("front re-applied: " + want + " (config re-rendered, restarted)")
+		outStep(want + " re-applied: config re-rendered, front restarted")
 	} else {
-		fmt.Println("front switched to " + want)
+		outStep("front switched to " + want)
 	}
 	return nil
 }
@@ -1285,32 +1456,38 @@ func cmdAlias(args []string) error {
 	if err != nil {
 		return err
 	}
+	outTitle(AppName, "alias")
 	if hasFlag(args, "--off") {
 		if err := RemoveLoopAlias(true); err != nil {
-			fmt.Println("alias remove:", err)
+			outWarn("alias removal: " + err.Error())
 		}
 		if _, err := EnsureHosts(false, store.AllDomains()); err != nil {
-			fmt.Println("hosts revert:", err)
+			outWarn("hosts revert: " + err.Error())
 		}
-		fmt.Println("bare URLs disabled — sites served with the :" + fmt.Sprint(DefaultHTTPPort) + " suffix")
+		outStep(fmt.Sprintf("bare URLs off; sites are served with the :%d suffix", DefaultHTTPPort))
 		return nil
 	}
 	if err := EnsureLoopAlias(true); err != nil {
 		return err
 	}
+	outStep(LoopbackAlias + " alias on lo0, front daemon under launchd")
 	n, err := EnsureHosts(true, store.AllDomains())
 	if err != nil {
 		return err
 	}
-	fmt.Printf("alias up (%s); %d hosts line(s) migrated\n", LoopbackAlias, n)
+	outStep(fmt.Sprintf("%d hosts line(s) point at it", n))
 	// restart the daemon so the :80/:443 alias listeners bind
 	StopDaemons()
 	if err := EnsureHTTPFront(store); err != nil {
 		return err
 	}
+	outStep("router restarted")
+	outBlank()
+	var rows [][]string
 	for _, s := range store.Sites() {
-		fmt.Println("  " + BareURL(s))
+		rows = append(rows, []string{s.Slug, BareURL(s)})
 	}
+	outTable([]string{"site", "url"}, rows)
 	return nil
 }
 
@@ -1332,6 +1509,8 @@ func cmdSudoSetup() error {
 %[1]s ALL=(root) NOPASSWD: /bin/rm %[3]s
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 alias 127.0.0.2
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 -alias 127.0.0.2
+%[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 inet6 fd00\:a10c\:\:2 prefixlen 128 alias
+%[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 inet6 fd00\:a10c\:\:2 -alias
 %[1]s ALL=(root) NOPASSWD: /usr/bin/security add-trusted-cert *
 %[1]s ALL=(root) NOPASSWD: /sbin/pfctl -d
 `, user, root, dst)
@@ -1347,7 +1526,9 @@ func cmdSudoSetup() error {
 		fmt.Sprintf("cp %s /etc/sudoers.d/agent-local && chown root:wheel /etc/sudoers.d/agent-local && chmod 440 /etc/sudoers.d/agent-local", tmp)); err != nil {
 		return err
 	}
-	fmt.Println("installed /etc/sudoers.d/agent-local — root ops are now passwordless")
-	fmt.Println("remove it anytime: sudo rm /etc/sudoers.d/agent-local")
+	outTitle(AppName, "sudo")
+	outStep("installed /etc/sudoers.d/agent-local; root operations run without a prompt")
+	outNote("exact commands only: hosts, the loopback alias, the front daemon, cert trust")
+	outHint("remove", "sudo rm /etc/sudoers.d/agent-local")
 	return nil
 }
