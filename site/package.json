@@ -6,7 +6,8 @@
     "build:css": "sass src/scss/main.scss dist/main.css --style=compressed --no-source-map",
     "build:js": "esbuild src/js/main.js --bundle --minify --outfile=dist/main.js",
     "build": "npm run build:css && npm run build:js",
-    "watch": "concurrently -r \"sass --watch src/scss/main.scss dist/main.css\" \"esbuild src/js/main.js --bundle --outfile=dist/main.js --watch\""
+    "watch": "concurrently -r \"sass --watch src/scss/main.scss dist/main.css\" \"esbuild src/js/main.js --bundle --outfile=dist/main.js --watch\"",
+    "export": "npm run build && node export.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",
