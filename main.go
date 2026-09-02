@@ -10,63 +10,6 @@ import (
 	"time"
 )
 
-const usage = `agent-local — local WordPress for humans and agents
-
-USAGE
-  agent-local                    open TUI
-  agent-local tui                open TUI
-  agent-local create NAME [opts] create + install a WordPress site
-  agent-local list               list sites
-  agent-local attach DIR [opts]    serve a directory you already have + an empty DB
-  agent-local import SOURCE [opts] import a LocalWP site or docroot
-  agent-local localwp-sites    list importable LocalWP sites
-  agent-local start SLUG         start site stack
-  agent-local stop SLUG          stop site
-  agent-local restart SLUG       restart site
-  agent-local delete SLUG [--yes] [--keep-files] [--keep-db]   remove a site
-  agent-local open SLUG          open site in browser
-  agent-local db SLUG [sql]      print DB creds or run SQL
-  agent-local logs NAME [lines] tail a log (mysql, apache, daemon, fpm-SLUG…)
-  agent-local wpdebug SLUG [on|off]   WP_DEBUG -> ~/.agent-local/logs/wp-SLUG.log
-  agent-local mail SLUG [ID]     captured emails (--open UI, --clear empties)
-  agent-local share SLUG [--minutes N]   public URL via Cloudflare quick tunnel (--off stops)
-  agent-local php SLUG VERSION   switch PHP version
-  agent-local yield [secs]       free :80/:443 briefly (let LocalWP start)
-  agent-local resolve [PATH]     which site owns a path (default: cwd)
-  agent-local cert DOMAIN [--trust]   TLS state for a domain
-  agent-local db SLUG [sql|import F|export [F]|reset|tables|gui]   database ops
-  agent-local db SLUG snapshot [NAME]     save a database save-point
-  agent-local db SLUG snapshots           list save-points
-  agent-local db SLUG restore [NAME]      restore one (default: newest)
-  agent-local jobs               list recent long-running jobs
-  agent-local job ID             show one job's status and progress
-  agent-local media SLUG [URL]       missing uploads -> origin (--auto reads .htaccess, --off)
-  agent-local autostart [--off]      start the daemon at login (on by default)
-  agent-local sites-dir [PATH]       show/set where new sites are created
-  agent-local suffix [.al]           show/set default domain suffix
-  agent-local domain SLUG NAME   change site domain
-  agent-local worktree SLUG BRANCH [--remove]   branch worktree on its own URL
-  agent-local worktrees SLUG     list worktrees
-  agent-local branches SLUG      git branches of the site repo
-  agent-local wp SLUG -- ARGS    run wp-cli (e.g. wp core version)
-  agent-local install WHAT       brew|php VERSION|mariadb|apache|wp-cli
-  agent-local front [router|apache]   show/switch HTTP front
-  agent-local doctor [--fix]     health checks
-  agent-local daemon             run daemon in foreground
-  agent-local daemon --background run daemon detached
-  agent-local mcp                MCP server (stdio, JSON-RPC)
-  agent-local connect            register the MCP server in installed agent harnesses
-  agent-local api-token          print agent API token
-  agent-local update [--check]   install the latest release
-  agent-local restart-daemon     reload the daemon after an update
-  agent-local version
-
-CREATE OPTIONS
-  --domain mysite.test  --php 8.2  --wp-version latest
-  --repo <git-url>      --admin-user admin --admin-pass secret
-  --admin-email a@b.c   --title "My Site"
-`
-
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -178,10 +121,10 @@ func main() {
 	case "restart-daemon":
 		err = cmdRestartDaemon()
 	case "help", "--help", "-h":
-		fmt.Print(usage)
+		printHelp()
 	default:
-		fmt.Fprintln(os.Stderr, "unknown command: "+cmd)
-		fmt.Print(usage)
+		fmt.Fprintln(os.Stderr, stErr.Render("unknown command: "+cmd))
+		printHelp()
 		os.Exit(2)
 	}
 	if err != nil {
@@ -860,34 +803,45 @@ func cmdJob(args []string) error {
 }
 
 // cmdUpdate checks GitHub for a newer release and installs it. `--check` only
-// reports, for a shell prompt or a CI guard.
+// reports, for a shell prompt or a CI guard. Output is the TUI's register: a
+// labelled header, then one lamp per stage.
 func cmdUpdate(args []string) error {
 	rel, err := LatestRelease()
 	if err != nil {
 		return err
 	}
+	row := func(label, value string) {
+		fmt.Println(stLabel.Render(label) + "  " + value)
+	}
+	fmt.Println(stName.Render(AppName + " update"))
+	row("running", stVersion.Render(Version))
 	if !UpdateAvailable(Version, rel) {
-		fmt.Printf("up to date (%s)\n", Version)
+		row("latest", stVersion.Render(rel.TagName)+"  "+stOK.Render("●")+" "+stDim.Render("up to date"))
 		return nil
 	}
-	fmt.Printf("%s available (running %s)\n", rel.TagName, Version)
+	row("latest", stName.Render(rel.TagName)+"  "+stDim.Render(rel.HTMLURL))
 	if hasFlag(args, "--check") {
-		fmt.Println(rel.HTMLURL)
+		fmt.Println()
+		fmt.Println(stDim.Render("install it with: ") + stKey.Render(AppName+" update"))
 		return nil
 	}
-	installed, err := SelfUpdate(func(stage string) { fmt.Println("  " + stage) })
+	fmt.Println()
+	installed, err := SelfUpdate(func(stage string) {
+		fmt.Println("  " + stOK.Render("●") + " " + stage)
+	})
 	if err != nil {
 		return err
 	}
-	fmt.Println("updated to " + installed)
 	// The daemon in memory is still the old binary, and an old daemon can be
 	// actively broken against new state (the root password migration is one such
 	// change), so hand over now instead of leaving it to the user.
 	if portOpen(DefaultAPIPort) {
 		if err := cmdRestartDaemon(); err != nil {
-			fmt.Println("  finish with: agent-local restart-daemon")
+			fmt.Println("  " + stWarn.Render("●") + " daemon still on the old build; finish with: " + stKey.Render(AppName+" restart-daemon"))
 		}
 	}
+	fmt.Println()
+	fmt.Println(stOK.Render("updated to " + installed))
 	return nil
 }
 
@@ -907,10 +861,10 @@ func cmdRestartDaemon() error {
 	// restart is often the older binary that just performed an update, and
 	// printing its version claims the wrong thing.
 	if v := daemonVersion(); v != "" {
-		fmt.Println("daemon restarted on " + v)
+		fmt.Println("  " + stOK.Render("●") + " daemon restarted on " + v)
 		return nil
 	}
-	fmt.Println("daemon restarted")
+	fmt.Println("  " + stOK.Render("●") + " daemon restarted")
 	return nil
 }
 
