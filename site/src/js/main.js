@@ -100,8 +100,26 @@ function mountField(pre, index) {
 
 const fields = [...document.querySelectorAll(".wave-field")].map(mountField);
 if (fields.length) {
-  let resizeTimer;
-  addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => fields.forEach((f) => f.size()), 200); });
+  // WebKit lays `100svh` out late: while the defer script runs, the hero can
+  // still be zero boxes tall, so a size taken now sticks as one row forever.
+  // Size follows the box instead of the window: a ResizeObserver re-runs it
+  // whenever the host actually changes — WebKit's late layout, a window
+  // resize, an orientation change — all through one door.
+  let sizeQueued = false;
+  const ro = new ResizeObserver(() => {
+    if (sizeQueued) return;
+    sizeQueued = true;
+    requestAnimationFrame(() => {
+      sizeQueued = false;
+      for (const f of fields) f.size();
+      // The animated loop redraws from cols/rows on its next tick; the
+      // static (reduced-motion) frame has to be redrawn by hand.
+      if (reduced) for (const f of fields) {
+        f.pre.textContent = fieldFrame(1.7 + f.phase, f.cols, f.rows, f.pointer);
+      }
+    });
+  });
+  for (const f of fields) ro.observe(f.host);
   if (reduced) {
     for (const f of fields) f.pre.textContent = fieldFrame(1.7 + f.phase, f.cols, f.rows, f.pointer);
   } else {
