@@ -53,6 +53,12 @@ complete with no plugins. With ACF PRO installed, the "Front Page" field group
 rows, features, the comparison table, and install steps. The "How it works" map, the
 harness marquee and the Claude Code transcript scenes (`src/js/main.js`) are code, not copy.
 
+The `/docs` section is not ACF content: its pages live in `docs-content.php`, rendered by
+`docs.php` through `docs/…` rewrite rules (the site needs anything but plain permalinks).
+`npm run export` renders each docs page beside the front page, so the static host serves
+them with no WordPress. Edit the docs in `docs-content.php`; the CLI page mirrors
+`agent-local help` and the tool table mirrors `mcp.go` — keep them in step.
+
 The headline stats repeat the benchmark section's figures on purpose. Change them
 together, or the page contradicts itself under a label that says "measured".
 

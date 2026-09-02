@@ -3,7 +3,7 @@ Theme Name: agent-local
 Theme URI: https://github.com/jefrontv/agent-local
 Description: Marketing site for agent-local — local WordPress for humans and agents. Content is editable through ACF (PRO for repeaters); every field falls back to shipped defaults, so the theme renders complete with no plugin at all. Compiled assets live in dist/ — run `npm run build`.
 Author: eFront
-Version: 1.1.0
+Version: 1.12.1
 Requires PHP: 8.0
 Text Domain: agent-local
 */

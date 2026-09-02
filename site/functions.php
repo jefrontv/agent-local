@@ -14,7 +14,16 @@ add_action( 'after_setup_theme', function () {
 // The front page is the product, not the blog: its title says what the thing
 // is regardless of what the WordPress install happens to be called.
 add_filter( 'pre_get_document_title', function ( $title ) {
-	return is_front_page() ? 'agent-local: local WordPress for humans and agents' : $title;
+	if ( is_front_page() ) {
+		return 'agent-local: local WordPress for humans and agents';
+	}
+	if ( get_query_var( 'al_docs' ) !== '' ) {
+		$pages = require get_template_directory() . '/docs-content.php';
+		$slug  = get_query_var( 'al_docs' );
+		$name  = isset( $pages[ $slug ] ) ? $pages[ $slug ]['title'] : 'Docs';
+		return $name . ' · agent-local docs';
+	}
+	return $title;
 } );
 
 add_action( 'wp_head', function () {
@@ -35,6 +44,27 @@ add_action( 'wp_head', function () {
 	);
 	echo '<script type="application/ld+json">' . wp_json_encode( $ld, JSON_UNESCAPED_SLASHES ) . '</script>' . "\n";
 }, 5 );
+
+// Docs: /docs/ and /docs/{slug}/ render the theme's own documentation —
+// content ships in docs-content.php, so no pages in the database and no
+// plugin. The query var carries the slug; "" is the index.
+add_filter( 'query_vars', function ( $vars ) {
+	$vars[] = 'al_docs';
+	return $vars;
+} );
+
+add_action( 'init', function () {
+	add_rewrite_rule( '^docs/?$', 'index.php?al_docs=index', 'top' );
+	add_rewrite_rule( '^docs/([a-z0-9-]+)/?$', 'index.php?al_docs=$matches[1]', 'top' );
+} );
+
+add_filter( 'template_include', function ( $template ) {
+	if ( get_query_var( 'al_docs' ) === '' ) {
+		return $template;
+	}
+	$docs = get_template_directory() . '/docs.php';
+	return file_exists( $docs ) ? $docs : $template;
+} );
 
 add_action( 'wp_enqueue_scripts', function () {
 	$v = wp_get_theme()->get( 'Version' );

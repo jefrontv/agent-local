@@ -149,102 +149,128 @@ if (fields.length) {
 
 /* ---------- the agent transcript: looping sessions in the register of a
    coding-agent chat. Prefixes come from CSS ::before so each line kind
-   carries two colors without per-character spans. Each scene is one real
-   job the tool set can do end to end. ---------- */
+   carries two colors without per-character spans. Each scene is one job the
+   tool set can do end to end, in its own working directory. Project names
+   are invented; any resemblance to a real checkout is unlucky. ---------- */
 const scenes = [
-  [
-    ["qa copy of sulo, and prove the contact form emails work", "t-user", 700, true],
-    ["create_site(name: \"sulo-qa\")", "t-tool", 900],
-    ["https://sulo-qa.test · serving · 19s", "t-res", 1500],
-    ["db_import(path: \"prod.sql.gz\")", "t-tool", 900],
-    ["saved auto-import snapshot · 214 tables · urls rewritten", "t-res", 1700],
-    ["browser(submit \"/contact\" with a test enquiry)", "t-tool", 900],
-    ["302 → /contact?sent=1", "t-res", 1200],
-    ["get_mail(slug: \"sulo-qa\")", "t-tool", 900],
-    ["\"New enquiry\" → studio@client.com · body matches", "t-res", 1400],
-    ["The QA copy is live and its contact form delivers.", "t-assist", 900],
-    ["If anything drifts, db_restore puts the snapshot back.", "t-assist", 400],
-  ],
-  [
-    ["serve the gasworks checkout in ~/Sites, load the prod dump, and stop the broken images", "t-user", 700, true],
-    ["attach_site(dir: \"~/Sites/gasworks\", php_version: \"8.4\")", "t-tool", 900],
-    ["https://gasworks.test · serving · existing wp-config kept", "t-res", 1500],
-    ["db_import(slug: \"gasworks\", path: \"~/Downloads/gasworks-prod.sql.gz\")", "t-tool", 900],
-    ["snapshot saved first · 1.2 GB streamed · urls rewritten to gasworks.test", "t-res", 1700],
-    ["set_media_fallback(slug: \"gasworks\", url: \"auto\")", "t-tool", 900],
-    ["adopted the .htaccess rule → https://thegasworksbrompton.com", "t-res", 1300],
-    ["browser(open \"/\", count failed images)", "t-tool", 900],
-    ["38 images · 38 served · 0 local files, all redirected to production", "t-res", 1300],
-    ["The checkout is live on PHP 8.4 with the production database behind it.", "t-assist", 900],
-    ["Uploads aren't copied; anything missing locally falls through to the live site.", "t-assist", 400],
-  ],
-  [
-    ["is the redesign branch safe to merge? check it against the live copy", "t-user", 700, true],
-    ["list_branches(slug: \"sulo\")", "t-tool", 900],
-    ["main · redesign · fix/footer · no previews yet", "t-res", 1300],
-    ["add_worktree(slug: \"sulo\", branch: \"redesign\")", "t-tool", 900],
-    ["https://redesign.sulo.pact · same database · 9s", "t-res", 1600],
-    ["browser(diff \"/\", \"/about\", \"/contact\" against https://sulo.pact)", "t-tool", 900],
-    ["3 pages · 2 layout changes · 0 console errors", "t-res", 1400],
-    ["remove_worktree(id: \"sulo--redesign\")", "t-tool", 900],
-    ["preview gone · branch kept", "t-res", 1100],
-    ["The redesign renders cleanly on the live data.", "t-assist", 900],
-    ["Nothing in it touches the database, so the merge is code only.", "t-assist", 400],
-  ],
-  [
-    ["the client's staging is on PHP 8.1 and white-screens. find out why", "t-user", 700, true],
-    ["switch_php(slug: \"sulo\", version: \"8.1\")", "t-tool", 900],
-    ["php@8.1 installed · pool restarted · https://sulo.pact → 500", "t-res", 1600],
-    ["set_wp_debug(slug: \"sulo\", on: true)", "t-tool", 900],
-    ["WP_DEBUG on · log → ~/.agent-local/logs/wp-sulo.log", "t-res", 1300],
-    ["get_logs(name: \"wp-sulo\", lines: 40)", "t-tool", 900],
-    ["Fatal: undefined function json_validate() · inc/forms.php:48", "t-res", 1500],
-    ["switch_php(slug: \"sulo\", version: \"8.4\")", "t-tool", 900],
-    ["pool restarted · 200", "t-res", 1100],
-    ["One call in inc/forms.php:48 needs PHP 8.3 or newer.", "t-assist", 900],
-    ["Swap it for json_decode with a null check, or move staging to 8.3.", "t-assist", 400],
-  ],
-  [
-    ["move the old client site out of LocalWP. it's been halted since march", "t-user", 700, true],
-    ["localwp_sites()", "t-tool", 900],
-    ["6 sites · old-client · halted · PHP 8.1", "t-res", 1300],
-    ["import_site(source: \"old-client\", php_version: \"8.1\")", "t-tool", 900],
-    ["asked Local to start it · dumped 1.9 GB through its socket", "t-res", 1700],
-    ["urls rewritten · serving in place · https://old-client.test", "t-res", 1500],
-    ["It serves from the same folder, on its own PHP 8.1 pool.", "t-assist", 900],
-    ["You can quit LocalWP. This one comes back by itself after a reboot.", "t-assist", 400],
-  ],
-  [
-    ["the client wants to see the homepage on her phone before the call. ten minutes", "t-user", 700, true],
-    ["share_local_site(slug: \"sulo\", minutes: 30)", "t-tool", 900],
-    ["https://quiet-fern-a1b2.trycloudflare.com · verified 200 · stops in 30 min", "t-res", 1600],
-    ["browser(open the share at a phone width, check every image)", "t-tool", 900],
-    ["41 images · all 200 · production fallback still applies", "t-res", 1400],
-    ["Here's a link she can open anywhere. It closes itself in thirty minutes.", "t-assist", 900],
-    ["Nothing on the site was renamed: the tunnel host applies to tunnel requests only.", "t-assist", 400],
-  ],
-  [
-    ["orders from last week are missing on the client's shop. use the local copy, not prod", "t-user", 700, true],
-    ["db_snapshot(slug: \"shop\", name: \"before-looking\")", "t-tool", 900],
-    ["shop-20260902-1702-before-looking.sql.gz · 212 MB", "t-res", 1300],
-    ["db_query(slug: \"shop\", sql: \"SELECT status, COUNT(*) FROM wp_wc_orders WHERE date_created_gmt >= '2026-08-24' GROUP BY status\")", "t-tool", 900],
-    ["wc-completed 31 · wc-processing 4 · trash 47", "t-res", 1500],
-    ["db_query(slug: \"shop\", sql: \"SELECT MIN(date_updated_gmt), MAX(date_updated_gmt) FROM wp_wc_orders WHERE status = 'trash'\")", "t-tool", 900],
-    ["2026-08-29 02:14:07 → 2026-08-29 02:14:09", "t-res", 1400],
-    ["open_adminer(slug: \"shop\")", "t-tool", 900],
-    ["https://shop.test/.agent-local/adminer", "t-res", 1100],
-    ["47 orders were trashed within two seconds early on the 29th: a bulk action, not customers.", "t-assist", 900],
-    ["Nothing is deleted. They're in the trash, and Adminer is open if you want to see them.", "t-assist", 400],
-  ],
-  [
-    ["the site stopped loading after i ran brew upgrade this morning", "t-user", 700, true],
-    ["doctor()", "t-tool", 900],
-    ["11 checks · 1 finding · php@8.4 keg unlinked after brew upgrade · fix: install_runtime php 8.4", "t-res", 1600],
-    ["doctor_fix()", "t-tool", 900],
-    ["php@8.4 relinked · pool restarted · https://sulo.pact → 200", "t-res", 1500],
-    ["Homebrew replaced PHP under the running pool and left the keg unlinked.", "t-assist", 900],
-    ["Doctor relinked it and restarted the pool. Nothing else changed.", "t-assist", 400],
-  ],
+  {
+    cwd: "~/Sites/ferncreek",
+    lines: [
+      ["qa copy of fern creek, and prove the contact form emails work", "t-user", 700, true],
+      ["create_site(name: \"ferncreek-qa\")", "t-tool", 900],
+      ["https://ferncreek-qa.test · serving · 19s", "t-res", 1500],
+      ["db_import(path: \"prod.sql.gz\")", "t-tool", 900],
+      ["saved auto-import snapshot · 214 tables · urls rewritten", "t-res", 1700],
+      ["browser(submit \"/contact\" with a test enquiry)", "t-tool", 900],
+      ["302 → /contact?sent=1", "t-res", 1200],
+      ["get_mail(slug: \"ferncreek-qa\")", "t-tool", 900],
+      ["\"New enquiry\" → hello@ferncreekstudio.com · body matches", "t-res", 1400],
+      ["The QA copy is live and its contact form delivers.", "t-assist", 900],
+      ["If anything drifts, db_restore puts the snapshot back.", "t-assist", 400],
+    ],
+  },
+  {
+    cwd: "~/Sites/oldmill",
+    lines: [
+      ["serve the old mill checkout in ~/Sites, load the prod dump, and stop the broken images", "t-user", 700, true],
+      ["attach_site(dir: \"~/Sites/oldmill\", php_version: \"8.4\")", "t-tool", 900],
+      ["https://oldmill.test · serving · existing wp-config kept", "t-res", 1500],
+      ["db_import(slug: \"oldmill\", path: \"~/Downloads/oldmill-prod.sql.gz\")", "t-tool", 900],
+      ["snapshot saved first · 1.2 GB streamed · urls rewritten to oldmill.test", "t-res", 1700],
+      ["set_media_fallback(slug: \"oldmill\", url: \"auto\")", "t-tool", 900],
+      ["adopted the .htaccess rule → https://oldmillhouse.co.uk", "t-res", 1300],
+      ["browser(open \"/\", count failed images)", "t-tool", 900],
+      ["38 images · 38 served · 0 local files, all redirected to production", "t-res", 1300],
+      ["The checkout is live on PHP 8.4 with the production database behind it.", "t-assist", 900],
+      ["Uploads aren't copied; anything missing locally falls through to the live site.", "t-assist", 400],
+    ],
+  },
+  {
+    cwd: "~/Sites/harborline",
+    lines: [
+      ["is the redesign branch safe to merge? check it against the live copy", "t-user", 700, true],
+      ["list_branches(slug: \"harborline\")", "t-tool", 900],
+      ["main · redesign · fix/footer · no previews yet", "t-res", 1300],
+      ["add_worktree(slug: \"harborline\", branch: \"redesign\")", "t-tool", 900],
+      ["https://redesign.harborline.test · same database · 9s", "t-res", 1600],
+      ["browser(diff \"/\", \"/about\", \"/contact\" against https://harborline.test)", "t-tool", 900],
+      ["3 pages · 2 layout changes · 0 console errors", "t-res", 1400],
+      ["remove_worktree(id: \"harborline--redesign\")", "t-tool", 900],
+      ["preview gone · branch kept", "t-res", 1100],
+      ["The redesign renders cleanly on the live data.", "t-assist", 900],
+      ["Nothing in it touches the database, so the merge is code only.", "t-assist", 400],
+    ],
+  },
+  {
+    cwd: "~/Sites/quarrylane",
+    lines: [
+      ["the client's staging is on PHP 8.1 and white-screens. find out why", "t-user", 700, true],
+      ["switch_php(slug: \"quarrylane\", version: \"8.1\")", "t-tool", 900],
+      ["php@8.1 installed · pool restarted · https://quarrylane.test → 500", "t-res", 1600],
+      ["set_wp_debug(slug: \"quarrylane\", on: true)", "t-tool", 900],
+      ["WP_DEBUG on · log → ~/.agent-local/logs/wp-quarrylane.log", "t-res", 1300],
+      ["get_logs(name: \"wp-quarrylane\", lines: 40)", "t-tool", 900],
+      ["Fatal: undefined function json_validate() · inc/forms.php:48", "t-res", 1500],
+      ["switch_php(slug: \"quarrylane\", version: \"8.4\")", "t-tool", 900],
+      ["pool restarted · 200", "t-res", 1100],
+      ["One call in inc/forms.php:48 needs PHP 8.3 or newer.", "t-assist", 900],
+      ["Swap it for json_decode with a null check, or move staging to 8.3.", "t-assist", 400],
+    ],
+  },
+  {
+    cwd: "~/Sites/meadowbank",
+    lines: [
+      ["move the old horticulture site out of ddev. it's been halted since march", "t-user", 700, true],
+      ["ddev_projects()", "t-tool", 900],
+      ["2 projects · meadowbank · stopped · PHP 8.1", "t-res", 1300],
+      ["import_site(source: \"meadowbank\", php_version: \"8.1\")", "t-tool", 900],
+      ["asked DDEV to start it · dumped 1.9 GB from its published port", "t-res", 1700],
+      ["urls rewritten · wp-config added the defines it kept in wp-config-ddev.php", "t-res", 1500],
+      ["meadowbank removed from DDEV · its snapshot kept in .ddev/db_snapshots", "t-res", 1500],
+      ["It serves from the same folder, on its own PHP 8.1 pool.", "t-assist", 900],
+      ["You can quit Docker. This one comes back by itself after a reboot.", "t-assist", 400],
+    ],
+  },
+  {
+    cwd: "~/Sites/bramblecourt",
+    lines: [
+      ["the client wants to see the homepage on her phone before the call. ten minutes", "t-user", 700, true],
+      ["share_local_site(slug: \"bramblecourt\", minutes: 30)", "t-tool", 900],
+      ["https://quiet-fern-a1b2.trycloudflare.com · verified 200 · stops in 30 min", "t-res", 1600],
+      ["browser(open the share at a phone width, check every image)", "t-tool", 900],
+      ["41 images · all 200 · production fallback still applies", "t-res", 1400],
+      ["Here's a link she can open anywhere. It closes itself in thirty minutes.", "t-assist", 900],
+      ["Nothing on the site was renamed: the tunnel host applies to tunnel requests only.", "t-assist", 400],
+    ],
+  },
+  {
+    cwd: "~/Sites/pedlars",
+    lines: [
+      ["orders from last week are missing on the client's shop. use the local copy, not prod", "t-user", 700, true],
+      ["db_snapshot(slug: \"pedlars\", name: \"before-looking\")", "t-tool", 900],
+      ["pedlars-20260902-1702-before-looking.sql.gz · 212 MB", "t-res", 1300],
+      ["db_query(slug: \"pedlars\", sql: \"SELECT status, COUNT(*) FROM wp_wc_orders WHERE date_created_gmt >= '2026-08-24' GROUP BY status\")", "t-tool", 900],
+      ["wc-completed 31 · wc-processing 4 · trash 47", "t-res", 1500],
+      ["db_query(slug: \"pedlars\", sql: \"SELECT MIN(date_updated_gmt), MAX(date_updated_gmt) FROM wp_wc_orders WHERE status = 'trash'\")", "t-tool", 900],
+      ["2026-08-29 02:14:07 → 2026-08-29 02:14:09", "t-res", 1400],
+      ["open_adminer(slug: \"pedlars\")", "t-tool", 900],
+      ["https://pedlars.test/.agent-local/adminer", "t-res", 1100],
+      ["47 orders were trashed within two seconds early on the 29th: a bulk action, not customers.", "t-assist", 900],
+      ["Nothing is deleted. They're in the trash, and Adminer is open if you want to see them.", "t-assist", 400],
+    ],
+  },
+  {
+    cwd: "~/Sites/harborline",
+    lines: [
+      ["the site stopped loading after i ran brew upgrade this morning", "t-user", 700, true],
+      ["doctor()", "t-tool", 900],
+      ["11 checks · 1 finding · php@8.4 keg unlinked after brew upgrade · fix: install_runtime php 8.4", "t-res", 1600],
+      ["doctor_fix()", "t-tool", 900],
+      ["php@8.4 relinked · pool restarted · https://harborline.test → 200", "t-res", 1500],
+      ["Homebrew replaced PHP under the running pool and left the keg unlinked.", "t-assist", 900],
+      ["Doctor relinked it and restarted the pool. Nothing else changed.", "t-assist", 400],
+    ],
+  },
 ];
 
 const screen = document.getElementById("term-screen");
@@ -275,10 +301,17 @@ function put(text, cls) {
   return el;
 }
 
-function welcome() {
+// The terminal chrome: the title bar and the welcome box both carry the
+// scene's working directory, so every scenario reads as its own session.
+const termTitle = document.querySelector(".term__title");
+
+function welcome(cwd) {
   const el = document.createElement("span");
   el.className = "t-line t-welcome";
-  el.innerHTML = "<i>\u273B</i> Welcome to Claude Code!<small>/help for help, /status for your current setup</small><small>cwd: ~/Sites/sulo</small>";
+  el.innerHTML = "<i>\u273B</i> Welcome to Claude Code!<small>/help for help, /status for your current setup</small>";
+  const c = document.createElement("small");
+  c.textContent = "cwd: " + cwd;
+  el.appendChild(c);
   screen.appendChild(el);
 }
 
@@ -316,18 +349,19 @@ async function typePrompt(text) {
 async function play() {
   for (let i = 0; ; i = (i + 1) % scenes.length) {
     screen.textContent = "";
-    welcome();
     const scene = scenes[i];
+    welcome(scene.cwd);
+    if (termTitle) termTitle.textContent = "claude — " + scene.cwd;
     let stop = null;
-    for (let n = 0; n < scene.length; n++) {
-      const [text, cls, delay] = scene[n];
+    for (let n = 0; n < scene.lines.length; n++) {
+      const [text, cls, delay] = scene.lines[n];
       await sleep(delay);
       if (stop) stop();
       if (cls === "t-user") await typePrompt(text);
       else put(text, cls);
       // The spinner sits under the log while the model or a tool is at work;
       // streamed prose has no gap to fill, and a finished session goes quiet.
-      const next = scene[n + 1];
+      const next = scene.lines[n + 1];
       stop = next && !(cls === "t-assist" && next[1] === "t-assist") ? spinner() : null;
     }
     await sleep(4600);
@@ -337,8 +371,8 @@ async function play() {
 if (screen) {
   screen.textContent = "";
   if (reduced) {
-    welcome();
-    for (const [text, cls] of scenes[0]) put(text, cls);
+    welcome(scenes[0].cwd);
+    for (const [text, cls] of scenes[0].lines) put(text, cls);
   } else play();
 }
 

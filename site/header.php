@@ -8,7 +8,7 @@
 <meta property="og:type" content="website">
 <meta property="og:url" content="<?php echo esc_url( home_url( '/' ) ); ?>">
 <meta property="og:title" content="agent-local: local WordPress for humans and agents">
-<meta property="og:description" content="One Go binary for macOS. No Docker, no prerequisites, a site serving in under twenty seconds, and 59 MCP tools for the agents working beside you.">
+<meta property="og:description" content="One Go binary for macOS. No Docker, no prerequisites, a site serving in under twenty seconds, and 60 MCP tools for the agents working beside you.">
 <meta property="og:image" content="<?php echo esc_url( get_template_directory_uri() . '/assets/og-image.png' ); ?>">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -33,6 +33,7 @@
 		<a href="#agents">Agents</a>
 		<a href="#features">Features</a>
 		<a href="#compare">Compare</a>
+		<a href="<?php echo esc_url( home_url( '/docs/' ) ); ?>">Docs</a>
 		<a class="nav__ext" href="https://github.com/jefrontv/agent-local">GitHub<span aria-hidden="true"> ↗</span></a>
 	</div>
 	<a class="nav__cta" href="#install">Install <span aria-hidden="true"><svg viewBox="0 0 14 14" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 11 11 3M4.5 3H11v6.5"/></svg></span></a>

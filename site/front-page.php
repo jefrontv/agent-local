@@ -12,7 +12,7 @@ $defaults = array(
 	'stats'          => array(
 		array( 'value' => '3.2', 'unit' => 'ms', 'label' => 'to serve a static file' ),
 		array( 'value' => '18.8', 'unit' => 's', 'label' => 'to create a serving site' ),
-		array( 'value' => '59', 'unit' => '', 'label' => 'tools in the agent API' ),
+		array( 'value' => '60', 'unit' => '', 'label' => 'tools in the agent API' ),
 		array( 'value' => '0', 'unit' => '', 'label' => 'containers required' ),
 	),
 	'statement_one'       => 'NO DOCKER.',
@@ -26,7 +26,7 @@ $defaults = array(
 		array( 'title' => 'Branch previews', 'body' => 'Any git branch on its own domain beside the running site. Same database, copy-on-write files, ready in about ten seconds.' ),
 		array( 'title' => 'Per-site PHP versions', 'body' => 'Each site runs its own pool, 7.4 through 8.5. Switching installs or repairs the runtime it needs, including releases Homebrew has dropped.' ),
 		array( 'title' => 'Trusted HTTPS', 'body' => 'Every domain gets a certificate issued and trusted in the keychain the moment it is created or renamed. Sites and previews answer on 443 with no warning page.' ),
-		array( 'title' => 'Streaming imports', 'body' => 'A 7 GB LocalWP site imports in place with no copy step. Every stored domain is rewritten, serialized data included.' ),
+		array( 'title' => 'Streaming imports', 'body' => 'A 7 GB LocalWP or DDEV site imports in place with no copy step — DDEV projects move out of Docker entirely. Every stored domain is rewritten, serialized data included.' ),
 		array( 'title' => 'Production media fallback', 'body' => 'Missing uploads redirect to your production origin, honouring the .htaccess rule already in the repo.' ),
 		array( 'title' => 'WP_DEBUG without the ritual', 'body' => 'One flag turns debugging on with the log routed to a file and display kept off. Reproduce, then read the log. An agent does the same in two calls.' ),
 		array( 'title' => 'A doctor that fixes', 'body' => 'Every health check reports the exact command that repairs it, and doctor --fix applies them all.' ),
@@ -34,7 +34,7 @@ $defaults = array(
 	'compare_rows'   => array(
 		array( 'label' => 'Runs on', 'agentlocal' => 'native processes', 'localwp' => 'Electron + services', 'mamp' => 'bundled Apache/MySQL', 'ddev' => 'Docker containers' ),
 		array( 'label' => 'Prerequisites', 'agentlocal' => 'none, installs what it needs', 'localwp' => 'app download', 'mamp' => 'app download', 'ddev' => 'Docker Desktop / Colima' ),
-		array( 'label' => 'Agent control', 'agentlocal' => '59 MCP tools + HTTP API', 'localwp' => 'none', 'mamp' => 'none', 'ddev' => 'CLI with JSON output' ),
+		array( 'label' => 'Agent control', 'agentlocal' => '60 MCP tools + HTTP API', 'localwp' => 'none', 'mamp' => 'none', 'ddev' => 'CLI with JSON output' ),
 		array( 'label' => 'New WordPress site', 'agentlocal' => '19 seconds', 'localwp' => 'about a minute', 'mamp' => 'manual setup', 'ddev' => 'fast after first pull' ),
 		array( 'label' => 'Memory for one site', 'agentlocal' => '52 MB', 'localwp' => '601 MB', 'mamp' => 'not measured', 'ddev' => '2.5 GB' ),
 		array( 'label' => 'Trusted HTTPS', 'agentlocal' => 'automatic, every domain', 'localwp' => 'a Trust button per site', 'mamp' => 'by hand', 'ddev' => 'mkcert, once' ),
@@ -197,7 +197,7 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 			<ul class="how__lines">
 				<li><b>tui</b>the dashboard: sites, previews, runtimes, doctor</li>
 				<li><b>cli</b>one command per action, scriptable</li>
-				<li><b>mcp</b>59 tools over stdio, plus the HTTP API</li>
+				<li><b>mcp</b>60 tools over stdio, plus the HTTP API</li>
 			</ul>
 		</div>
 		<div class="how__link how__link--in" aria-hidden="true"><span>http</span><i class="how__pkt"></i></div>
@@ -233,10 +233,10 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 	<p class="statement__copy"><?php echo esc_html( al_field( 'statement_two_copy', $defaults['statement_two_copy'] ) ); ?></p>
 	<div class="statement__term">
 		<div class="term" aria-hidden="true">
-			<div class="term__bar"><span class="term__lights"><i></i><i></i><i></i></span><span class="term__title">claude — ~/Sites/sulo</span></div>
+			<div class="term__bar"><span class="term__lights"><i></i><i></i><i></i></span><span class="term__title">claude — ~/Sites/ferncreek</span></div>
 			<div class="term__viewport"><pre id="term-screen">$ claude</pre></div>
 			<div class="term__input"><span class="term__prompt">&gt;</span><span id="term-input"></span><span class="t-cursor"></span></div>
-			<div class="term__status"><span>? for shortcuts</span><span>agent-local · 59 mcp tools</span></div>
+			<div class="term__status"><span>? for shortcuts</span><span>agent-local · 60 mcp tools</span></div>
 		</div>
 	</div>
 	<p class="label label--center">create · import · snapshot · share · mail · previews</p>
