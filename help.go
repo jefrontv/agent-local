@@ -73,6 +73,8 @@ var helpGroups = []helpGroup{
 		{"install", "brew | php VERSION | mariadb | apache", "install a dependency (wp-cli too)"},
 		{"front", "[router | apache]", "show or switch the HTTP front"},
 		{"yield", "[SECONDS]", "free :80/:443 briefly so another app can start"},
+		{"alias", "[--off]", "bare URLs: the 127.0.0.2 alias and its root front daemon"},
+		{"sudo", "", "one-time allowlist so root steps never prompt again"},
 		{"autostart", "[--off]", "start the daemon at login (on by default)"},
 		{"sites-dir", "[PATH]", "where new sites are created"},
 		{"suffix", "[.test]", "default domain suffix"},

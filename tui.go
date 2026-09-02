@@ -129,7 +129,6 @@ type inputSpec struct {
 	target inputTarget
 	prompt string
 	value  string
-	pos    int
 	hint   string
 	slug   string // site context when relevant
 	// wizard state, carried across the steps of "new site"
@@ -386,9 +385,7 @@ func (m model) rowsFor(t tab) int {
 func (m model) allWorktrees() []*Worktree {
 	out := make([]*Worktree, 0, len(m.store.Data.Worktrees))
 	for _, s := range m.sites {
-		for _, w := range m.store.WorktreesFor(s.Slug) {
-			out = append(out, w)
-		}
+		out = append(out, m.store.WorktreesFor(s.Slug)...)
 	}
 	return out
 }

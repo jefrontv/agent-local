@@ -680,9 +680,12 @@ func cmdPHP(args []string) error {
 	if err != nil {
 		return err
 	}
-	install := hasFlag(args, "--install") || hasFlag(args, "--tap")
+	// Install when missing, as the help promises and as the API and the TUI
+	// already did; the CLI used to be the one surface that stopped at "not
+	// installed". --tap additionally allows the versioned tap for releases
+	// Homebrew has dropped (7.4, 8.0).
 	outTitle(AppName, "php", pos[0], pos[1])
-	if err := e.SwitchPHPEnsure(pos[0], pos[1], install, hasFlag(args, "--tap"), outSub); err != nil {
+	if err := e.SwitchPHPEnsure(pos[0], pos[1], true, hasFlag(args, "--tap"), outSub); err != nil {
 		return err
 	}
 	outStep(pos[0] + " is on PHP " + NormalizePHPVersion(pos[1]))
@@ -1541,12 +1544,19 @@ func cmdSudoSetup() error {
 		return err
 	}
 	defer os.Remove(tmp)
-	if err := RunPrivileged(true, "/usr/sbin/visudo", "-cf", tmp); err != nil {
-		return fmt.Errorf("sudoers validation failed: %w", err)
-	}
-	if err := RunPrivileged(true, "sh", "-c",
-		fmt.Sprintf("cp %s /etc/sudoers.d/agent-local && chown root:wheel /etc/sudoers.d/agent-local && chmod 440 /etc/sudoers.d/agent-local", tmp)); err != nil {
-		return err
+	// One privileged step, validated on the root-owned copy. Checking the
+	// user-writable file and then copying it left a window in which its content
+	// could change between the two; here the staged file is root's before
+	// visudo reads it. The staging name carries a dot, which sudo ignores, so
+	// a file that fails validation never applies and is removed.
+	const script = `set -e
+stage=/etc/sudoers.d/.agent-local.tmp
+cp "$1" "$stage"
+chown root:wheel "$stage"
+chmod 440 "$stage"
+if /usr/sbin/visudo -cf "$stage"; then mv "$stage" /etc/sudoers.d/agent-local; else rm -f "$stage"; exit 1; fi`
+	if err := RunPrivileged(true, "sh", "-c", script, "_", tmp); err != nil {
+		return fmt.Errorf("sudoers install failed: %w", err)
 	}
 	outTitle(AppName, "sudo")
 	outStep("installed /etc/sudoers.d/agent-local; root operations run without a prompt")

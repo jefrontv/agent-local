@@ -4,11 +4,29 @@
 <meta charset="<?php bloginfo( 'charset' ); ?>">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0e0e0c">
-<meta name="description" content="One Go binary that creates, serves and manages WordPress sites on macOS. No Docker, no prerequisites, and a full agent API.">
+<?php
+// Docs pages describe themselves; everything else is the product page. The
+// intro is plain text once its inline markup is stripped.
+$al_docs   = function_exists( 'al_docs_current' ) ? al_docs_current() : null;
+$al_desc   = 'One Go binary that creates, serves and manages WordPress sites on macOS. No Docker, no prerequisites, and a full agent API.';
+$al_ogdesc = 'One Go binary for macOS. No Docker, no prerequisites, a site serving in under twenty seconds, and 60 MCP tools for the agents working beside you.';
+$al_title  = 'agent-local: local WordPress for humans and agents';
+$al_url    = home_url( '/' );
+if ( $al_docs ) {
+	$al_desc   = str_replace( array( '`', '**' ), '', $al_docs['intro'] );
+	$al_ogdesc = $al_desc;
+	$al_title  = $al_docs['title'] . ' · agent-local docs';
+	$al_url    = home_url( '/docs/' . ( 'index' === $al_docs['slug'] ? '' : $al_docs['slug'] . '/' ) );
+}
+?>
+<meta name="description" content="<?php echo esc_attr( $al_desc ); ?>">
 <meta property="og:type" content="website">
-<meta property="og:url" content="<?php echo esc_url( home_url( '/' ) ); ?>">
-<meta property="og:title" content="agent-local: local WordPress for humans and agents">
-<meta property="og:description" content="One Go binary for macOS. No Docker, no prerequisites, a site serving in under twenty seconds, and 60 MCP tools for the agents working beside you.">
+<meta property="og:url" content="<?php echo esc_url( $al_url ); ?>">
+<meta property="og:title" content="<?php echo esc_attr( $al_title ); ?>">
+<meta property="og:description" content="<?php echo esc_attr( $al_ogdesc ); ?>">
+<?php if ( $al_docs ) : ?>
+<link rel="canonical" href="<?php echo esc_url( $al_url ); ?>">
+<?php endif; ?>
 <meta property="og:image" content="<?php echo esc_url( get_template_directory_uri() . '/assets/og-image.png' ); ?>">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">

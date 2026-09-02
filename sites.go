@@ -116,30 +116,48 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 	if err := e.CreateSiteDB(site); err != nil {
 		return nil, fmt.Errorf("database: %w", err)
 	}
+	// Nothing below existed before this call — wpdir was checked absent and a
+	// caller-named root empty — so a failure takes back what was made and the
+	// name is free for the retry, instead of "directory already exists" pointing
+	// at a half-extracted WordPress. A root that this call created goes whole
+	// (a failed clone leaves arbitrary files); one that was already there loses
+	// only what was put in it, and itself only once it is empty again.
+	rootExisted := fileExists(root)
+	fail := func(err error) (*Site, error) {
+		e.DropSiteDB(site)
+		if !rootExisted {
+			os.RemoveAll(root)
+			return nil, err
+		}
+		for _, ours := range []string{wpdir, filepath.Join(root, "@"), filepath.Join(root, ".git"), filepath.Join(root, ".gitignore")} {
+			os.RemoveAll(ours)
+		}
+		if ents, rerr := os.ReadDir(root); rerr == nil && len(ents) == 0 {
+			os.Remove(root)
+		}
+		return nil, err
+	}
 
 	cb("files", "fetching WordPress")
 	if o.Repo != "" {
 		if err := gitClone(o.Repo, site.WorkDir, cb); err != nil {
-			e.DropSiteDB(site)
-			return nil, fmt.Errorf("clone: %w", err)
+			return fail(fmt.Errorf("clone: %w", err))
 		}
 	} else {
 		if err := downloadWP(wpdir, o.WPVersion, cb); err != nil {
-			e.DropSiteDB(site)
-			return nil, fmt.Errorf("download: %w", err)
+			return fail(fmt.Errorf("download: %w", err))
 		}
 		if err := gitInitRepo(site.WorkDir, wpdir); err != nil {
 			cb("warn", "git init failed: "+err.Error())
 		}
 	}
 	if !fileExists(filepath.Join(wpdir, "wp-load.php")) {
-		e.DropSiteDB(site)
-		return nil, fmt.Errorf("wordpress core not found at %s (repo must contain wp/)", wpdir)
+		return fail(fmt.Errorf("wordpress core not found at %s (repo must contain wp/)", wpdir))
 	}
 
 	cb("config", "writing wp-config.php")
 	if err := writeWPConfig(site, wpdir); err != nil {
-		return nil, err
+		return fail(err)
 	}
 
 	title := o.Title
@@ -161,11 +179,22 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 	site.AdminUser, site.AdminPass = adminUser, pass
 	e.Store.PutSite(site)
 	if err := e.Store.Save(); err != nil {
+		e.Store.DelSite(slug)
+		return fail(err)
+	}
+	// From here the record exists, so a failure has to take it back out: left
+	// in place, a half-made site lists as running over a database the installer
+	// never filled, and its name is blocked for the retry. DeleteSite removes
+	// exactly what was made here; there is nothing worth snapshotting yet.
+	abort := func(err error) (*Site, error) {
+		if derr := e.DeleteSite(slug, DeleteOpts{NoSnapshot: true, InteractiveHosts: e.HostsInteractive}); derr != nil {
+			cb("warn", "cleanup after the failure did not finish: "+derr.Error())
+		}
 		return nil, err
 	}
 	cb("install", "running WordPress installer")
 	if err := e.startForInstall(site); err != nil {
-		return nil, fmt.Errorf("boot for install: %w", err)
+		return abort(fmt.Errorf("boot for install: %w", err))
 	}
 	installURL := fmt.Sprintf("http://127.0.0.1:%d/wp-admin/install.php?step=2", site.HTTPPort)
 	body, err := httpPost(installURL, url.Values{
@@ -178,10 +207,10 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 		"blog_public":     {"0"},
 	}, site.Domain)
 	if err != nil {
-		return nil, fmt.Errorf("installer: %w", err)
+		return abort(fmt.Errorf("installer: %w", err))
 	}
 	if !strings.Contains(body, "wp-login.php") && !strings.Contains(body, "already installed") && !strings.Contains(body, "Success") {
-		return nil, fmt.Errorf("installer did not report success (see logs/%s)", slug)
+		return abort(fmt.Errorf("installer did not report success (see logs/%s)", slug))
 	}
 
 	cb("dns", "registering "+domain)
@@ -829,6 +858,16 @@ func (e *Engine) AddWorktree(slug, branch string) (*Worktree, error) {
 	if out, err := runCmdOut("git", args...); err != nil {
 		return nil, fmt.Errorf("git worktree: %v %s", err, tail(out, 300))
 	}
+	// The checkout now exists and git knows it. A failure past this point has
+	// to undo that, the same way RemoveWorktree does: left behind, the branch
+	// cannot be previewed again ("path exists") until someone finds the dir.
+	undo := func(err error) (*Worktree, error) {
+		_, _ = runCmdOut("git", "-C", repoDir, "worktree", "remove", "--force", wtPath)
+		if fileExists(wtPath) {
+			os.RemoveAll(wtPath)
+		}
+		return nil, err
+	}
 	// Serving root: docroot-repo worktrees serve from their own path;
 	// WorkDir-style repos serve from <path>/wp.
 	serveDir := wtPath
@@ -837,7 +876,7 @@ func (e *Engine) AddWorktree(slug, branch string) (*Worktree, error) {
 	}
 	if !fileExists(serveDir) {
 		if err := os.Symlink(site.WPDir, serveDir); err != nil {
-			return nil, err
+			return undo(err)
 		}
 	}
 	// Overlay: the branch checkout wins for every file it tracks; everything
@@ -850,14 +889,14 @@ func (e *Engine) AddWorktree(slug, branch string) (*Worktree, error) {
 	// never redirects the branch back to the base site.
 	domain := bSlug + "." + site.Domain
 	if err := writeWorktreeWPConfig(site, serveDir, domain); err != nil {
-		return nil, err
+		return undo(err)
 	}
 	if !isSymlink(serveDir) {
 		// Constants alone lose to plugins that filter option_home (iThemes
 		// Security's SSL module does): pin the URL from an mu-plugin at max
 		// priority. Needs mu-plugins to be ours, not the base site's dir.
 		if err := writePreviewMU(site, serveDir, domain); err != nil {
-			return nil, err
+			return undo(err)
 		}
 		// Own page cache: previews must not serve or poison base cache files.
 		privateDir(filepath.Join(serveDir, "wp-content", "cache"))
@@ -865,7 +904,8 @@ func (e *Engine) AddWorktree(slug, branch string) (*Worktree, error) {
 	w := &Worktree{ID: id, Site: slug, Branch: branch, Path: wtPath, Domain: domain}
 	e.Store.PutWorktree(w)
 	if err := e.Store.Save(); err != nil {
-		return nil, err
+		e.Store.DelWorktree(id)
+		return undo(err)
 	}
 	_, _ = EnsureHosts(e.HostsInteractive, []string{domain})
 	if cert, _, created, err := EnsureCert(domain); err == nil && created {

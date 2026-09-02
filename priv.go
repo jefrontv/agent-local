@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // Priv handles the few operations that need root (hosts file, cert trust).
@@ -96,10 +97,20 @@ func hostsIPs() []string {
 	return out
 }
 
+// hostsMu serializes every /etc/hosts read-modify-write in this process. The
+// daemon runs jobs concurrently, and two of them editing the file at once
+// each read the same original, so whichever copy landed last erased the
+// other's lines — with both callers told success. The privileged copy goes
+// through one fixed temp path (the sudoers allowlist names it), which is one
+// more reason only one cycle can be in flight.
+var hostsMu sync.Mutex
+
 // EnsureHosts adds missing domain lines to /etc/hosts (root required) and
 // migrates existing agent-local lines to the current target IP (the
 // 127.0.0.2 alias when it's up, else 127.0.0.1). Returns lines changed.
 func EnsureHosts(interactive bool, domains []string) (int, error) {
+	hostsMu.Lock()
+	defer hostsMu.Unlock()
 	want := hostsIP()
 	b, err := os.ReadFile("/etc/hosts")
 	if err != nil {
@@ -163,22 +174,6 @@ func hostLineHasIP(content, domain, ip string) bool {
 	for _, line := range strings.Split(content, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 || fields[0] != ip {
-			continue
-		}
-		for _, f := range fields[1:] {
-			if f == domain {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// hostLineHas reports whether /etc/hosts content already maps a domain.
-func hostLineHas(content, domain string) bool {
-	for _, line := range strings.Split(content, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
 			continue
 		}
 		for _, f := range fields[1:] {
@@ -323,6 +318,8 @@ func RemoveHosts(interactive bool, domains []string) error {
 	if len(drop) == 0 {
 		return nil
 	}
+	hostsMu.Lock()
+	defer hostsMu.Unlock()
 	b, err := os.ReadFile("/etc/hosts")
 	if err != nil {
 		return err

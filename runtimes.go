@@ -327,11 +327,9 @@ func discoverMySQLEngine() MySQLRuntime {
 		prefix := brewPrefix(brew)
 		for _, name := range []string{"mariadb", "mysql"} {
 			dir := filepath.Join(prefix, "opt", name)
-			bin := filepath.Join(dir, "bin", name)
+			bin := filepath.Join(dir, "bin", "mysqld")
 			if name == "mariadb" {
 				bin = filepath.Join(dir, "bin", "mariadbd")
-			} else {
-				bin = filepath.Join(dir, "bin", "mysqld")
 			}
 			if v, ok := mysqldVersion(bin); ok {
 				kind := "mysql"

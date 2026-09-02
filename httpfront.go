@@ -188,6 +188,15 @@ DirectoryIndex index.php index.html
   Require all granted
   AllowOverride All
 </Directory>
+# The router's sensitivePath rule, for Apache: dot directories and dotfiles
+# (the ACME directory excepted), wp-config variants other than the .php itself,
+# and dumps, logs and editor leftovers.
+<DirectoryMatch "/\.(?!well-known(/|$))">
+  Require all denied
+</DirectoryMatch>
+<FilesMatch "^\.|^wp-config\.php.+|\.(sql|sql\.gz|sql\.zip|log|bak|old|orig|save|swp)$|~$">
+  Require all denied
+</FilesMatch>
 
 `, p.ApachePid(), p.Log("apache"), os.Getenv("USER"), mimeTypesPath(prefix)))
 

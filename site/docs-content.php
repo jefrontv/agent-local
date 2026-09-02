@@ -135,7 +135,7 @@ return array(
 		'sections' => array(
 			array( 'h', 'Reading the inbox' ),
 			array( 'pre', "agent-local mail SLUG              # newest first\nagent-local mail SLUG ID           # one message, full text and headers\nagent-local mail SLUG --open       # the inbox in your browser\nagent-local mail SLUG --clear" ),
-			array( 'p', 'The web inbox lives at `https://SLUG.test/_mail`. Bodies render as sent — HTML in a sandboxed frame, plain text as text — with attachments and headers one click away. The newest 275 messages are kept; branch previews have their own inboxes.' ),
+			array( 'p', 'The web inbox lives at `https://SLUG.test/.agent-local/mail`. Bodies render as sent — HTML in a sandboxed frame, plain text as text — with attachments and headers one click away. The newest 200 messages are kept; branch previews have their own inboxes.' ),
 			array( 'h', 'For agents' ),
 			array( 'p', '`list_mail`, `get_mail` and `clear_mail` are MCP tools. A complete end-to-end check with no human mailbox involved: drive the site with a browser tool, submit the form, then assert on the mail that came out.' ),
 			array( 'note', 'Mail is captured by routing PHP\'s `mail()` into the inbox — plugins that bypass `mail()` for a real SMTP connection are not intercepted, and deliver as configured.' ),
@@ -196,7 +196,7 @@ return array(
 				array( 'jobs & sharing', '`list_jobs`, `get_job`, `share_local_site`, `unshare_local_site`, `get_logs`' ),
 			) ),
 			array( 'h', 'HTTP API' ),
-			array( 'p', 'Every tool is also an endpoint on `127.0.0.1:8090`, bearer-token authenticated (`agent-local api-token`). The shape mirrors the CLI: `GET /status`, `GET|POST /sites`, `POST /import`, `POST /sites/{slug}/db/query`, `GET /sites/{slug}/mail` and so on.' ),
+			array( 'p', 'Every tool is also an endpoint on `127.0.0.1:10809`, bearer-token authenticated (`agent-local api-token`). The shape mirrors the CLI: `GET /status`, `GET|POST /sites`, `POST /import`, `POST /sites/{slug}/db/query`, `GET /sites/{slug}/mail` and so on. Long-running calls return a job with `?async=1`; `GET /jobs/{id}` follows it.' ),
 			array( 'note', 'Root steps (hosts, certificates, ports) go through a passwordless sudo allowlist after the one-time `agent-local sudo`. Not exposed as tools: `sudo` and `alias` — the two one-time installs that genuinely need a password.' ),
 		),
 	),
@@ -215,7 +215,7 @@ return array(
 			array( 'h', 'Agents' ),
 			array( 'pre', "connect [--list | --all | --remove] [HARNESS...]    register the MCP server in Claude Code, Codex, Cursor and friends\nmcp                                                 the MCP server itself (stdio); clients launch this\nmcp --config                                        the client config block, for a client connect doesn't know\napi-token                                           bearer token for the HTTP API\njobs                                                recent long-running jobs\njob ID                                              one job's progress" ),
 			array( 'h', 'Machine' ),
-			array( 'pre', "doctor [--fix]                                      health checks; --fix applies every repair\ninstall brew | php VERSION | mariadb | apache       install a dependency (wp-cli too)\nfront [router | apache]                             show or switch the HTTP front\nyield [SECONDS]                                     free :80/:443 briefly so another app can start\nautostart [--off]                                   start the daemon at login (on by default)\nsites-dir [PATH]                                    where new sites are created\nsuffix [.test]                                      default domain suffix\ndaemon [--background]                               run the daemon by hand\nrestart-daemon                                      hand over to a freshly installed binary\nupdate [--check]                                    install the latest release\nversion                                             what build this is" ),
+			array( 'pre', "doctor [--fix]                                      health checks; --fix applies every repair\ninstall brew | php VERSION | mariadb | apache       install a dependency (wp-cli too)\nfront [router | apache]                             show or switch the HTTP front\nyield [SECONDS]                                     free :80/:443 briefly so another app can start\nalias [--off]                                       bare URLs: the 127.0.0.2 alias and its root front daemon\nsudo                                                one-time allowlist so root steps never prompt again\nautostart [--off]                                   start the daemon at login (on by default)\nsites-dir [PATH]                                    where new sites are created\nsuffix [.test]                                      default domain suffix\ndaemon [--background]                               run the daemon by hand\nrestart-daemon                                      hand over to a freshly installed binary\nupdate [--check]                                    install the latest release\nversion                                             what build this is" ),
 		),
 	),
 );

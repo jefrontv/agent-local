@@ -69,6 +69,13 @@ func (j *Job) Snapshot() JobView {
 // Wait blocks until the job finishes.
 func (j *Job) Wait() { <-j.done }
 
+// running reports whether the job has not finished yet.
+func (j *Job) running() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.Status == JobRunning
+}
+
 func (j *Job) progress(stage, detail string) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -115,10 +122,18 @@ func (h *JobHub) Start(op string, fn func(cb func(stage, detail string)) (any, e
 	h.mu.Lock()
 	h.jobs[j.ID] = j
 	h.order = append(h.order, j.ID)
-	for len(h.order) > jobRetain {
-		old := h.order[0]
-		h.order = h.order[1:]
-		delete(h.jobs, old)
+	// Trim the oldest finished jobs past the retention cap. A job still
+	// running stays whatever its age: evicting by start order alone made a
+	// long import vanish from get_job while it was still working, once fifty
+	// quicker calls had started behind it.
+	for i := 0; len(h.order) > jobRetain && i < len(h.order); {
+		old := h.jobs[h.order[i]]
+		if old != nil && old.running() {
+			i++
+			continue
+		}
+		delete(h.jobs, h.order[i])
+		h.order = append(h.order[:i], h.order[i+1:]...)
 	}
 	h.mu.Unlock()
 	go func() {

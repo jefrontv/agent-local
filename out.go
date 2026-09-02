@@ -62,9 +62,6 @@ func outFail(msg string) { fmt.Fprintln(os.Stderr, "  "+stErr.Render("●")+" "+
 // outHint says what to do next, the command styled as a key.
 func outHint(text, cmd string) { fmt.Println(stOutLbl.Render(text) + "  " + stKey.Render(cmd)) }
 
-// outDone is the closing line: what the command achieved, in the lamp colour.
-func outDone(msg string) { fmt.Println(stOK.Render(msg)) }
-
 func outBlank() { fmt.Println() }
 
 // outState renders a running/stopped pair the way the TUI does: one lamp,
@@ -142,9 +139,6 @@ func outTable(head []string, rows [][]string) {
 
 // dimf is a dim fragment inside an otherwise plain line.
 func dimf(s string) string { return stDim.Render(s) }
-
-// keyf is a command fragment inside an otherwise plain line.
-func keyf(s string) string { return stKey.Render(s) }
 
 // outStateWord is outState with a word other than running/stopped.
 func outStateWord(on bool, word string) string {

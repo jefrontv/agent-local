@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -377,6 +378,14 @@ func (a *APIServer) handleMailClear(w http.ResponseWriter, r *http.Request) {
 // hitting /mail-ui directly is not a supported way in.
 func (a *APIServer) handleMailUI(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	// The id is a pool — a site slug or a worktree id — and nothing else: it
+	// becomes a directory under ~/.agent-local/mail, and this route is the one
+	// the token does not guard (Apache proxies to it), so a stray "../" here
+	// would read or clear files outside the mail tree.
+	if a.store.Site(id) == nil && a.store.Data.Worktrees[id] == nil {
+		http.NotFound(w, r)
+		return
+	}
 	rest := r.PathValue("rest")
 	if rest != "" {
 		rest = "/" + rest
@@ -1344,8 +1353,16 @@ func (a *APIServer) handleDoctorFix(w http.ResponseWriter, r *http.Request) {
 	ok(w, DoctorFix(a.store, false))
 }
 
+// logName is what `logs NAME` accepts: a bare file stem such as apache,
+// fpm-mysite or wp-mysite. Anything with a separator is not a log name.
+var logName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
 func (a *APIServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	if !logName.MatchString(name) || strings.Contains(name, "..") {
+		fail(w, 400, "bad log name: "+name)
+		return
+	}
 	path := P().Log(name)
 	b, err := os.ReadFile(path)
 	if err != nil {

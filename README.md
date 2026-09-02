@@ -543,8 +543,8 @@ collides with mDNS/Bonjour. Multi-level suffixes (`.mysite.local`) are fine.
 ```sh
 agent-local install php 8.1        # also: mariadb | apache | wp-cli | brew
 agent-local install php 7.4 --tap  # 7.4 and 8.0: see "end-of-life versions"
-agent-local php mysite 8.1         # switch a site; its pool restarts live
-agent-local php mysite 7.4 --install   # install (or repair) it first, then switch
+agent-local php mysite 8.1         # switch a site; its pool restarts live, installing 8.1 first if needed
+agent-local php mysite 7.4 --tap   # a version Homebrew dropped: allow the versioned tap
 agent-local php                    # installed, broken, installable
 agent-local doctor                 # every discovered runtime
 ```
@@ -711,22 +711,20 @@ looking hung. To exercise it without a client:
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | agent-local mcp
 ```
 
-59 tools — everything the CLI can do, no shell required:
+60 tools — everything the CLI can do, no shell required:
 
 | Area | Tools |
 |---|---|
-| discovery | `status`, `list_sites`, `get_site`, `localwp_sites`, `ddev_projects`, `list_runtimes`, `list_branches` |
-| lifecycle | `create_site`, `import_site`, `start_site`, `stop_site`, `restart_site`, `delete_site` |
-| runtime | `switch_php`, `install_runtime`, `get_http_front`, `set_http_front` |
-| domains | `set_domain`, `get_domain_suffix`, `set_domain_suffix`, `add_hosts_entries`, `remove_hosts_entries` |
-| media | `get_media_fallback`, `set_media_fallback` |
-| layout | `get_sites_dir`, `set_sites_dir`, `attach_site` |
+| discovery | `status`, `list_sites`, `get_site`, `localwp_sites`, `ddev_projects`, `resolve_path`, `list_runtimes` |
+| lifecycle | `create_site`, `attach_site`, `import_site`, `start_site`, `stop_site`, `restart_site`, `delete_site` |
+| runtime | `switch_php`, `install_runtime`, `doctor`, `doctor_fix`, `get_http_front`, `set_http_front` |
+| domains | `set_domain`, `get_domain_suffix`, `set_domain_suffix`, `add_hosts_entries`, `remove_hosts_entries`, `cert_status`, `cert_trust` |
 | database | `db_creds`, `db_query`, `db_tables`, `db_import`, `db_export`, `db_reset`, `db_snapshot`, `db_snapshots`, `db_restore` |
-| wordpress | `wp_cli`, `worktree_wp_cli`, `get_wp_debug`, `set_wp_debug` |
+| files & media | `get_media_fallback`, `set_media_fallback`, `get_sites_dir`, `set_sites_dir`, `yield_ports` |
+| wordpress | `wp_cli`, `worktree_wp_cli`, `get_wp_debug`, `set_wp_debug`, `open_adminer` |
 | mail | `list_mail`, `get_mail`, `clear_mail` |
-| previews | `add_worktree`, `list_worktrees`, `start_worktree`, `stop_worktree`, `remove_worktree` |
-| ops | `get_logs`, `doctor`, `doctor_fix` |
-| integration | `resolve_path`, `cert_status`, `cert_trust`, `yield_ports`, `share_local_site`, `unshare_local_site` |
+| previews | `list_branches`, `add_worktree`, `list_worktrees`, `start_worktree`, `stop_worktree`, `remove_worktree` |
+| jobs & sharing | `list_jobs`, `get_job`, `share_local_site`, `unshare_local_site`, `get_logs` |
 
 Design notes that matter when driving this from an agent:
 
@@ -758,13 +756,14 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 
 | Group | Endpoints |
 |---|---|
-| sites | `GET /status`, `GET\|POST /sites`, `GET /sites/{slug}`, `DELETE /sites/{slug}[?files=keep&db=keep&snapshot=off]`, `POST /sites/{slug}/{start,stop,restart,php,domain,wp-cli}`, `GET\|POST /sites/{slug}/wp-debug` |
+| sites | `GET /status`, `GET\|POST /sites`, `POST /attach`, `GET /sites/{slug}`, `DELETE /sites/{slug}[?files=keep&db=keep&snapshot=off]`, `POST /sites/{slug}/{start,stop,restart,php,domain,wp-cli}`, `GET\|POST /sites/{slug}/wp-debug`, `GET\|POST /sites/{slug}/media`, `GET /sites/{slug}/adminer` |
 | import | `POST /import` |
 | database | `POST /sites/{slug}/db`, `POST /sites/{slug}/db/query`, `POST /sites/{slug}/db/{import,export,reset,snapshot,restore}`, `GET /sites/{slug}/db/{tables,snapshots}`, `POST /db/query` |
 | mail | `GET /sites/{slug}/mail`, `GET /sites/{slug}/mail/{id}`, `DELETE /sites/{slug}/mail` |
 | share | `POST /sites/{slug}/share`, `GET /sites/{slug}/share`, `DELETE /sites/{slug}/share` |
 | previews | `GET /sites/{slug}/branches`, `GET\|POST /sites/{slug}/worktrees`, `POST /sites/{slug}/worktrees/{id}/{start,stop,wp-cli}`, `DELETE /sites/{slug}/worktrees/{id}` |
-| platform | `GET /runtimes`, `POST /install`, `GET\|POST /front`, `GET\|POST /suffix`, `GET /doctor`, `POST /doctor/fix`, `GET /logs/{name}?lines=N`, `POST\|DELETE /hosts` |
+| jobs | `GET /jobs`, `GET /jobs/{id}` — long-running calls (`?async=1` or `Prefer: respond-async`) return one of these |
+| platform | `GET /runtimes`, `POST /install`, `GET\|POST /front`, `GET\|POST /suffix`, `GET\|POST /sites-dir`, `GET /doctor`, `POST /doctor/fix`, `GET /logs/{name}?lines=N`, `POST\|DELETE /hosts` |
 | integration | `GET /resolve?path=…`, `GET /certs/{domain}`, `POST /certs/{domain}/trust`, `POST /yield` |
 
 ### Embedding agent-local in another app
@@ -803,6 +802,7 @@ agent-local                            open the dashboard
 agent-local tui [--frame W] [--tab T]  print one frame (design/debug)
 agent-local create NAME [--domain d] [--php v] [--repo url]
                        [--admin-user u] [--admin-pass p] [--admin-email e] [--title t]
+agent-local attach DIR [--name n] [--domain d] [--php v]   serve a directory you already have
 agent-local list | start SLUG | stop SLUG | restart SLUG | open SLUG [--db]
 agent-local delete SLUG [--yes] [--keep-files] [--keep-db] [--no-snapshot]
 agent-local import SOURCE [--name n] [--domain d] [--php v] [--copy]
@@ -813,12 +813,14 @@ agent-local ddev-projects              list importable DDEV projects
 agent-local db SLUG [sql | tables | import FILE [--keep-urls] | export [FILE] | reset | gui]
 agent-local db SLUG snapshot [NAME] | snapshots | restore [NAME] [--no-snapshot]
 agent-local mail SLUG [ID] [--open] [--clear]  captured outgoing email
+agent-local media SLUG [URL | --auto | --off]  send missing uploads to a production origin
 agent-local wpdebug SLUG [on|off]      WP_DEBUG with the log in ~/.agent-local/logs
 agent-local share SLUG [--minutes N | --forever] [--off]   public quick-tunnel URL
 agent-local jobs | job ID              long-running create/import status
-agent-local php SLUG VERSION           switch PHP (live)
+agent-local php SLUG VERSION [--tap]   switch PHP (live), installing it if needed
 agent-local domain SLUG NAME           change a site's domain
 agent-local suffix [.test]             show/set the default domain suffix
+agent-local sites-dir [PATH]           where new sites are created
 agent-local branches SLUG              git branches of the site's repo
 agent-local worktree SLUG BRANCH [--remove]
 agent-local worktrees SLUG
@@ -828,12 +830,15 @@ agent-local front [router|apache]      show / switch HTTP front
 agent-local sudo                       passwordless root allowlist (one-time)
 agent-local alias [--off]              bare URLs on 127.0.0.2:80/443 (one-time)
 agent-local yield [secs]               free :80/:443 briefly, then re-bind
+agent-local autostart [--off]          start the daemon at login (on by default)
 agent-local resolve [PATH]             which site owns a path (default: cwd)
 agent-local cert DOMAIN [--trust]      TLS state for a domain
 agent-local doctor [--fix]
-agent-local logs NAME [lines]          mysql | apache | daemon | fpm-<slug> | <slug>
+agent-local logs NAME [lines]          mysql | apache | daemon | fpm-<slug> | wp-<slug>
 agent-local daemon [--background]      router + agent API
-agent-local mcp                        MCP server over stdio
+agent-local restart-daemon             hand over to a freshly installed binary
+agent-local update [--check]           install the latest release
+agent-local mcp [--config]             MCP server over stdio; --config prints the client block
 agent-local connect [--list|--all|--remove|--json|--yes] [harness...]  register (or remove) the MCP server in a client
 agent-local api-token | version
 ```

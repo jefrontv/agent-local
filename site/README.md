@@ -14,6 +14,11 @@ agent-local wp agentlocal-site -- option update show_on_front page
 agent-local wp agentlocal-site -- option update page_on_front <id>
 ```
 
+Activating the theme sets a permalink structure (WordPress defaults to "plain", under
+which `/docs/` cannot route) and flushes the rewrite rules. Activated some other way,
+or already on plain permalinks? `agent-local wp agentlocal-site -- rewrite structure '/%postname%/'`
+then `-- rewrite flush` does the same by hand.
+
 ## Build the assets
 
 Compiled CSS/JS live in `dist/` and are committed, so the theme works without Node.

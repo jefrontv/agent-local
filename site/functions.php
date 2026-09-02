@@ -11,17 +11,42 @@ add_action( 'after_setup_theme', function () {
 	add_theme_support( 'title-tag' );
 } );
 
+/**
+ * The docs pages, parsed once per request. docs.php, the title filter and the
+ * head tags all read the same array.
+ */
+function al_docs_pages(): array {
+	static $pages = null;
+	if ( null === $pages ) {
+		$pages = require get_template_directory() . '/docs-content.php';
+	}
+	return $pages;
+}
+
+/**
+ * The docs page this request renders, or null on any other page. An unknown
+ * slug is the index, so /docs/anything/ still lands somewhere useful.
+ */
+function al_docs_current(): ?array {
+	$slug = get_query_var( 'al_docs' );
+	if ( '' === $slug ) {
+		return null;
+	}
+	$pages = al_docs_pages();
+	if ( ! isset( $pages[ $slug ] ) ) {
+		$slug = 'index';
+	}
+	return array( 'slug' => $slug ) + $pages[ $slug ];
+}
+
 // The front page is the product, not the blog: its title says what the thing
 // is regardless of what the WordPress install happens to be called.
 add_filter( 'pre_get_document_title', function ( $title ) {
 	if ( is_front_page() ) {
 		return 'agent-local: local WordPress for humans and agents';
 	}
-	if ( get_query_var( 'al_docs' ) !== '' ) {
-		$pages = require get_template_directory() . '/docs-content.php';
-		$slug  = get_query_var( 'al_docs' );
-		$name  = isset( $pages[ $slug ] ) ? $pages[ $slug ]['title'] : 'Docs';
-		return $name . ' · agent-local docs';
+	if ( $page = al_docs_current() ) {
+		return $page['title'] . ' · agent-local docs';
 	}
 	return $title;
 } );
@@ -56,6 +81,17 @@ add_filter( 'query_vars', function ( $vars ) {
 add_action( 'init', function () {
 	add_rewrite_rule( '^docs/?$', 'index.php?al_docs=index', 'top' );
 	add_rewrite_rule( '^docs/([a-z0-9-]+)/?$', 'index.php?al_docs=$matches[1]', 'top' );
+} );
+
+// Rewrite rules only apply once flushed, and only when the install has a
+// permalink structure at all: on WordPress's default "plain" setting /docs/
+// is a 404 no matter what init registered. Activating the theme sets both,
+// so following the README verbatim yields a working docs section.
+add_action( 'after_switch_theme', function () {
+	if ( '' === get_option( 'permalink_structure' ) ) {
+		update_option( 'permalink_structure', '/%postname%/' );
+	}
+	flush_rewrite_rules();
 } );
 
 add_filter( 'template_include', function ( $template ) {

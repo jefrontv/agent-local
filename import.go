@@ -691,10 +691,14 @@ func (e *Engine) ImportSQL(slug, path string, rewriteURLs, snapshot bool) (strin
 // symptom is a blank 200 from a missing active theme — say so instead of
 // leaving the agent to guess.
 func (e *Engine) missingActiveAssets(site *Site) string {
+	// The options table carries whatever prefix the dump was written with;
+	// assuming wp_ silenced this warning for exactly the hardened sites that
+	// rename it.
+	prefix := e.tablePrefixFromDB(site)
 	hosts := []string{}
 	for _, opt := range []string{"template", "stylesheet"} {
 		out, err := e.DBIn(site.DBName, fmt.Sprintf(
-			"SELECT option_value FROM wp_options WHERE option_name='%s'", opt))
+			"SELECT option_value FROM `%soptions` WHERE option_name='%s'", prefix, opt))
 		if err != nil {
 			return ""
 		}
@@ -871,9 +875,14 @@ func rewriteWPConfigDB(path string, site *Site, tablePrefix string) error {
 	if err != nil {
 		return err
 	}
+	// The backup is what `delete` restores and what a user reaches for when an
+	// import goes wrong; overwriting their config after a failed backup would
+	// lose the only copy silently.
 	bak := path + ".agent-local.bak"
 	if !fileExists(bak) {
-		os.WriteFile(bak, b, 0o644)
+		if err := os.WriteFile(bak, b, 0o644); err != nil {
+			return fmt.Errorf("back up wp-config.php: %w", err)
+		}
 	}
 	src := string(b)
 	src = setWPConst(src, "DB_NAME", site.DBName)

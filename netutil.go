@@ -31,16 +31,6 @@ func portOpen(port int) bool {
 	return true
 }
 
-// freePort asks the kernel for an ephemeral port.
-func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
-}
-
 // waitPort polls until the port answers or timeout hits.
 func waitPort(port int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
@@ -63,23 +53,6 @@ func probeClient() *http.Client {
 			return http.ErrUseLastResponse
 		},
 	}
-}
-
-// httpProbe fetches a URL, skipping cert verification (self-signed).
-func httpProbe(url string) (int, error) {
-	resp, err := probeClient().Get(url)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode, nil
-}
-
-// httpProbeHost fetches a URL with an explicit Host header — required for
-// the shared vhost front where the Host header selects the site.
-func httpProbeHost(url, host string) (int, error) {
-	code, _, err := httpProbeHostTimed(url, host, 0)
-	return code, err
 }
 
 // httpProbeHostTimed also reports how long the answer took, and gives up after

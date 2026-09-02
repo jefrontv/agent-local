@@ -129,9 +129,15 @@ func ensureAliasBound() bool {
 	return ok
 }
 
-// dialableAlias reports whether lo0 carries both halves we serve.
+// dialableAlias reports whether lo0 carries the address the listeners are
+// bound to. Only the IPv4 half counts: bind() serves IPv6 when it is present
+// and carries on without it, so a machine where the ULA alias cannot be added
+// (IPv6 disabled by policy, a VPN client owning lo0's v6 config) must settle
+// into IPv4-only serving — judged on both halves, every tick released live
+// listeners and rebound them, a connection-refused blink every 1.5 seconds
+// for the daemon's whole life.
 func dialableAlias() bool {
-	return interfaceHasAddr(LoopbackAlias) && interfaceHasAddr(LoopbackAlias6)
+	return interfaceHasAddr(LoopbackAlias)
 }
 
 // supervise keeps the listeners in the right state forever: bound normally,

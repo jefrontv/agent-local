@@ -90,6 +90,14 @@ func TestDoctorTabEntryRunsChecksAsync(t *testing.T) {
 	if nm.tab != tabDoctor || cmd == nil || nm.mode != modeBusy {
 		t.Fatalf("tab entry: tab=%v cmd=%v mode=%v", nm.tab, cmd != nil, nm.mode)
 	}
+	// Let that run finish before the next one starts. Two Doctor() runs on one
+	// store would race on the inventory, which the real UI never allows: keys
+	// are swallowed while an action is busy.
+	for a := range nm.progress {
+		if a.done {
+			break
+		}
+	}
 	// With a report cached, entry is free.
 	nm.mode = modeBrowse
 	nm.doctor = fakeReport(3)

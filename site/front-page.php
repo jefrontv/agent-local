@@ -281,7 +281,7 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 
 <!-- features index -->
 <section class="index" id="features">
-	<p class="label"><span class="lamp" aria-hidden="true"></span>What ships in the binary</p>
+	<h2 class="label"><span class="lamp" aria-hidden="true"></span>What ships in the binary</h2>
 	<div class="index__list">
 		<?php foreach ( al_rows( 'features', $defaults['features'] ) as $i => $f ) : ?>
 		<div class="index__row">
@@ -295,7 +295,7 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 
 <!-- comparison -->
 <section class="compare" id="compare">
-	<p class="label"><span class="lamp" aria-hidden="true"></span>Compared, honestly</p>
+	<h2 class="label"><span class="lamp" aria-hidden="true"></span>Compared, honestly</h2>
 	<div class="compare__scroll">
 		<table class="compare__table">
 			<thead>

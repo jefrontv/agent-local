@@ -68,6 +68,31 @@ func TestJobHubRetainsARing(t *testing.T) {
 	}
 }
 
+// A job still running is never evicted, however many quicker jobs start
+// behind it: an agent polling get_job for a long import must find it.
+func TestJobHubKeepsRunningJobsPastTheCap(t *testing.T) {
+	h := NewJobHub()
+	release := make(chan struct{})
+	slow := h.Start("import", func(func(string, string)) (any, error) {
+		<-release
+		return "done", nil
+	})
+	for i := range jobRetain + 10 {
+		h.Start("x", func(func(string, string)) (any, error) { return i, nil }).Wait()
+	}
+	if h.Get(slow.ID) == nil {
+		t.Fatal("running job was evicted while still in flight")
+	}
+	if n := len(h.List()); n > jobRetain+1 {
+		t.Errorf("hub holds %d jobs; the cap applies to finished ones", n)
+	}
+	close(release)
+	slow.Wait()
+	if h.Get(slow.ID) == nil {
+		t.Error("finished job vanished the moment it completed")
+	}
+}
+
 func TestWantAsync(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "/import?async=1", nil)
 	if !wantAsync(req) {

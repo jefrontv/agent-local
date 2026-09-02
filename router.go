@@ -200,6 +200,13 @@ func (r *Router) serveStatic(w http.ResponseWriter, req *http.Request, wpdir str
 	if strings.HasSuffix(strings.ToLower(urlPath), ".php") {
 		return false
 	}
+	if sensitivePath(urlPath) {
+		// Answered here rather than left to WordPress: a share tunnel makes the
+		// docroot reachable from outside, and .git/ or a wp-config backup is
+		// exactly what a visitor with the URL would go looking for.
+		http.NotFound(w, req)
+		return true
+	}
 	clean := filepath.Clean("/" + urlPath)
 	full := filepath.Join(wpdir, clean)
 	// traversal guard: joined path must stay inside wpdir
@@ -214,7 +221,35 @@ func (r *Router) serveStatic(w http.ResponseWriter, req *http.Request, wpdir str
 	return true
 }
 
-// getCertificate lazily loads/creates a cert for the requested SNI host.
+// sensitivePath reports paths that are never served as files, whichever front
+// is in use: anything under a dot directory or a dotfile (.git, .env, .htaccess,
+// .user.ini) except the ACME directory, every wp-config variant that is not
+// the .php itself (backups hold the database password in plain text), and
+// dumps, logs and editor leftovers. The same list drives the Apache config.
+func sensitivePath(urlPath string) bool {
+	clean := strings.ToLower(filepath.Clean("/" + urlPath))
+	for _, seg := range strings.Split(clean, "/") {
+		if strings.HasPrefix(seg, ".") && seg != ".well-known" {
+			return true
+		}
+	}
+	base := filepath.Base(clean)
+	if strings.HasPrefix(base, "wp-config.php") && base != "wp-config.php" {
+		return true
+	}
+	for _, suffix := range sensitiveSuffixes {
+		if strings.HasSuffix(base, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+var sensitiveSuffixes = []string{".sql", ".sql.gz", ".sql.zip", ".log", ".bak", ".old", ".orig", ".save", ".swp", "~"}
+
+// getCertificate lazily loads/creates a cert for the requested SNI host. Only
+// hosts this router serves get one: the name becomes a filename under
+// ~/.agent-local/certs, and a client can present any SNI it likes.
 func (r *Router) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	host := hello.ServerName
 	r.mu.RLock()
@@ -223,6 +258,9 @@ func (r *Router) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 		return c, nil
 	}
 	r.mu.RUnlock()
+	if !r.knownHost(host) {
+		return nil, fmt.Errorf("agent-local: no site for host %q", host)
+	}
 	certPath, keyPath, _, err := EnsureCert(host)
 	if err != nil {
 		return nil, err
@@ -235,6 +273,18 @@ func (r *Router) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 	r.certs[host] = &cert
 	r.mu.Unlock()
 	return &cert, nil
+}
+
+// knownHost is the same resolution ServeHTTP performs: a site or preview
+// domain (aliases included), or the hostname of a running share.
+func (r *Router) knownHost(host string) bool {
+	if !ValidDomain(host) {
+		return false
+	}
+	if _, _, _, ok := r.engine.Resolve(host); ok {
+		return true
+	}
+	return shares.ForHost(host) != nil
 }
 
 // ---------- FastCGI client (minimal FCGI/1.0 responder) ----------

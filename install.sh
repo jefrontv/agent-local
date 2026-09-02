@@ -50,10 +50,16 @@ else
 
   if [[ -n "$URL" ]] && curl -fsSL "$URL" -o "$WORKDIR/dl.tar.gz" 2>/dev/null; then
     echo "    downloaded ${TAG:-release}"
-    # Verify against the release checksums when they are reachable; a corrupt
-    # download must not become an installed binary.
-    if [[ -n "${TAG:-}" ]] &&
-      curl -fsSL "https://github.com/$REPO/releases/download/$TAG/checksums.txt" -o "$WORKDIR/sums.txt" 2>/dev/null; then
+    # A release download is verified against the release's checksums, and a
+    # download that cannot be verified is not installed: the binary ends up
+    # running as root under the front daemon, so "checksums unreachable" is a
+    # reason to stop, not to proceed. RELEASE_URL points at an arbitrary
+    # archive by design and is the one path that installs unverified.
+    if [[ -n "${TAG:-}" ]]; then
+      if ! curl -fsSL "https://github.com/$REPO/releases/download/$TAG/checksums.txt" -o "$WORKDIR/sums.txt" 2>/dev/null; then
+        echo "ERROR: could not fetch checksums.txt for $TAG; refusing to install an unverified archive"
+        exit 1
+      fi
       GOT="$(shasum -a 256 "$WORKDIR/dl.tar.gz" | awk '{print $1}')"
       if grep -q "$GOT" "$WORKDIR/sums.txt"; then
         echo "    checksum ok"
@@ -61,6 +67,8 @@ else
         echo "ERROR: checksum mismatch for $URL"
         exit 1
       fi
+    else
+      echo "    RELEASE_URL given: installing without checksum verification"
     fi
     tar -xzf "$WORKDIR/dl.tar.gz" -C "$WORKDIR"
     BINARY="$WORKDIR/$BIN_NAME"

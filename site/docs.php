@@ -4,12 +4,10 @@
  * ACF or the database. /docs/ is the index, /docs/{slug}/ a page.
  */
 
-$pages   = require get_template_directory() . '/docs-content.php';
-$current = get_query_var( 'al_docs', 'index' );
-if ( ! isset( $pages[ $current ] ) ) {
-	$current = 'index';
-}
-$page  = $pages[ $current ];
+$pages   = al_docs_pages();
+$current = al_docs_current();
+$current = $current ? $current['slug'] : 'index';
+$page    = $pages[ $current ];
 $slugs = array_keys( $pages );
 $pos   = (int) array_search( $current, $slugs, true );
 $next  = array();
