@@ -37,6 +37,26 @@
 	}
 }
 
+// ---------------------------------------------------------------- the field
+// One rule for every mount: the box fills its section, the <pre> is drawn
+// by the script. Sections that carry one are position: relative and lift
+// their own content above it.
+.hero__field, .footer__field {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	pointer-events: none;
+}
+.wave-field {
+	margin: 0;
+	font-family: $mono;
+	font-size: 13.5px;
+	line-height: 1.3;
+	letter-spacing: 0;
+	color: $dim;
+	opacity: 0.5;
+}
+
 // ---------------------------------------------------------------- hero
 .hero {
 	min-height: 100svh;
@@ -45,22 +65,6 @@
 	justify-content: flex-end;
 	overflow: hidden;
 	position: relative;
-	&__field {
-		position: absolute;
-		inset: 0;
-		overflow: hidden;
-		pointer-events: none;
-
-		pre {
-			margin: 0;
-			font-family: $mono;
-			font-size: 13.5px;
-			line-height: 1.3;
-			letter-spacing: 0;
-			color: $dim;
-			opacity: 0.5;
-		}
-	}
 	&__mark {
 		@include display(clamp(56px, 9.8vw, 200px));
 		position: relative;
@@ -585,9 +589,13 @@ $how-cycle: 6s;
 
 // ---------------------------------------------------------------- footer
 .footer {
+	position: relative;
 	border-top: 1px solid $hairline;
 	overflow: hidden;
 
+	// Quieter than the hero's: this one sits under small type.
+	.wave-field { opacity: 0.38; }
+	&__meta, &__mark { position: relative; z-index: 1; }
 	&__meta {
 		display: flex;
 		flex-wrap: wrap;

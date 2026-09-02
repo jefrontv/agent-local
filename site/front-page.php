@@ -58,7 +58,7 @@ $defaults = array(
 
 <!-- hero -->
 <section class="hero">
-	<div class="hero__field" aria-hidden="true"><pre id="wave-field"></pre></div>
+	<div class="hero__field" aria-hidden="true"><pre class="wave-field"></pre></div>
 	<h1 class="sr-only">agent-local: local WordPress for humans and agents</h1>
 	<p class="hero__mark" aria-hidden="true">AGENT-LOCAL</p>
 </section>

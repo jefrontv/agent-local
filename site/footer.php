@@ -1,4 +1,5 @@
 <footer class="footer">
+	<div class="footer__field" aria-hidden="true"><pre class="wave-field"></pre></div>
 	<div class="footer__meta">
 		<span class="label"><span class="lamp" aria-hidden="true"></span>local WordPress for humans and agents</span>
 		<div class="footer__links">

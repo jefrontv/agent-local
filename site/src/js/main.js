@@ -45,23 +45,16 @@ if (!reduced) {
     scrollTrigger: { trigger: ".footer", start: "top bottom", end: "bottom bottom", scrub: true } });
 }
 
-/* ---------- the field: a full-hero ocean of characters, moved by slow
-   interference of a few sine waves. Abstract on purpose: a curated shape
-   would fight the wordmark, and procedural planets read as mud. The pointer
-   is a stone dropped in: rings spread from it while it moves and fade when
-   it leaves. ---------- */
-const field = document.getElementById("wave-field");
-
+/* ---------- the field: an ocean of characters, moved by slow interference
+   of a few sine waves. Abstract on purpose: a curated shape would fight the
+   wordmark, and procedural planets read as mud. The pointer is a stone
+   dropped in: rings spread from it while it moves and fade when it leaves.
+   Any `.wave-field` <pre> gets one; the hero and the footer each have theirs. ---------- */
 const FIELD_RAMP = " ..::-=+*";
 const CELL_W = 8.1;  // 13.5px IBM Plex Mono advance width
 const CELL_H = 17.5; // 13.5px at line-height 1.3
 
-// x/y is where the rings come from; tx/ty is where the cursor actually is.
-// The origin drifts toward the cursor a little each frame, so a fast move
-// leaves the disturbance trailing behind like something carried in water.
-const pointer = { x: 0, y: 0, tx: 0, ty: 0, energy: 0 };
-
-function fieldFrame(t, cols, rows) {
+function fieldFrame(t, cols, rows, pointer) {
   const out = [];
   const pe = pointer.energy;
   for (let y = 0; y < rows; y++) {
@@ -86,48 +79,67 @@ function fieldFrame(t, cols, rows) {
   return out.join("\n");
 }
 
-if (field) {
-  const host = field.parentElement;
-  let cols = 0, rows = 0;
-  const size = () => {
-    cols = Math.ceil(host.clientWidth / CELL_W) + 1;
-    rows = Math.ceil(host.clientHeight / CELL_H) + 1;
+// One field: its <pre>, the box it fills, the section whose pointer stirs it.
+// pointer.x/y is where the rings come from; tx/ty is where the cursor is. The
+// origin drifts toward the cursor a little each frame, so a fast move leaves
+// the disturbance trailing behind like something carried in water.
+function mountField(pre, index) {
+  const host = pre.parentElement;
+  const f = {
+    pre, host, cols: 0, rows: 0, visible: true,
+    phase: index * 3.1, // siblings never show the same frame
+    pointer: { x: 0, y: 0, tx: 0, ty: 0, energy: 0 },
   };
-  size();
+  f.size = () => {
+    f.cols = Math.ceil(host.clientWidth / CELL_W) + 1;
+    f.rows = Math.ceil(host.clientHeight / CELL_H) + 1;
+  };
+  f.size();
+  return f;
+}
+
+const fields = [...document.querySelectorAll(".wave-field")].map(mountField);
+if (fields.length) {
   let resizeTimer;
-  addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(size, 200); });
+  addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => fields.forEach((f) => f.size()), 200); });
   if (reduced) {
-    field.textContent = fieldFrame(1.7, cols, rows);
+    for (const f of fields) f.pre.textContent = fieldFrame(1.7 + f.phase, f.cols, f.rows, f.pointer);
   } else {
-    const hero = host.parentElement;
-    hero.addEventListener("pointermove", (e) => {
-      const r = host.getBoundingClientRect();
-      pointer.tx = (e.clientX - r.left) / CELL_W;
-      pointer.ty = (e.clientY - r.top) / CELL_H;
-      // First contact starts the rings under the cursor, not on a journey
-      // from wherever they last died.
-      if (pointer.energy < 0.02) { pointer.x = pointer.tx; pointer.y = pointer.ty; }
-      pointer.energy = Math.min(1, pointer.energy + 0.12);
-    });
-    hero.addEventListener("pointerleave", () => { pointer.energy *= 0.5; });
+    for (const f of fields) {
+      const zone = f.host.parentElement;
+      const p = f.pointer;
+      zone.addEventListener("pointermove", (e) => {
+        const r = f.host.getBoundingClientRect();
+        p.tx = (e.clientX - r.left) / CELL_W;
+        p.ty = (e.clientY - r.top) / CELL_H;
+        // First contact starts the rings under the cursor, not on a journey
+        // from wherever they last died.
+        if (p.energy < 0.02) { p.x = p.tx; p.y = p.ty; }
+        p.energy = Math.min(1, p.energy + 0.12);
+      });
+      zone.addEventListener("pointerleave", () => { p.energy *= 0.5; });
+      new IntersectionObserver((es) => { f.visible = es[0].isIntersecting; }).observe(f.pre);
+    }
 
     // Phase accumulates per frame so scroll velocity can pour energy in:
     // the ocean stirs while you move and settles when you stop. ~30 fps,
-    // since a text reflow at 60 buys nothing visible.
-    let visible = true;
+    // since a text reflow at 60 buys nothing visible. Off-screen fields
+    // still advance their phase, so they never freeze mid-wave on return.
     let last = 0;
-    let phase = 0;
-    new IntersectionObserver((es) => { visible = es[0].isIntersecting; }).observe(field);
     const loop = (now) => {
       const dt = now - last;
-      if (visible && dt > 32) {
+      if (dt > 32) {
         last = now;
-        phase += dt * 0.0006 * (1 + fieldEnergy * 2.2);
+        const step = dt * 0.0006 * (1 + fieldEnergy * 2.2);
         fieldEnergy *= 0.92;
-        pointer.energy *= 0.965;
-        pointer.x += (pointer.tx - pointer.x) * 0.085;
-        pointer.y += (pointer.ty - pointer.y) * 0.085;
-        field.textContent = fieldFrame(phase, cols, rows);
+        for (const f of fields) {
+          f.phase += step;
+          const p = f.pointer;
+          p.energy *= 0.965;
+          p.x += (p.tx - p.x) * 0.085;
+          p.y += (p.ty - p.y) * 0.085;
+          if (f.visible) f.pre.textContent = fieldFrame(f.phase, f.cols, f.rows, p);
+        }
       }
       requestAnimationFrame(loop);
     };
