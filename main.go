@@ -862,9 +862,19 @@ func cmdRestartDaemon() error {
 	// printing its version claims the wrong thing.
 	if v := daemonVersion(); v != "" {
 		fmt.Println("  " + stOK.Render("●") + " daemon restarted on " + v)
-		return nil
+	} else {
+		fmt.Println("  " + stOK.Render("●") + " daemon restarted")
 	}
-	fmt.Println("  " + stOK.Render("●") + " daemon restarted")
+	// The bare-URL front is its own root process on the old binary until it is
+	// reloaded; do that here so an update reaches both. Silent through the
+	// allowlist; otherwise leave the command, since prompting mid-update is worse.
+	if AliasActive() {
+		if err := installFrontDaemon(false); err != nil {
+			fmt.Println("  " + stWarn.Render("●") + " bare-URL front still on the old build; reload it with: " + stKey.Render(AppName+" alias"))
+		} else {
+			fmt.Println("  " + stOK.Render("●") + " bare-URL front restarted")
+		}
+	}
 	return nil
 }
 

@@ -139,6 +139,8 @@ func RunDaemon(background bool) error {
 			return fmt.Errorf("router: %w", err)
 		}
 	}
+	// The bare-URL front is a separate root process; keep an eye on it.
+	go watchFront()
 	// record daemon pid so `front` switching can restart us
 	if pidf := filepath.Join(P().Run(), "daemon.pid"); pidf != "" {
 		os.WriteFile(pidf, []byte(fmt.Sprint(os.Getpid())), 0o644)

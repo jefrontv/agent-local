@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strings"
+	"time"
 )
 
 // LoopbackAlias is the address agent-local uses for bare port-80/443
@@ -49,6 +51,39 @@ func hostsIP() string {
 
 // frontPlistPath is where the root LaunchDaemon lives.
 func frontPlistPath() string { return "/Library/LaunchDaemons/local.agent-local.front.plist" }
+
+// frontDaemonAlive reports whether the root front process is running. The
+// process, not the port: while it stands aside for another local router the
+// port is deliberately free, and that is not a failure.
+func frontDaemonAlive() bool {
+	out, err := runCmdOut("pgrep", "-f", AppName+" front-daemon")
+	return err == nil && strings.TrimSpace(out) != ""
+}
+
+// frontDaemonInstalled reports whether launchd has the front daemon at all.
+// An alias without this is an orphan: something started the front by hand
+// once, and the first thing that kills it takes every bare URL down with it.
+func frontDaemonInstalled() bool { return fileExists(frontPlistPath()) }
+
+// watchFront runs inside the router daemon: an alias with no front process
+// behind it is a machine where every bare URL refuses connections while the
+// alias check still says fine. Reinstall through the allowlist when that
+// happens; without an allowlist, say so once in the log with the command.
+func watchFront() {
+	var lastTry time.Time
+	for {
+		if interfaceHasAddr(LoopbackAlias) && !frontDaemonAlive() && time.Since(lastTry) > 10*time.Minute {
+			lastTry = time.Now()
+			aliasCache = 0
+			if err := EnsureLoopAlias(false); err != nil {
+				log.Printf("front: %s is up but no front daemon serves :80/:443, and it could not be reinstalled silently (%v) — run: %s alias", LoopbackAlias, err, AppName)
+			} else {
+				log.Printf("front: reinstalled the bare-URL front daemon under launchd")
+			}
+		}
+		time.Sleep(30 * time.Second)
+	}
+}
 
 // EnsureLoopAlias adds 127.0.0.2 to lo0 and installs the root front daemon
 // that binds 127.0.0.2:80/:443 and pipes to our router ports. One-time root

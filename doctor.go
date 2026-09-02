@@ -91,9 +91,22 @@ func Doctor(store *Store) *DoctorReport {
 		add(Finding{Check: "http", Status: "ok", Detail: front + " (no sites yet)"})
 	}
 
-	// bare-URL loopback alias (LocalWP binds wildcard :80)
+	// bare-URL loopback alias (LocalWP binds wildcard :80). The alias alone is
+	// not the check: a machine can carry 127.0.0.2 with nothing listening on it,
+	// and then every bare URL refuses while the alias looks fine.
 	if AliasActive() {
-		add(Finding{Check: "bare-urls", Status: "ok", Detail: LoopbackAlias + " alias up — http://<domain> hits agent-local"})
+		switch {
+		case frontDaemonAlive() && dialable(LoopbackAlias, 80):
+			add(Finding{Check: "bare-urls", Status: "ok", Detail: LoopbackAlias + " alias up, front daemon serving :80/:443"})
+		case frontDaemonAlive():
+			add(Finding{Check: "bare-urls", Status: "warn", Detail: "front daemon standing aside while another local router starts; bare URLs resume on their own"})
+		case frontDaemonInstalled():
+			add(Finding{Check: "bare-urls", Status: "fail", Detail: LoopbackAlias + " alias up but the front daemon is not running — bare URLs refuse connections",
+				FixCmd: "agent-local alias", AutoFix: true, FixRoot: true})
+		default:
+			add(Finding{Check: "bare-urls", Status: "fail", Detail: LoopbackAlias + " alias up with no front daemon under launchd (an orphan from an older setup) — bare URLs refuse connections",
+				FixCmd: "agent-local alias", AutoFix: true, FixRoot: true})
+		}
 	} else if len(store.Sites()) > 0 {
 		add(Finding{Check: "bare-urls", Status: "warn", Detail: "no " + LoopbackAlias + " alias; bare URLs hit other apps (Local)",
 			FixCmd: "agent-local alias", AutoFix: true, FixRoot: true})
