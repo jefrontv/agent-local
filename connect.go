@@ -34,8 +34,8 @@ const (
 type Harness struct {
 	ID     string
 	Name   string
-	Path   string        // absolute config file path (~ already expanded)
-	Bin    string        // CLI binary name checked on PATH, "" if none
+	Path   string // absolute config file path (~ already expanded)
+	Bin    string // CLI binary name checked on PATH, "" if none
 	Format harnessFormat
 }
 
@@ -586,4 +586,3 @@ func applyAndReport(h Harness) error {
 	fmt.Printf("%-16s wrote %s\n", h.ID, shortHome(h.Path))
 	return nil
 }
-
