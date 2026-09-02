@@ -94,7 +94,7 @@ func ListLocalWPSites() ([]LocalWPSite, error) {
 // ImportOpts configures an import.
 type ImportOpts struct {
 	Name      string // agent-local slug/name (default: source name)
-	Source    string // either a LocalWP site name OR a path to a docroot
+	Source    string // a LocalWP site name, a DDEV project name, or a path to a docroot
 	Domain    string // target domain (default: <slug>.test)
 	PHPVer    string
 	InPlace   bool   // default true
@@ -106,6 +106,7 @@ type ImportOpts struct {
 	DBName    string // explicit source DB name
 	SQLDump   string // import from a .sql dump file instead of a live server
 	ServeOnly bool   // don't touch any database; serve the dir with its own wp-config
+	KeepDDEV  bool   // leave a DDEV source project registered and running; default moves it out
 	Progress  func(stage, detail string)
 }
 
@@ -149,6 +150,17 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 			break
 		}
 	}
+	// DDEV project, by name or by path. Its database is only reachable while
+	// the containers run, so the credentials come after ensureDDEVRunning.
+	var ddevProj *DDEVProject
+	if docroot == "" {
+		if p := findDDEVProject(o.Source); p != nil {
+			ddevProj = p
+			lwName, lwPHP = p.Name, p.PHPVersion
+			lwDomain = hostFromURL(p.PrimaryURL)
+			docroot = p.DocrootPath()
+		}
+	}
 	if docroot == "" {
 		// treat Source as a docroot path
 		if st, err := os.Stat(o.Source); err == nil && st.IsDir() {
@@ -163,7 +175,7 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 		}
 	}
 	if docroot == "" {
-		return nil, fmt.Errorf("source %q not found as a LocalWP site or directory", o.Source)
+		return nil, fmt.Errorf("source %q not found as a LocalWP site, a DDEV project, or a directory", o.Source)
 	}
 	if !fileExists(filepath.Join(docroot, "wp-load.php")) {
 		if found := DocrootFor(docroot); fileExists(filepath.Join(found, "wp-load.php")) {
@@ -185,6 +197,16 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 			return nil, err
 		}
 		srcSocket = sock
+	}
+	if needsSourceDB && ddevProj != nil {
+		full, err := ensureDDEVRunning(ddevProj, cb)
+		if err != nil {
+			return nil, err
+		}
+		ddevProj = full
+		srcPort, srcUser, srcPass, srcDBName = full.dbCreds()
+		srcHost = "127.0.0.1"
+		lwPHP = full.PHPVersion
 	}
 
 	// Source connection: explicit flags win, else read the docroot's own
@@ -341,7 +363,7 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 			}
 		}
 		cb("config", "rewriting wp-config.php")
-		if err := rewriteWPConfigDB(filepath.Join(targetWPDir, "wp-config.php"), site); err != nil {
+		if err := rewriteWPConfigDB(filepath.Join(targetWPDir, "wp-config.php"), site, e.tablePrefixFromDB(site)); err != nil {
 			e.DropSiteDB(site)
 			return nil, err
 		}
@@ -397,6 +419,20 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 		_ = TrustCert(cert, false)
 	}
 
+	// The site is served from here now. Unless asked to keep it, the DDEV
+	// project goes: containers, database volume and registration, with DDEV's
+	// own snapshot as the way back. Files and .ddev/ stay untouched. A failure
+	// here is reported, not fatal — the import itself already succeeded.
+	if ddevProj != nil && !o.ServeOnly {
+		if o.KeepDDEV {
+			cb("ddev", ddevProj.Name+" left in DDEV — its wp-config now points here; restore wp-config.php.agent-local.bak (or `ddev snapshot restore`) to serve it from DDEV again")
+		} else if err := detachDDEVProject(ddevProj.Name, cb); err != nil {
+			cb("warn", "could not remove the DDEV project: "+err.Error()+" — finish with `ddev delete "+ddevProj.Name+"`")
+		} else {
+			cb("ddev", ddevProj.Name+" removed from DDEV; undo with `ddev start "+ddevProj.Name+"` then `ddev snapshot restore`")
+		}
+	}
+
 	cb("done", BareURL(site))
 	return site, nil
 }
@@ -432,6 +468,13 @@ func (e *Engine) copyDatabase(site *Site, srcDB, srcSocket, srcHost string, srcP
 		dumpArgs = append(dumpArgs, "--socket="+srcSocket)
 	} else {
 		dumpArgs = append(dumpArgs, "--host="+srcHost, fmt.Sprintf("--port=%d", srcPort))
+		// MariaDB 11+ clients insist on TLS over TCP unless told otherwise, and
+		// a local source (a DDEV container, a LocalWP TCP port) has none to
+		// offer: "SSL is required, but the server does not support it".
+		// The loopback carries the traffic; TLS adds nothing here.
+		if strings.HasPrefix(filepath.Base(dumpBin), "mariadb") {
+			dumpArgs = append(dumpArgs, "--skip-ssl")
+		}
 	}
 	dumpArgs = append(dumpArgs, srcDB)
 	dump := exec.Command(dumpBin, dumpArgs...)
@@ -688,6 +731,23 @@ func (e *Engine) tableCount(site *Site) int {
 	return n
 }
 
+// tablePrefixFromDB reads the $table_prefix a copied database was written
+// with, from the shortest table ending in "options" (wp_options → "wp_").
+// "" when the schema has no options table yet.
+func (e *Engine) tablePrefixFromDB(site *Site) string {
+	out, err := e.DB(fmt.Sprintf(
+		"SELECT table_name FROM information_schema.tables WHERE table_schema='%s' "+
+			"AND table_name LIKE '%%options' ORDER BY LENGTH(table_name) LIMIT 1", site.DBName))
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 2 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimSpace(lines[1]), "options")
+}
+
 // siteHostsFromDB reads the hosts WordPress currently believes it serves,
 // straight from the database. wp-cli is unusable here: `option get` rejects
 // --format=plain, and a dump can reference plugins whose files are absent.
@@ -802,8 +862,11 @@ func readWPConfigConst(path, name string) string {
 	return ""
 }
 
-// rewriteWPConfigDB points an existing wp-config.php at our DB, backing up first.
-func rewriteWPConfigDB(path string, site *Site) error {
+// rewriteWPConfigDB points an existing wp-config.php at our DB, backing up
+// first. A define that is not there is added: DDEV keeps its DB_* constants
+// in wp-config-ddev.php behind an environment check, so its wp-config.php
+// has none of them, and neither a $table_prefix.
+func rewriteWPConfigDB(path string, site *Site, tablePrefix string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -817,7 +880,32 @@ func rewriteWPConfigDB(path string, site *Site) error {
 	src = setWPConst(src, "DB_USER", site.DBUser)
 	src = setWPConst(src, "DB_PASSWORD", site.DBPass)
 	src = setWPConst(src, "DB_HOST", fmt.Sprintf("127.0.0.1:%d", DefaultDBPort))
+	if tablePrefix != "" && !regexp.MustCompile(`(?m)^\s*\$table_prefix\s*=`).MatchString(src) {
+		src = insertAfterPHPOpen(src, fmt.Sprintf("$table_prefix = '%s';\n", strings.ReplaceAll(tablePrefix, "'", `\'`)))
+	}
 	return os.WriteFile(path, []byte(src), 0o644)
+}
+
+// insertAfterPHPOpen places a line right after the opening <?php tag, before
+// anything the file itself does, with a marker so the addition is recognisable.
+func insertAfterPHPOpen(src, line string) string {
+	const marker = "// added by agent-local\n"
+	i := strings.Index(src, "<?php")
+	if i < 0 {
+		return "<?php\n" + marker + line + src
+	}
+	end := i + len("<?php")
+	if nl := strings.IndexByte(src[end:], '\n'); nl >= 0 {
+		end += nl + 1
+	} else {
+		src += "\n"
+		end = len(src)
+	}
+	if strings.HasPrefix(src[end:], marker) {
+		end += len(marker)
+		return src[:end] + line + src[end:]
+	}
+	return src[:end] + marker + line + src[end:]
 }
 
 // parseWPDBHost splits a WordPress DB_HOST value. WordPress accepts three
@@ -866,9 +954,15 @@ func (e *Engine) ownDatabase(host string, port int, socket string) bool {
 	}
 	return false
 }
+
+// setWPConst rewrites define('NAME', '…') in place, or adds it near the top
+// of the file when the constant is not defined at all.
 func setWPConst(src, name, val string) string {
 	re := regexp.MustCompile(`(?m)(define\(\s*['"]` + name + `['"]\s*,\s*)['"][^'"]*['"]`)
-	return re.ReplaceAllString(src, `${1}'`+val+`'`)
+	if re.MatchString(src) {
+		return re.ReplaceAllString(src, `${1}'`+val+`'`)
+	}
+	return insertAfterPHPOpen(src, fmt.Sprintf("define( '%s', '%s' );\n", name, strings.ReplaceAll(val, "'", `\'`)))
 }
 
 // hostFromURL extracts the host[:port] from a URL-ish string. The port stays:

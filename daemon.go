@@ -1400,13 +1400,14 @@ func (a *APIServer) handleHosts(w http.ResponseWriter, r *http.Request) {
 }
 
 type importReq struct {
-	Source     string `json:"source"` // LocalWP site name or docroot path
+	Source     string `json:"source"` // LocalWP site name, DDEV project name, or docroot path
 	Name       string `json:"name"`
 	Domain     string `json:"domain"`
 	PHPVersion string `json:"php_version"`
 	Copy       bool   `json:"copy"`
 	SQLDump    string `json:"sql_dump"`
 	ServeOnly  bool   `json:"serve_only"`
+	KeepDDEV   bool   `json:"keep_ddev"`
 	DBHost     string `json:"db_host"`
 	DBPort     int    `json:"db_port"`
 	DBUser     string `json:"db_user"`
@@ -1428,7 +1429,8 @@ func (a *APIServer) handleImport(w http.ResponseWriter, r *http.Request) {
 		return a.engine.ImportSite(ImportOpts{
 			Source: req.Source, Name: req.Name, Domain: req.Domain,
 			PHPVer: req.PHPVersion, Copy: req.Copy, SQLDump: req.SQLDump,
-			ServeOnly: req.ServeOnly, DBHost: req.DBHost, DBPort: req.DBPort,
+			ServeOnly: req.ServeOnly, KeepDDEV: req.KeepDDEV,
+			DBHost: req.DBHost, DBPort: req.DBPort,
 			DBUser: req.DBUser, DBPass: req.DBPass, DBName: req.DBName,
 			Progress: cb,
 		})

@@ -470,11 +470,13 @@ should contain WordPress at `wp/`).
 
 ## Import an existing site
 
-Any WordPress directory, or a LocalWP site by name:
+A LocalWP site by name, a DDEV project by name, or any WordPress directory:
 
 ```sh
-agent-local localwp-sites                    # what's importable
+agent-local localwp-sites                    # LocalWP sites available
+agent-local ddev-projects                    # DDEV projects available
 agent-local import orleton-om                # LocalWP site → served locally
+agent-local import ddevwp                    # DDEV project → moved out of DDEV
 agent-local import /path/to/public           # any docroot, served in place
 agent-local import /path/to/public --copy     # copy files into ~/.agent-local
 ```
@@ -498,18 +500,29 @@ agent-local import /path/to/dir --serve-only
 
 The import pipeline:
 
-1. locate the source database (LocalWP registry socket/creds, `wp-config.php`, or your flags)
+1. locate the source database (LocalWP registry socket/creds, DDEV's published
+   port — starting the project first if it is stopped — `wp-config.php`, or your flags)
 2. stream `dump → collation fixer → load` into the embedded MariaDB — flat memory
    for multi-GB dumps, and MySQL-8 `utf8mb4_0900_ai_ci` is rewritten to a MariaDB
    collation on the way through
-3. rewrite `wp-config.php` `DB_*` (original kept as `wp-config.php.agent-local.bak`)
-   plus any theme URL-override constant (e.g. `EFRONT_URL_OVERRIDE`)
+3. rewrite `wp-config.php` `DB_*` — adding the defines and `$table_prefix` a
+   DDEV config keeps in `wp-config-ddev.php` (original kept as
+   `wp-config.php.agent-local.bak`) — plus any theme URL-override constant
+   (e.g. `EFRONT_URL_OVERRIDE`)
 4. `search-replace` every domain the database actually stores — including staging
    subdomains — to the new local domain, then flush and serve
 
 In-place is the default, so a 7 GB checkout costs zero copy time. Deleting an
 imported site never touches files outside `~/.agent-local`; it detaches the
 config and restores the backup.
+
+A DDEV source is moved out of DDEV once it serves here: `ddev delete` removes the
+containers and the database volume, DDEV's own snapshot (kept under
+`.ddev/db_snapshots/`) is the way back, and your files plus `.ddev/` are never
+touched. `--keep-ddev` leaves the project registered instead — its wp-config now
+points at agent-local, so restore the `.bak` (or `ddev snapshot restore`) to serve
+it from DDEV again. `ddev-projects` works with Docker down too: names and roots
+come from DDEV's registry, with the status saying why nothing else is shown.
 
 ## Domains
 
@@ -702,7 +715,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | agent-local mcp
 
 | Area | Tools |
 |---|---|
-| discovery | `status`, `list_sites`, `get_site`, `localwp_sites`, `list_runtimes`, `list_branches` |
+| discovery | `status`, `list_sites`, `get_site`, `localwp_sites`, `ddev_projects`, `list_runtimes`, `list_branches` |
 | lifecycle | `create_site`, `import_site`, `start_site`, `stop_site`, `restart_site`, `delete_site` |
 | runtime | `switch_php`, `install_runtime`, `get_http_front`, `set_http_front` |
 | domains | `set_domain`, `get_domain_suffix`, `set_domain_suffix`, `add_hosts_entries`, `remove_hosts_entries` |
@@ -793,9 +806,10 @@ agent-local create NAME [--domain d] [--php v] [--repo url]
 agent-local list | start SLUG | stop SLUG | restart SLUG | open SLUG [--db]
 agent-local delete SLUG [--yes] [--keep-files] [--keep-db] [--no-snapshot]
 agent-local import SOURCE [--name n] [--domain d] [--php v] [--copy]
-                         [--sql file] [--serve-only]
+                         [--sql file] [--serve-only] [--keep-ddev]
                          [--db-host h] [--db-port p] [--db-user u] [--db-pass p] [--db-name n]
 agent-local localwp-sites              list importable LocalWP sites
+agent-local ddev-projects              list importable DDEV projects
 agent-local db SLUG [sql | tables | import FILE [--keep-urls] | export [FILE] | reset | gui]
 agent-local db SLUG snapshot [NAME] | snapshots | restore [NAME] [--no-snapshot]
 agent-local mail SLUG [ID] [--open] [--clear]  captured outgoing email

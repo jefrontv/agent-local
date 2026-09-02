@@ -187,14 +187,15 @@ func mcpTools() []mcpTool {
 			"domain":      prop("string", "local domain (default: slug + configured suffix)"),
 			"php_version": prop("string", "php version e.g. 8.3"),
 		}, "dir")},
-		{"import_site", "Import a LocalWP site or any WordPress directory into agent-local. Copies the database (or loads a .sql dump, or serves with its existing DB), points wp-config at the embedded MariaDB, serves it.", schema(map[string]interface{}{
-			"source":      prop("string", "LocalWP site name OR absolute path to a WordPress docroot"),
+		{"import_site", "Import a LocalWP site, a DDEV project, or any WordPress directory into agent-local. Copies the database (or loads a .sql dump, or serves with its existing DB), points wp-config at the embedded MariaDB, serves it. A stopped LocalWP site or DDEV project is started first so its database can be read. A DDEV project is then removed from DDEV (its own snapshot kept) unless keep_ddev is true.", schema(map[string]interface{}{
+			"source":      prop("string", "LocalWP site name, DDEV project name, OR absolute path to a WordPress docroot"),
 			"name":        prop("string", "site name (default: source name)"),
 			"domain":      prop("string", "target domain (default: slug.test)"),
 			"php_version": prop("string", "php version"),
 			"copy":        prop("boolean", "copy files into ~/.agent-local instead of serving in place"),
 			"sql_dump":    prop("string", "path to a .sql dump to load instead of copying from a live DB"),
 			"serve_only":  prop("boolean", "don't touch any database; serve with the existing wp-config DB settings"),
+			"keep_ddev":   prop("boolean", "leave a DDEV source project registered and running instead of moving it out (default false)"),
 			"async":       prop("boolean", "return a job id immediately and poll get_job instead of waiting"),
 			"db_host":     prop("string", "explicit source DB host"),
 			"db_port":     prop("integer", "explicit source DB port"),
@@ -203,6 +204,7 @@ func mcpTools() []mcpTool {
 			"db_name":     prop("string", "explicit source DB name"),
 		}, "source")},
 		{"localwp_sites", "List LocalWP sites available for import", schema(nil)},
+		{"ddev_projects", "List DDEV projects available for import: name, status, type, approot, docroot, PHP version, primary URL. With Docker down, names and roots still come from DDEV's registry and status says so.", schema(nil)},
 		{"set_media_fallback", "Point a site's missing uploads at an origin: any GET under /wp-content/uploads/ with no local file 302s there. This is what the Apache-only '.htaccess uploads rewrite' does, which the built-in router cannot read. Pass \"auto\" to adopt the rule already in the site's .htaccess, or an empty string to turn it off", schema(map[string]interface{}{
 			"slug": prop("string", "site slug"),
 			"url":  prop("string", "e.g. https://example.org — or \"auto\", or \"\" to disable")}, "slug", "url")},
@@ -385,7 +387,8 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 			"source": get("source"), "name": get("name"), "domain": get("domain"),
 			"php_version": get("php_version"), "copy": args["copy"] == true,
 			"sql_dump": get("sql_dump"), "serve_only": args["serve_only"] == true,
-			"db_host": get("db_host"), "db_user": get("db_user"),
+			"keep_ddev": args["keep_ddev"] == true,
+			"db_host":   get("db_host"), "db_user": get("db_user"),
 			"db_pass": get("db_pass"), "db_name": get("db_name"),
 		}
 		if p, ok := args["db_port"].(float64); ok {
@@ -402,6 +405,12 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 			return map[string]string{"error": err.Error()}, true
 		}
 		return sites, false
+	case "ddev_projects":
+		ps, err := ListDDEVProjects()
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return ps, false
 	case "set_media_fallback":
 		return apiPost("/sites/"+get("slug")+"/media", map[string]string{"url": get("url")})
 	case "get_media_fallback":

@@ -71,6 +71,8 @@ func main() {
 		err = cmdImport(rest)
 	case "localwp-sites":
 		err = cmdLocalWPSites()
+	case "ddev-projects":
+		err = cmdDDEVProjects()
 	case "alias":
 		err = cmdAlias(rest)
 	case "resolve":
@@ -690,7 +692,7 @@ func cmdPHP(args []string) error {
 func cmdImport(args []string) error {
 	pos := positional(args)
 	if len(pos) < 1 {
-		return fmt.Errorf("usage: agent-local import <localwp-name|docroot> [--name n] [--domain d] [--php v] [--copy] [--sql file] [--serve-only] [--db-host h] [--db-port p] [--db-user u] [--db-pass p] [--db-name n]")
+		return fmt.Errorf("usage: agent-local import <localwp-name|ddev-project|docroot> [--name n] [--domain d] [--php v] [--copy] [--sql file] [--serve-only] [--keep-ddev] [--db-host h] [--db-port p] [--db-user u] [--db-pass p] [--db-name n]")
 	}
 	_, e, err := openEnv()
 	if err != nil {
@@ -705,6 +707,7 @@ func cmdImport(args []string) error {
 		Copy:      hasFlag(args, "--copy"),
 		SQLDump:   flagValue(args, "--sql"),
 		ServeOnly: hasFlag(args, "--serve-only"),
+		KeepDDEV:  hasFlag(args, "--keep-ddev"),
 		DBHost:    flagValue(args, "--db-host"),
 		DBPort:    atoi0(flagValue(args, "--db-port")),
 		DBUser:    flagValue(args, "--db-user"),
@@ -740,6 +743,25 @@ func cmdLocalWPSites() error {
 	}
 	outTable([]string{"name", "domain", "path"}, rows)
 	outHint("import", AppName+" import NAME")
+	return nil
+}
+
+func cmdDDEVProjects() error {
+	ps, err := ListDDEVProjects()
+	if err != nil {
+		return err
+	}
+	outTitle(AppName, "ddev-projects")
+	if len(ps) == 0 {
+		outNote("no DDEV projects found")
+		return nil
+	}
+	var rows [][]string
+	for _, p := range ps {
+		rows = append(rows, []string{p.Name, p.Status, p.Type, dimf(shortHome(p.AppRoot))})
+	}
+	outTable([]string{"name", "state", "type", "path"}, rows)
+	outHint("import", AppName+" import NAME [--keep-ddev]")
 	return nil
 }
 
