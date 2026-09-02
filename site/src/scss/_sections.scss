@@ -633,11 +633,15 @@ $how-cycle: 6s;
 	.nav__cta { margin-left: auto; }
 
 	.mark__br { display: inline; }
+	// On a phone the mark must sit fully inside the screen: no bleed, a
+	// fixed 20px clear under it, and the hero padded so nothing else moves.
 	.hero__mark, .footer__mark {
-		font-size: 19vw;
+		font-size: 17.5vw;
 		line-height: 0.9;
-		transform: translateY(0.12em);
+		transform: none;
+		margin-bottom: 20px;
 	}
+	.hero { padding-bottom: env(safe-area-inset-bottom, 0); }
 	.footer__mark { margin-top: 36px; }
 
 	.stats, .bench, .how, .index, .compare { padding-top: 72px; padding-bottom: 72px; }
