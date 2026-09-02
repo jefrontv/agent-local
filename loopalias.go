@@ -52,12 +52,12 @@ func hostsIP() string {
 // frontPlistPath is where the root LaunchDaemon lives.
 func frontPlistPath() string { return "/Library/LaunchDaemons/local.agent-local.front.plist" }
 
-// frontDaemonAlive reports whether the root front process is running. The
-// process, not the port: while it stands aside for another local router the
-// port is deliberately free, and that is not a failure.
+// frontDaemonAlive reports whether the bare-URL front is serving. It is a
+// root process, and macOS hides other users' process arguments, so pgrep
+// cannot see it; the port can. The one legitimate reason for the port to be
+// free is a yield in progress, when it is standing aside on request.
 func frontDaemonAlive() bool {
-	out, err := runCmdOut("pgrep", "-f", AppName+" front-daemon")
-	return err == nil && strings.TrimSpace(out) != ""
+	return dialable(LoopbackAlias, 80) || yieldActive()
 }
 
 // frontDaemonInstalled reports whether launchd has the front daemon at all.
@@ -65,23 +65,32 @@ func frontDaemonAlive() bool {
 // once, and the first thing that kills it takes every bare URL down with it.
 func frontDaemonInstalled() bool { return fileExists(frontPlistPath()) }
 
-// watchFront runs inside the router daemon: an alias with no front process
+// watchFront runs inside the router daemon: an alias with nothing serving
 // behind it is a machine where every bare URL refuses connections while the
-// alias check still says fine. Reinstall through the allowlist when that
-// happens; without an allowlist, say so once in the log with the command.
+// alias check still says fine. The front also lets go of the port for up to
+// twenty seconds while another local router boots, so one missed check is
+// not a verdict; two in a row, thirty seconds apart, is. Then reinstall
+// through the allowlist, or say so in the log with the command.
 func watchFront() {
 	var lastTry time.Time
+	misses := 0
 	for {
-		if interfaceHasAddr(LoopbackAlias) && !frontDaemonAlive() && time.Since(lastTry) > 10*time.Minute {
-			lastTry = time.Now()
-			aliasCache = 0
-			if err := EnsureLoopAlias(false); err != nil {
-				log.Printf("front: %s is up but no front daemon serves :80/:443, and it could not be reinstalled silently (%v) — run: %s alias", LoopbackAlias, err, AppName)
-			} else {
-				log.Printf("front: reinstalled the bare-URL front daemon under launchd")
-			}
-		}
 		time.Sleep(30 * time.Second)
+		if !interfaceHasAddr(LoopbackAlias) || frontDaemonAlive() {
+			misses = 0
+			continue
+		}
+		misses++
+		if misses < 2 || time.Since(lastTry) < 10*time.Minute {
+			continue
+		}
+		lastTry = time.Now()
+		aliasCache = 0
+		if err := EnsureLoopAlias(false); err != nil {
+			log.Printf("front: %s is up but nothing serves :80/:443 on it, and the front daemon could not be reinstalled silently (%v) — run: %s alias", LoopbackAlias, err, AppName)
+		} else {
+			log.Printf("front: reinstalled the bare-URL front daemon under launchd")
+		}
 	}
 }
 

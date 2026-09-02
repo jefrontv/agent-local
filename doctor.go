@@ -96,12 +96,12 @@ func Doctor(store *Store) *DoctorReport {
 	// and then every bare URL refuses while the alias looks fine.
 	if AliasActive() {
 		switch {
-		case frontDaemonAlive() && dialable(LoopbackAlias, 80):
+		case dialable(LoopbackAlias, 80):
 			add(Finding{Check: "bare-urls", Status: "ok", Detail: LoopbackAlias + " alias up, front daemon serving :80/:443"})
-		case frontDaemonAlive():
-			add(Finding{Check: "bare-urls", Status: "warn", Detail: "front daemon standing aside while another local router starts; bare URLs resume on their own"})
+		case yieldActive():
+			add(Finding{Check: "bare-urls", Status: "warn", Detail: "front daemon standing aside on request (agent-local yield); bare URLs resume when it ends"})
 		case frontDaemonInstalled():
-			add(Finding{Check: "bare-urls", Status: "fail", Detail: LoopbackAlias + " alias up but the front daemon is not running — bare URLs refuse connections",
+			add(Finding{Check: "bare-urls", Status: "fail", Detail: LoopbackAlias + " alias up but nothing serves :80/:443 on it — bare URLs refuse connections",
 				FixCmd: "agent-local alias", AutoFix: true, FixRoot: true})
 		default:
 			add(Finding{Check: "bare-urls", Status: "fail", Detail: LoopbackAlias + " alias up with no front daemon under launchd (an orphan from an older setup) — bare URLs refuse connections",
@@ -427,14 +427,21 @@ func DoctorFix(store *Store, interactive bool) []string {
 	return done
 }
 
-// RenderReport prints the report human-readable.
+// RenderReport prints the report human-readable, in the CLI's register: one
+// lamp per check, the check name in a dim column, the fix as a key.
 func (r *DoctorReport) RenderReport() string {
 	var b strings.Builder
-	icon := map[string]string{"ok": "✓", "warn": "!", "fail": "✗"}
 	for _, f := range r.Findings {
-		b.WriteString(fmt.Sprintf(" %s %-12s %s\n", icon[f.Status], f.Check, f.Detail))
+		lampGlyph := stOK.Render("●")
+		switch f.Status {
+		case "warn":
+			lampGlyph = stWarn.Render("●")
+		case "fail":
+			lampGlyph = stErr.Render("●")
+		}
+		b.WriteString("  " + lampGlyph + " " + stDim.Render(col(f.Check, 11)) + f.Detail + "\n")
 		if f.Status != "ok" && f.FixCmd != "" {
-			b.WriteString(fmt.Sprintf("   fix: %s\n", f.FixCmd))
+			b.WriteString("    " + stDim.Render("fix") + "  " + stKey.Render(f.FixCmd) + "\n")
 		}
 	}
 	return b.String()
