@@ -31,11 +31,27 @@ func newConnectModel(statuses []HarnessStatus) connectModel {
 	for i, s := range statuses {
 		rows[i] = connectRow{
 			HarnessStatus: s,
-			// Preselect anything actionable: installed-but-unconfigured or stale.
-			selected: s.Installed && (!s.Configured || s.Stale),
+			// The checkbox is the desired state: registered after apply. So it
+			// starts checked wherever agent-local is (or should be) present —
+			// configured, stale, or installed and waiting — and unchecking a
+			// configured row is how you remove it.
+			selected: s.Installed || s.Configured || s.Stale,
 		}
 	}
 	return connectModel{rows: rows}
+}
+
+// pending names the change apply would make for a row, or "" for none.
+func (r connectRow) pending() string {
+	switch {
+	case r.selected && r.Stale:
+		return "update"
+	case r.selected && !r.Configured:
+		return "register"
+	case !r.selected && (r.Configured || r.Stale):
+		return "remove"
+	}
+	return ""
 }
 
 func runConnectTUI() error {
@@ -81,9 +97,13 @@ func (m connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "a":
 			for i := range m.rows {
-				if m.rows[i].Installed && (!m.rows[i].Configured || m.rows[i].Stale) {
+				if m.rows[i].Installed {
 					m.rows[i].selected = true
 				}
+			}
+		case "n":
+			for i := range m.rows {
+				m.rows[i].selected = false
 			}
 		case "enter":
 			m.applyNow()
@@ -98,23 +118,20 @@ func (m connectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *connectModel) applyNow() {
 	var results []string
 	for _, r := range m.rows {
-		if !r.selected {
+		p := r.pending()
+		if p == "" {
 			continue
 		}
-		wrote, err := ConnectHarness(r.Harness)
-		switch {
-		case err != nil:
-			results = append(results, fmt.Sprintf("%-16s error: %s", r.ID, err.Error()))
-		case wrote:
-			results = append(results, fmt.Sprintf("%-16s wrote %s", r.ID, shortHome(r.Path)))
-		default:
-			results = append(results, fmt.Sprintf("%-16s already configured (%s)", r.ID, shortHome(r.Path)))
+		line, err := applyOne(r.Harness, p == "remove")
+		if err != nil {
+			line = "error: " + err.Error()
 		}
+		results = append(results, fmt.Sprintf("%-16s %s", r.ID, line))
 	}
 	if len(results) == 0 {
-		results = []string{"nothing selected"}
+		results = []string{"no changes"}
 	} else {
-		results = append(results, "", "restart any running harness above to pick up the new server.")
+		results = append(results, "", "restart any running harness above to pick up the change.")
 	}
 	m.results = results
 }
@@ -123,7 +140,7 @@ func (m connectModel) View() string {
 	var b strings.Builder
 	title := lipgloss.NewStyle().Bold(true).Foreground(cInk).Render("agent-local connect")
 	b.WriteString(title + "\n")
-	b.WriteString(stDim.Render("register the agent-local MCP server in a coding-agent harness") + "\n\n")
+	b.WriteString(stDim.Render("checked = registered after apply; uncheck a configured harness to remove it") + "\n\n")
 
 	if m.applied {
 		for _, line := range m.results {
@@ -146,6 +163,12 @@ func (m connectModel) View() string {
 			gutterStyle = stWarn
 		}
 		label := fmt.Sprintf("%-16s %-28s %s", r.Name, statusLabel(r.HarnessStatus), stDim.Render(shortHome(r.Path)))
+		switch r.pending() {
+		case "register", "update":
+			label += "  " + stOK.Render("→ "+r.pending())
+		case "remove":
+			label += "  " + stWarn.Render("→ remove")
+		}
 		line := gutterStyle.Render(gutter) + " " + label
 		if i == m.cur {
 			line = stSelRow.Render("› ") + line
@@ -159,7 +182,8 @@ func (m connectModel) View() string {
 	chips := []string{
 		keyChip("↑/↓", "move"),
 		keyChip("space", "toggle"),
-		keyChip("a", "select all"),
+		keyChip("a", "all"),
+		keyChip("n", "none"),
 		keyChip("enter", "apply"),
 		keyChip("q", "quit"),
 	}

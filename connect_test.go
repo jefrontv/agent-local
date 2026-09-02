@@ -235,3 +235,56 @@ func detectHarnessesForHome(t *testing.T, home, bin string) []HarnessStatus {
 	}
 	return out
 }
+
+// Removal is the mirror of registration: only our entry goes, siblings and
+// unrelated keys stay, and a TOML file keeps its trailing newline.
+func TestConnectRemoveLeavesSiblingsIntact(t *testing.T) {
+	dir := t.TempDir()
+
+	jsonPath := filepath.Join(dir, "opencode.json")
+	if err := os.WriteFile(jsonPath, []byte(`{"$schema":"x","mcp":{"other":{"type":"local","command":["x"]}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oc := Harness{ID: "opencode", Path: jsonPath, Format: fmtOpenCode}
+	if _, err := connectHarnessWithBinary(oc, "/opt/agent-local"); err != nil {
+		t.Fatal(err)
+	}
+	if cmd, present, _ := entryCommand(oc); !present || cmd != "/opt/agent-local" {
+		t.Fatalf("opencode entry not readable back as argv[0]: %q %v", cmd, present)
+	}
+	removed, err := DisconnectHarness(oc)
+	if err != nil || !removed {
+		t.Fatalf("remove: %v %v", removed, err)
+	}
+	var got map[string]interface{}
+	b, _ := os.ReadFile(jsonPath)
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	mcp := got["mcp"].(map[string]interface{})
+	if _, still := mcp["agent-local"]; still {
+		t.Fatal("agent-local still present after remove")
+	}
+	if _, ok := mcp["other"]; !ok || got["$schema"] != "x" {
+		t.Fatalf("siblings disturbed: %s", b)
+	}
+	if removed, _ := DisconnectHarness(oc); removed {
+		t.Fatal("second remove reported a change")
+	}
+
+	tomlPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(tomlPath, []byte("[model]\nname = \"o3\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cx := Harness{ID: "codex", Path: tomlPath, Format: fmtCodexTOML}
+	if _, err := connectHarnessWithBinary(cx, "/opt/agent-local"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DisconnectHarness(cx); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(tomlPath)
+	if string(after) != "[model]\nname = \"o3\"\n" {
+		t.Fatalf("toml not restored byte-for-byte: %q", after)
+	}
+}

@@ -23,10 +23,12 @@ import (
 type harnessFormat int
 
 const (
-	fmtMCPServers     harnessFormat = iota // {"mcpServers": {name: {...}}}
-	fmtServers                             // {"servers": {name: {...}}}   (VS Code)
-	fmtContextServers                      // {"context_servers": {name: {"source":"custom", ...}}}  (Zed)
-	fmtCodexTOML                           // [mcp_servers.name] table     (Codex)
+	fmtMCPServers      harnessFormat = iota // {"mcpServers": {name: {...}}}
+	fmtMCPServersTyped                      // same, entry carries "type":"stdio" (pi's adapter requires it)
+	fmtServers                              // {"servers": {name: {...}}}   (VS Code)
+	fmtContextServers                       // {"context_servers": {name: {"source":"custom", ...}}}  (Zed)
+	fmtOpenCode                             // {"mcp": {name: {"type":"local","command":[...],"enabled":true}}}
+	fmtCodexTOML                            // [mcp_servers.name] table     (Codex)
 )
 
 // Harness describes one coding-agent MCP client agent-local can register
@@ -74,6 +76,21 @@ func harnessRegistry(home string) []Harness {
 			Path: filepath.Join(home, ".codex", "config.toml")},
 		{ID: "gemini", Name: "Gemini CLI", Bin: "gemini", Format: fmtMCPServers,
 			Path: filepath.Join(home, ".gemini", "settings.json")},
+		// Oh My Pi: ~/.omp/agent/mcp.json, "mcpServers", stdio when type is
+		// omitted (docs/mcp-config.md in can1357/oh-my-pi). Named profiles keep
+		// their own file under ~/.omp/profiles/<name>/agent/; this targets the default.
+		{ID: "omp", Name: "Oh My Pi", Bin: "omp", Format: fmtMCPServers,
+			Path: filepath.Join(home, ".omp", "agent", "mcp.json")},
+		// OpenCode: ~/.config/opencode/opencode.json, "mcp", entries are
+		// {"type":"local","command":[...],"enabled":true} (opencode.ai/docs/mcp-servers).
+		// It merges opencode.jsonc alongside; this reads and writes the .json only.
+		{ID: "opencode", Name: "OpenCode", Bin: "opencode", Format: fmtOpenCode,
+			Path: filepath.Join(home, ".config", "opencode", "opencode.json")},
+		// pi: MCP arrives through the pi-mcp-adapter package, which reads
+		// ~/.pi/agent/mcp.json with "mcpServers" and wants "type":"stdio" on
+		// local entries (github.com/ghul0/pi-mcp-adapter README).
+		{ID: "pi", Name: "pi", Bin: "pi", Format: fmtMCPServersTyped,
+			Path: filepath.Join(home, ".pi", "agent", "mcp.json")},
 		{ID: "cursor", Name: "Cursor", Bin: "cursor", Format: fmtMCPServers,
 			Path: filepath.Join(home, ".cursor", "mcp.json")},
 		{ID: "windsurf", Name: "Windsurf", Format: fmtMCPServers,
@@ -125,13 +142,24 @@ func mcpServerEntry(bin string) map[string]interface{} {
 }
 
 func serverEntryFor(h Harness, bin string) map[string]interface{} {
-	if h.Format == fmtContextServers {
+	switch h.Format {
+	case fmtContextServers:
 		return map[string]interface{}{
 			"source":  "custom",
 			"command": bin,
 			"args":    []string{"mcp"},
 			"env":     map[string]interface{}{},
 		}
+	case fmtOpenCode:
+		return map[string]interface{}{
+			"type":    "local",
+			"command": []string{bin, "mcp"},
+			"enabled": true,
+		}
+	case fmtMCPServersTyped:
+		e := mcpServerEntry(bin)
+		e["type"] = "stdio"
+		return e
 	}
 	return mcpServerEntry(bin)
 }
@@ -143,13 +171,16 @@ func topKeyFor(f harnessFormat) string {
 		return "servers"
 	case fmtContextServers:
 		return "context_servers"
+	case fmtOpenCode:
+		return "mcp"
 	default:
 		return "mcpServers"
 	}
 }
 
-// entryCommand reads back the "command" a harness's config currently has for
-// agent-local, so status and idempotency can be judged against it.
+// entryCommand reads back the command a harness's config currently has for
+// agent-local, so status and idempotency can be judged against it. OpenCode
+// stores the command as an argv array; everyone else as a string.
 func entryCommand(h Harness) (cmd string, present bool, err error) {
 	if h.Format == fmtCodexTOML {
 		return tomlEntryCommand(h.Path, "mcp_servers."+connectServerName)
@@ -166,7 +197,14 @@ func entryCommand(h Harness) (cmd string, present bool, err error) {
 	if !ok {
 		return "", false, nil
 	}
-	cmd, _ = entry["command"].(string)
+	switch c := entry["command"].(type) {
+	case string:
+		cmd = c
+	case []interface{}:
+		if len(c) > 0 {
+			cmd, _ = c[0].(string)
+		}
+	}
 	return cmd, true, nil
 }
 
@@ -271,6 +309,20 @@ func connectHarnessWithBinary(h Harness, bin string) (wrote bool, err error) {
 	return true, nil
 }
 
+// DisconnectHarness removes agent-local from one harness's config. Only our
+// entry goes; a file with nothing else left in the server map keeps the empty
+// map rather than being deleted, since the harness may still expect the file.
+func DisconnectHarness(h Harness) (removed bool, err error) {
+	_, present, err := entryCommand(h)
+	if err != nil || !present {
+		return false, err
+	}
+	if h.Format == fmtCodexTOML {
+		return true, tomlRemoveTable(h.Path, "mcp_servers."+connectServerName)
+	}
+	return true, jsonRemoveEntry(h.Path, topKeyFor(h.Format), connectServerName)
+}
+
 // readJSONObject reads a JSON file into a map, treating a missing file as an
 // empty object. A file that exists but fails to parse is an error, never
 // silently discarded — that would mean overwriting whatever the user has.
@@ -306,6 +358,26 @@ func jsonWriteEntry(path, topKey, name string, entry map[string]interface{}) err
 	top[name] = entry
 	raw[topKey] = top
 
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	out = append(out, '\n')
+	return atomicWrite(path, out)
+}
+
+// jsonRemoveEntry deletes raw[topKey][name] and writes the file atomically.
+func jsonRemoveEntry(path, topKey, name string) error {
+	raw, err := readJSONObject(path)
+	if err != nil {
+		return err
+	}
+	top, _ := raw[topKey].(map[string]interface{})
+	if top == nil {
+		return nil
+	}
+	delete(top, name)
+	raw[topKey] = top
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return err
@@ -445,6 +517,30 @@ func tomlWriteEntry(path, table, bin string) error {
 	return atomicWrite(path, out)
 }
 
+// tomlRemoveTable cuts the table header and its body, plus the blank line
+// that separated it from whatever came before, leaving the rest byte-for-byte.
+func tomlRemoveTable(path, table string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(b), "\n")
+	start, end, found := tomlTableBounds(lines, table)
+	if !found {
+		return nil
+	}
+	from := start - 1 // the header line
+	if from > 0 && strings.TrimSpace(lines[from-1]) == "" {
+		from--
+	}
+	lines = append(lines[:from], lines[end:]...)
+	out := strings.Join(lines, "\n")
+	if strings.HasSuffix(string(b), "\n") && !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return atomicWrite(path, []byte(out))
+}
+
 // ---------- CLI ----------
 
 func cmdConnect(args []string) error {
@@ -454,18 +550,22 @@ func cmdConnect(args []string) error {
 	if hasFlag(args, "--list") {
 		return connectPrintList()
 	}
+	remove := hasFlag(args, "--remove")
 	if hasFlag(args, "--all") {
-		return connectApplyAll(args)
+		return connectApplyAll(args, remove)
 	}
 	ids := positional(args)
 	if len(ids) > 0 {
-		return connectApplyNamed(ids)
+		return connectApplyNamed(ids, remove)
+	}
+	if remove {
+		return fmt.Errorf("--remove needs --all or harness ids (agent-local connect --remove codex)")
 	}
 	if !isTerminal(os.Stdout) {
 		if err := connectPrintList(); err != nil {
 			return err
 		}
-		fmt.Println("\nnon-interactive: pass --all, or name harnesses (agent-local connect claude-code codex …)")
+		fmt.Println("\nnon-interactive: pass --all, or name harnesses (agent-local connect claude-code codex …); add --remove to unregister")
 		return nil
 	}
 	return runConnectTUI()
@@ -518,19 +618,23 @@ func connectPrintList() error {
 	return nil
 }
 
-func connectApplyAll(args []string) error {
+func connectApplyAll(args []string, remove bool) error {
 	statuses, err := DetectHarnesses()
 	if err != nil {
 		return err
 	}
 	var targets []HarnessStatus
 	for _, s := range statuses {
-		if s.Installed {
+		if remove && (s.Configured || s.Stale) || !remove && s.Installed {
 			targets = append(targets, s)
 		}
 	}
 	if len(targets) == 0 {
-		fmt.Println("no installed harnesses found")
+		if remove {
+			fmt.Println("agent-local is not registered anywhere")
+		} else {
+			fmt.Println("no installed harnesses found")
+		}
 		return nil
 	}
 	if !hasFlag(args, "--yes") && isTerminal(os.Stdin) {
@@ -538,7 +642,11 @@ func connectApplyAll(args []string) error {
 		for i, t := range targets {
 			names[i] = t.Name
 		}
-		fmt.Printf("register agent-local in: %s? [y/N] ", strings.Join(names, ", "))
+		verb := "register agent-local in"
+		if remove {
+			verb = "remove agent-local from"
+		}
+		fmt.Printf("%s: %s? [y/N] ", verb, strings.Join(names, ", "))
 		var resp string
 		fmt.Scanln(&resp)
 		resp = strings.ToLower(strings.TrimSpace(resp))
@@ -548,15 +656,15 @@ func connectApplyAll(args []string) error {
 		}
 	}
 	for _, t := range targets {
-		if err := applyAndReport(t.Harness); err != nil {
+		if err := applyAndReport(t.Harness, remove); err != nil {
 			return err
 		}
 	}
-	fmt.Println("\nrestart any running harness above to pick up the new server.")
+	fmt.Println("\nrestart any running harness above to pick up the change.")
 	return nil
 }
 
-func connectApplyNamed(ids []string) error {
+func connectApplyNamed(ids []string, remove bool) error {
 	statuses, err := DetectHarnesses()
 	if err != nil {
 		return err
@@ -566,23 +674,46 @@ func connectApplyNamed(ids []string) error {
 		if st == nil {
 			return fmt.Errorf("unknown harness %q (agent-local connect --list to see ids)", id)
 		}
-		if err := applyAndReport(st.Harness); err != nil {
+		if err := applyAndReport(st.Harness, remove); err != nil {
 			return err
 		}
 	}
-	fmt.Println("\nrestart any running harness above to pick up the new server.")
+	fmt.Println("\nrestart any running harness above to pick up the change.")
 	return nil
 }
 
-func applyAndReport(h Harness) error {
-	wrote, err := ConnectHarness(h)
+// applyAndReport performs one register or remove and prints the outcome in
+// the same one-line form the TUI uses.
+func applyAndReport(h Harness, remove bool) error {
+	line, err := applyOne(h, remove)
 	if err != nil {
 		return fmt.Errorf("%s: %w", h.ID, err)
 	}
-	if !wrote {
-		fmt.Printf("%-16s already configured (%s)\n", h.ID, shortHome(h.Path))
-		return nil
-	}
-	fmt.Printf("%-16s wrote %s\n", h.ID, shortHome(h.Path))
+	fmt.Printf("%-16s %s\n", h.ID, line)
 	return nil
+}
+
+// applyOne is the single verb both surfaces share: register (or update a
+// stale entry) when remove is false, unregister when true. The returned
+// sentence describes what happened to the file.
+func applyOne(h Harness, remove bool) (string, error) {
+	path := shortHome(h.Path)
+	if remove {
+		removed, err := DisconnectHarness(h)
+		if err != nil {
+			return "", err
+		}
+		if !removed {
+			return "not registered (" + path + ")", nil
+		}
+		return "removed from " + path, nil
+	}
+	wrote, err := ConnectHarness(h)
+	if err != nil {
+		return "", err
+	}
+	if !wrote {
+		return "already configured (" + path + ")", nil
+	}
+	return "wrote " + path, nil
 }

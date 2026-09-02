@@ -273,9 +273,12 @@ the raw `.eml` is one click away.
 
 For agents this closes a loop: drive the site with a browser, submit the
 form, then `list_mail` / `get_mail` and assert the email that came out —
-recipient, subject, decoded body — no human mailbox involved. Inboxes keep
-the newest 200 messages (branch previews get their own, keyed by worktree id)
-and are removed with the site.
+recipient, subject, decoded body — no human mailbox involved. Every message
+also comes back with `url` (its page in the inbox) and, when it has an HTML
+part, `html_url` (that part alone, sandboxed), so an agent with a browser tool
+can look at the email the way the recipient would. Inboxes keep the newest
+200 messages (branch previews get their own, keyed by worktree id) and are
+removed with the site.
 
 Plugins that bypass `mail()` for a real SMTP/ESP connection (WP Mail SMTP,
 FluentSMTP) are not intercepted — they are configured to deliver for real,
@@ -652,20 +655,23 @@ Same database both sides — the difference between them is code.
 ### Connect a coding-agent harness
 
 ```sh
-agent-local connect            # interactive checklist: pick which harnesses to register
-agent-local connect --list     # just show status (not installed / installed / configured / stale)
-agent-local connect --all      # register in every harness found installed
-agent-local connect codex cursor   # register only the named ones
-agent-local connect --json     # machine-readable status
+agent-local connect                   # checklist: checked = registered after apply; uncheck to remove
+agent-local connect --list            # status only: not installed / installed / configured / stale
+agent-local connect --all             # register in every harness found installed
+agent-local connect codex cursor      # register only the named ones
+agent-local connect --remove codex    # unregister (also --remove --all)
+agent-local connect --json            # machine-readable status
 ```
 
-Detects Claude Code, Claude Desktop, Codex CLI, Gemini CLI, Cursor, Windsurf,
-VS Code, Qwen Code and Zed by their config location or CLI binary, writes the
-`agent-local` MCP server entry with the absolute path of this binary, and
-leaves anything already pointing at the current binary untouched. A harness
-pointing at a different agent-local binary shows as "stale" so a rebuild or
-reinstall doesn't leave two entries fighting each other. Running harnesses
-need a restart to pick up a newly registered server.
+Detects Claude Code, Claude Desktop, Codex CLI, Gemini CLI, Oh My Pi, OpenCode,
+pi (through `pi-mcp-adapter`), Cursor, Windsurf, VS Code, Qwen Code and Zed by
+their config location or CLI binary, writes the `agent-local` MCP server entry
+with the absolute path of this binary, and leaves anything already pointing at
+the current binary untouched. A harness pointing at a different agent-local
+binary shows as "stale" so a rebuild or reinstall doesn't leave two entries
+fighting each other. Removal takes out only the `agent-local` entry; everything
+else in the file stays as it was. Running harnesses need a restart to pick up
+either change.
 
 For a client `connect` doesn't know about, or to see the raw block:
 
@@ -814,7 +820,7 @@ agent-local doctor [--fix]
 agent-local logs NAME [lines]          mysql | apache | daemon | fpm-<slug> | <slug>
 agent-local daemon [--background]      router + agent API
 agent-local mcp                        MCP server over stdio
-agent-local connect [--list|--all|--json|--yes] [harness...]  register the MCP server in a client
+agent-local connect [--list|--all|--remove|--json|--yes] [harness...]  register (or remove) the MCP server in a client
 agent-local api-token | version
 ```
 
