@@ -27,6 +27,24 @@ npm run watch     # rebuild on save
 
 Sources are `src/scss/` and `src/js/`; `style.css` is only the theme header.
 
+## Publishing
+
+The public copy at https://al.tools.efront.dev/ is static: the page is the theme's
+shipped defaults rendered once, with WordPress's own boilerplate stripped, beside
+`dist/` and `assets/`. No WordPress on the host, nothing to patch.
+
+```sh
+npm run export        # builds, renders http://agentlocal.test/ into public/
+git commit -am "..." && git push
+```
+
+Then run the Muster deploy for the `agent-local` site: its "Publish static site" step
+(`.muster/steps/deploy-static-site.sh`) pulls this repository on the server and mirrors
+`site/public` + `dist` + `assets` into the docroot, leaving the host's `.htaccess` and
+`.well-known` alone. Muster's built-in pre-check currently expects a WordPress root on
+the server; until that allows plain docroots, the same script runs over Muster's SSH
+session with `run_ssh_command` (see the commit that added it).
+
 ## Editing copy
 
 Every string on the page ships as a default in `front-page.php`, so the theme renders
