@@ -1,0 +1,130 @@
+/* agent-local theme for Adminer 6: the site's palette laid over Adminer's own
+   dark stylesheet. Same selectors as dark.css, loaded after it, so every rule
+   below wins on equal footing. Charcoal field, warm gray ink, one green lamp. */
+
+html {
+	--bg: #0e0e0c;
+	--fg: #e9e6de;
+	--dim: #141412;
+	--lit: #1a1a17;
+	--al-hair: #26251f;
+	--al-mark: #45443e;
+	--al-dim: #8b887c;
+	--al-lamp: #8fce9b;
+	--al-alert: #e08a8a;
+	--al-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+	color-scheme: dark;
+}
+
+body { font: 12.5px/1.5 var(--al-mono); color: var(--fg); background: var(--bg); }
+input, select, textarea, button { font: 12.5px/1.4 var(--al-mono); }
+
+/* links: ink at rest, the lamp on hover; no underlines */
+a, a:visited { color: var(--fg); }
+a:link:hover, a:visited:hover { color: var(--al-lamp); text-decoration: none; }
+button.link { color: var(--fg); }
+button.link:hover { color: var(--al-lamp); text-decoration: none; }
+
+/* the two headers */
+h1 { border-color: var(--al-hair); color: var(--fg); background: var(--dim); font-size: 13px; letter-spacing: 0.04em; }
+#h1 { color: var(--fg); font-style: normal; font-weight: 600; }
+#version, .version, .plugins .update { color: var(--al-dim); }
+h2 {
+	border-color: var(--al-hair);
+	color: var(--fg);
+	background: var(--dim);
+	font-size: 13px;
+	font-weight: 500;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+h3 { font-size: 11px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--al-dim); }
+#breadcrumb { background: var(--dim); color: var(--al-dim); font-size: 11.5px; }
+#breadcrumb a { color: var(--al-dim); }
+#breadcrumb a:hover { color: var(--fg); }
+
+/* tables: hairlines, dim uppercase heads, lamp on the selected row */
+table, td, th, .column { border-color: var(--al-hair); }
+th { background: var(--dim); }
+thead td, thead th, thead th a { color: var(--al-dim); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; }
+thead th a:hover { color: var(--fg); }
+tbody tr:hover td, tbody tr:hover th { background: var(--lit); }
+.odds tbody tr:nth-child(2n) { background: #111110; }
+.js .checkable .checked td, .js .checkable .checked th { background: #17231a; color: var(--fg); }
+.js .checkable .checked:hover td, .js .checkable .checked:hover th { background: #1b2a1e; }
+.js .checkable .checked a { color: var(--al-lamp); }
+#edit-fields tbody tr:hover td, #edit-fields tbody tr:hover th { background: var(--lit); }
+:target { color: var(--al-lamp); background: var(--lit); }
+
+/* controls */
+fieldset { border-color: var(--al-hair); border-radius: 6px; }
+legend { color: var(--al-dim); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; }
+input[type=text], input[type=password], input[type=search], input[type=number], input:not([type]), textarea, select {
+	background: var(--bg);
+	color: var(--fg);
+	border: 1px solid var(--al-hair);
+	border-radius: 4px;
+	padding: 3px 6px;
+}
+input:focus, textarea:focus, select:focus { outline: 1px solid var(--al-lamp); outline-offset: 1px; border-color: var(--al-lamp); }
+input[type=submit], input[type=button], button:not(.link) {
+	background: var(--bg);
+	color: var(--fg);
+	border: 1px solid var(--al-mark);
+	border-radius: 4px;
+	padding: 3px 10px;
+	cursor: pointer;
+}
+input[type=submit]:hover, input[type=button]:hover, button:not(.link):hover { border-color: var(--al-lamp); color: var(--al-lamp); }
+input[type=submit]:disabled, input[type=button]:disabled { color: var(--al-mark); border-color: var(--al-hair); cursor: default; }
+input.default { box-shadow: none; border-color: var(--al-lamp); }
+input.required, input.maxlength, textarea.maxlength { box-shadow: none; border-color: var(--al-alert); }
+code { background: var(--dim); border-radius: 3px; }
+pre.jush { background: var(--lit); border-radius: 6px; }
+
+/* messages */
+.error { color: var(--al-alert); background: #1d1414; border: 1px solid #3a2323; border-radius: 6px; }
+.error b { background: #2a1a1a; }
+.message { color: var(--al-lamp); background: #131a14; border: 1px solid #22331f; border-radius: 6px; }
+.char { color: #c9a97a; }
+.date { color: #8fb8ce; }
+.enum { color: #d1a4c9; }
+.binary { color: var(--al-alert); }
+.time { color: var(--al-dim); }
+.icon { filter: invert(0.85); background-color: var(--al-mark); border-radius: 3px; }
+.icon:hover { background-color: var(--al-lamp); }
+
+/* menu */
+#menu { border-color: var(--al-hair); background: var(--bg); box-shadow: none; }
+#menu p, #logins, #tables { border-color: var(--al-hair); }
+#menu .active { color: var(--al-lamp); }
+#tables a, #logins a, #tables span { background: var(--bg); }
+#tables a.select { color: var(--al-dim); }
+#tables a.select:hover { color: var(--al-lamp); }
+.links a { color: var(--al-dim); }
+.links a:hover, .links a.active { color: var(--fg); }
+#help { border-color: var(--al-hair); background: var(--lit); border-radius: 6px; }
+#schema .table { border-color: var(--al-mark); background: var(--dim); }
+#schema div.table a { color: var(--fg); }
+.footer > div, .logout { background: var(--bg); box-shadow: none; }
+.js .logout { background-color: var(--dim); box-shadow: 0 0 5px 5px var(--dim); }
+
+/* syntax highlighting inside the palette */
+.jush {
+	--text-color: #e9e6de;
+	--bg-color: #1a1a17;
+	--border-color: #26251f;
+	--php-color: #c9a97a;
+	--string-color: #8fce9b;
+	--string-plain-color: #8fce9b;
+	--keyword-color: #8fb8ce;
+	--identifier-color: #e9e6de;
+	--value-color: #d1a4c9;
+	--number-color: #c9a97a;
+	--attribute-color: #8fb8ce;
+	--js-bg-color: #1a1a17;
+	--css-bg-color: #1a1a17;
+	--php-bg-color: #1a1a17;
+	--php-sql-bg-color: #1f1f1b;
+}
+.jush-sql_apo, .jush-sql_quo { color: var(--string-color); }

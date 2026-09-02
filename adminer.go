@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,11 +17,26 @@ import (
 // PHP admin tool in the user's checkout.
 const AdminerPath = "/.agent-local/adminer"
 
-// adminerDownload is the official single-file Adminer 4.8.1 release.
-const adminerDownload = "https://github.com/vrana/adminer/releases/download/v4.8.1/adminer-4.8.1.php"
+// adminerVersion pins the official single-file release (MySQL driver,
+// English). 4.8.1 was the last for years and breaks on PHP 8.5 / MariaDB 11
+// ("array offset on null", every table stat a question mark); 5.x and 6.x
+// track current PHP. The file on disk carries the version, so bumping this
+// constant upgrades an existing install on its next request.
+const adminerVersion = "6.0.1"
 
-func (p Paths) AdminerDir() string             { return filepath.Join(p.Root, "lib", "adminer") }
-func (p Paths) AdminerPHP() string             { return filepath.Join(p.AdminerDir(), "adminer.php") }
+var adminerDownload = "https://github.com/vrana/adminer/releases/download/v" + adminerVersion + "/adminer-" + adminerVersion + "-mysql-en.php"
+
+// adminerThemeCSS is the site's palette applied over Adminer's dark theme,
+// served by the per-site wrapper at ?theme= so it works on either front.
+//
+//go:embed assets/adminer-theme.css
+var adminerThemeCSS string
+
+func (p Paths) AdminerDir() string { return filepath.Join(p.Root, "lib", "adminer") }
+func (p Paths) AdminerPHP() string {
+	return filepath.Join(p.AdminerDir(), "adminer-"+adminerVersion+".php")
+}
+func (p Paths) AdminerTheme() string           { return filepath.Join(p.AdminerDir(), "agent-local.css") }
 func (p Paths) AdminerBoot(slug string) string { return filepath.Join(p.AdminerDir(), slug+".php") }
 
 // AdminerURL is the browser URL for a site's database GUI.
@@ -28,11 +44,18 @@ func AdminerURL(domain string) string {
 	return strings.TrimRight(BareDomainURL(domain), "/") + AdminerPath
 }
 
-// EnsureAdminer downloads Adminer once into ~/.agent-local/lib/adminer.
+// EnsureAdminer downloads the pinned Adminer once into
+// ~/.agent-local/lib/adminer, drops any older release left there, and keeps
+// the theme stylesheet in step with this binary.
 func EnsureAdminer() error {
 	p := P()
 	if err := os.MkdirAll(p.AdminerDir(), 0o755); err != nil {
 		return err
+	}
+	if cur, _ := os.ReadFile(p.AdminerTheme()); string(cur) != adminerThemeCSS {
+		if err := os.WriteFile(p.AdminerTheme(), []byte(adminerThemeCSS), 0o644); err != nil {
+			return err
+		}
 	}
 	dst := p.AdminerPHP()
 	if fileExists(dst) {
@@ -58,7 +81,18 @@ func EnsureAdminer() error {
 		os.Remove(tmp)
 		return copyErr
 	}
-	return os.Rename(tmp, dst)
+	if err := os.Rename(tmp, dst); err != nil {
+		return err
+	}
+	// Superseded releases are only a cache; an old one lying beside the new
+	// is a trap for anyone reading the directory.
+	old, _ := filepath.Glob(filepath.Join(p.AdminerDir(), "adminer*.php"))
+	for _, f := range old {
+		if f != dst {
+			os.Remove(f)
+		}
+	}
+	return nil
 }
 
 // adminerBootIfReady writes the wrapper only when Adminer is already on disk,
@@ -89,35 +123,66 @@ func writeAdminerBoot(site *Site) (string, error) {
 /**
  * agent-local database GUI for %s. Auto-generated — do not edit.
  *
- * login() returning true is not enough: Adminer still paints the form until
- * it sees $_POST['auth']. Inject that on the first GET so the first response
- * is a redirect into the database, not a login page.
+ * ?theme= serves the palette stylesheet from beside this file, so it reaches
+ * the browser through whichever front is routing the GUI.
+ *
+ * Adminer 6 connects when the URL names a user and its session already holds
+ * that user's password; the login form is what happens otherwise, and its
+ * POST is CSRF-protected, so it cannot be faked. Adminer also only starts a
+ * session when none is active. So: start its session first, under its name
+ * and cookie path, seed the password, and send the browser to the URL it
+ * expects. The first response is a redirect into the database.
  */
-if (empty($_GET['username']) && empty($_POST['auth'])) {
-	$_POST['auth'] = array(
-		'driver' => 'server',
-		'server' => %s,
-		'username' => %s,
-		'password' => %s,
-		'db' => %s,
-	);
+$server = %s;
+$user = %s;
+$pass = %s;
+$db = %s;
+$path = preg_replace('~\?.*~', '', $_SERVER['REQUEST_URI']);
+if (isset($_GET['theme'])) {
+	header('Content-Type: text/css; charset=utf-8');
+	header('Cache-Control: public, max-age=86400');
+	readfile(__DIR__ . '/agent-local.css');
+	exit;
 }
+if (!isset($_GET['username']) && empty($_POST['logout'])) {
+	header('Location: ' . $path . '?server=' . rawurlencode($server) . '&username=' . rawurlencode($user) . '&db=' . rawurlencode($db), true, 302);
+	exit;
+}
+$https = (!empty($_SERVER['HTTPS']) && strcasecmp($_SERVER['HTTPS'], 'off')) || filter_var(ini_get('session.cookie_secure'), FILTER_VALIDATE_BOOLEAN);
+session_cache_limiter('');
+session_name('adminer_sid');
+session_set_cookie_params(array('lifetime' => 0, 'path' => strtr($path, array(';' => '%%3B', ',' => '%%2C')), 'domain' => '', 'secure' => $https, 'httponly' => true, 'samesite' => 'lax'));
+session_start();
+if (!isset($_SESSION['pwds']['server'][$server][$user])) {
+	$_SESSION['pwds']['server'][$server][$user] = $pass;
+	$_SESSION['db']['server'][$server][$user][$db] = true;
+}
+// Hand the session back: Adminer tunes session ini settings, which PHP
+// refuses while one is active, and then reopens this same session itself.
+session_write_close();
 function adminer_object() {
-	class AgentLocalAdminer extends Adminer {
+	class AgentLocalAdminer extends Adminer\Adminer {
 		function name() { return %s; }
 		function credentials() { return array(%s, %s, %s); }
 		function database() { return %s; }
 		function login($login, $password) { return true; }
+		// Declared as the dark stylesheet: Adminer lays its own dark base
+		// underneath, and this recolours it to the site's palette.
+		function css() {
+			$base = preg_replace('~\?.*~', '', $_SERVER['REQUEST_URI']);
+			return array($base . '?theme=' . filemtime(__DIR__ . '/agent-local.css') => 'dark');
+		}
 	}
 	return new AgentLocalAdminer;
 }
-include __DIR__ . '/adminer.php';
+include __DIR__ . '/adminer-%s.php';
 `,
 		site.Slug,
 		phpQuote(host), phpQuote(site.DBUser), phpQuote(site.DBPass), phpQuote(site.DBName),
 		phpQuote("agent-local · "+site.Slug),
 		phpQuote(host), phpQuote(site.DBUser), phpQuote(site.DBPass),
 		phpQuote(site.DBName),
+		adminerVersion,
 	)
 	if err := os.WriteFile(dst, []byte(body), 0o600); err != nil {
 		return "", err

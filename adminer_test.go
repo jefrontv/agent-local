@@ -48,7 +48,7 @@ func TestWriteAdminerBoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(b)
-	for _, want := range []string{"al_demo", `p\'ass`, "127.0.0.1:", "function adminer_object", "include __DIR__", "$_POST['auth']"} {
+	for _, want := range []string{"al_demo", `p\'ass`, "127.0.0.1:", "function adminer_object", "include __DIR__ . '/adminer-" + adminerVersion + ".php'", "$_SESSION['pwds']", "session_name('adminer_sid')", "?theme=", "readfile(__DIR__ . '/agent-local.css')"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("boot missing %q:\n%s", want, body)
 		}
