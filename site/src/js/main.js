@@ -56,7 +56,10 @@ const FIELD_RAMP = " ..::-=+*";
 const CELL_W = 8.1;  // 13.5px IBM Plex Mono advance width
 const CELL_H = 17.5; // 13.5px at line-height 1.3
 
-const pointer = { x: 0, y: 0, energy: 0 };
+// x/y is where the rings come from; tx/ty is where the cursor actually is.
+// The origin drifts toward the cursor a little each frame, so a fast move
+// leaves the disturbance trailing behind like something carried in water.
+const pointer = { x: 0, y: 0, tx: 0, ty: 0, energy: 0 };
 
 function fieldFrame(t, cols, rows) {
   const out = [];
@@ -99,8 +102,11 @@ if (field) {
     const hero = host.parentElement;
     hero.addEventListener("pointermove", (e) => {
       const r = host.getBoundingClientRect();
-      pointer.x = (e.clientX - r.left) / CELL_W;
-      pointer.y = (e.clientY - r.top) / CELL_H;
+      pointer.tx = (e.clientX - r.left) / CELL_W;
+      pointer.ty = (e.clientY - r.top) / CELL_H;
+      // First contact starts the rings under the cursor, not on a journey
+      // from wherever they last died.
+      if (pointer.energy < 0.02) { pointer.x = pointer.tx; pointer.y = pointer.ty; }
       pointer.energy = Math.min(1, pointer.energy + 0.12);
     });
     hero.addEventListener("pointerleave", () => { pointer.energy *= 0.5; });
@@ -119,6 +125,8 @@ if (field) {
         phase += dt * 0.0006 * (1 + fieldEnergy * 2.2);
         fieldEnergy *= 0.92;
         pointer.energy *= 0.965;
+        pointer.x += (pointer.tx - pointer.x) * 0.085;
+        pointer.y += (pointer.ty - pointer.y) * 0.085;
         field.textContent = fieldFrame(phase, cols, rows);
       }
       requestAnimationFrame(loop);
@@ -146,10 +154,17 @@ const scenes = [
     ["If anything drifts, db_restore puts the snapshot back.", "t-assist", 400],
   ],
   [
-    ["do i need docker for this", "t-user", 700, true],
-    ["status()", "t-tool", 900],
-    ["daemon up · router on 80 and 443 · one mariadb · 34 sites serving", "t-res", 1400],
-    ["No.", "t-assist", 1100],
+    ["serve the gasworks checkout in ~/Sites, load the prod dump, and stop the broken images", "t-user", 700, true],
+    ["attach_site(dir: \"~/Sites/gasworks\", php_version: \"8.4\")", "t-tool", 900],
+    ["https://gasworks.test · serving · existing wp-config kept", "t-res", 1500],
+    ["db_import(slug: \"gasworks\", path: \"~/Downloads/gasworks-prod.sql.gz\")", "t-tool", 900],
+    ["snapshot saved first · 1.2 GB streamed · urls rewritten to gasworks.test", "t-res", 1700],
+    ["set_media_fallback(slug: \"gasworks\", url: \"auto\")", "t-tool", 900],
+    ["adopted the .htaccess rule → https://thegasworksbrompton.com", "t-res", 1300],
+    ["browser(open \"/\", count failed images)", "t-tool", 900],
+    ["38 images · 38 served · 0 local files, all redirected to production", "t-res", 1300],
+    ["The checkout is live on PHP 8.4 with the production database behind it.", "t-assist", 900],
+    ["Uploads aren't copied; anything missing locally falls through to the live site.", "t-assist", 400],
   ],
   [
     ["is the redesign branch safe to merge? check it against the live copy", "t-user", 700, true],
@@ -197,13 +212,26 @@ const scenes = [
     ["Nothing on the site was renamed: the tunnel host applies to tunnel requests only.", "t-assist", 400],
   ],
   [
-    ["it's 4:58 on a friday and the site is down. i didn't touch anything. i swear", "t-user", 700, true],
+    ["orders from last week are missing on the client's shop. use the local copy, not prod", "t-user", 700, true],
+    ["db_snapshot(slug: \"shop\", name: \"before-looking\")", "t-tool", 900],
+    ["shop-20260902-1702-before-looking.sql.gz · 212 MB", "t-res", 1300],
+    ["db_query(slug: \"shop\", sql: \"SELECT status, COUNT(*) FROM wp_wc_orders WHERE date_created_gmt >= '2026-08-24' GROUP BY status\")", "t-tool", 900],
+    ["wc-completed 31 · wc-processing 4 · trash 47", "t-res", 1500],
+    ["db_query(slug: \"shop\", sql: \"SELECT MIN(date_updated_gmt), MAX(date_updated_gmt) FROM wp_wc_orders WHERE status = 'trash'\")", "t-tool", 900],
+    ["2026-08-29 02:14:07 → 2026-08-29 02:14:09", "t-res", 1400],
+    ["open_adminer(slug: \"shop\")", "t-tool", 900],
+    ["https://shop.test/.agent-local/adminer", "t-res", 1100],
+    ["47 orders were trashed within two seconds early on the 29th: a bulk action, not customers.", "t-assist", 900],
+    ["Nothing is deleted. They're in the trash, and Adminer is open if you want to see them.", "t-assist", 400],
+  ],
+  [
+    ["the site stopped loading after i ran brew upgrade this morning", "t-user", 700, true],
     ["doctor()", "t-tool", 900],
-    ["11 checks · 1 finding · php@8.4 keg broken after brew upgrade · fix: install_runtime", "t-res", 1600],
+    ["11 checks · 1 finding · php@8.4 keg unlinked after brew upgrade · fix: install_runtime php 8.4", "t-res", 1600],
     ["doctor_fix()", "t-tool", 900],
     ["php@8.4 relinked · pool restarted · https://sulo.pact → 200", "t-res", 1500],
-    ["You didn't touch anything. Homebrew did.", "t-assist", 900],
-    ["It's back. Go home.", "t-assist", 400],
+    ["Homebrew replaced PHP under the running pool and left the keg unlinked.", "t-assist", 900],
+    ["Doctor relinked it and restarted the pool. Nothing else changed.", "t-assist", 400],
   ],
 ];
 
