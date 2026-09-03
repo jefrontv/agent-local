@@ -399,11 +399,12 @@ func cmdList() error {
 		outHint("create", AppName+" create mysite")
 		return nil
 	}
+	alive := e.AliveAll()
 	var rows [][]string
 	for _, s := range sites {
-		rows = append(rows, []string{s.Slug, s.PHPVersion, outState(e.FPMRunning(s.Slug)), BareURL(s)})
+		rows = append(rows, []string{s.Slug, s.PHPVersion, outState(alive[s.Slug]), BareURL(s)})
 		for _, w := range store.WorktreesFor(s.Slug) {
-			rows = append(rows, []string{dimf("  └ ") + w.Branch, dimf(s.PHPVersion), outState(e.FPMRunning(w.ID)), BareDomainURL(w.Domain)})
+			rows = append(rows, []string{dimf("  └ ") + w.Branch, dimf(s.PHPVersion), outState(alive[w.ID]), BareDomainURL(w.Domain)})
 		}
 	}
 	outTable([]string{"site", "php", "state", "url"}, rows)
@@ -1339,9 +1340,10 @@ func cmdWorktrees(args []string) error {
 		outHint("create", AppName+" worktree "+slug+" BRANCH")
 		return nil
 	}
+	alive := e.AliveAll()
 	var rows [][]string
 	for _, w := range wts {
-		rows = append(rows, []string{w.Branch, outState(e.FPMRunning(w.ID)), BareDomainURL(w.Domain)})
+		rows = append(rows, []string{w.Branch, outState(alive[w.ID]), BareDomainURL(w.Domain)})
 	}
 	outTable([]string{"branch", "state", "url"}, rows)
 	return nil

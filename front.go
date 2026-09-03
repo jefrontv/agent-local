@@ -255,12 +255,41 @@ func rivalStarting() bool {
 	if yieldActive() {
 		return true
 	}
-	out, err := runCmdOut("pgrep", "-f", "lightning-services/nginx")
-	if err != nil || strings.TrimSpace(out) == "" {
+	// Port first, process scan second: a rival only matters while nothing
+	// answers on 127.0.0.1:80, so when something does the scan has nothing
+	// to add. With LocalWP's router up all day, this turns a `pgrep` fork
+	// every 1.5s for the life of the machine into a 250ms-bounded dial. The
+	// scan still runs when :80 is silent, which is the only case it decides.
+	if dialable("127.0.0.1", 80) {
 		return false
 	}
-	return !dialable("127.0.0.1", 80)
+	return rivalProcessPresent()
 }
+
+// rivalProcessPresent is the `pgrep` half of rivalStarting, memoised for a
+// few seconds. The supervisor ticks every 1.5s for the life of the machine;
+// on a laptop with no LocalWP at all that was a fork+exec per tick, forever,
+// to learn the same "no" each time. A rival's startup takes seconds, so a
+// short cache changes nothing about when one is noticed.
+func rivalProcessPresent() bool {
+	rivalMu.Lock()
+	defer rivalMu.Unlock()
+	if time.Since(rivalAt) < rivalTTL {
+		return rivalSeen
+	}
+	out, err := runCmdOut("pgrep", "-f", "lightning-services/nginx")
+	rivalSeen = err == nil && strings.TrimSpace(out) != ""
+	rivalAt = time.Now()
+	return rivalSeen
+}
+
+const rivalTTL = 10 * time.Second
+
+var (
+	rivalMu   sync.Mutex
+	rivalAt   time.Time
+	rivalSeen bool
+)
 
 // yieldActive reports whether an unexpired yield request is on disk. The file
 // holds a unix deadline; `agent-local yield` writes it without needing root,

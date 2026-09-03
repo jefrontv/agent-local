@@ -192,9 +192,10 @@ func Doctor(store *Store) *DoctorReport {
 	{
 		sites := store.Sites()
 		results := make([]*Finding, len(sites))
+		alive := e.AliveAll()
 		var wg sync.WaitGroup
 		for i, site := range sites {
-			if !e.FPMRunning(site.Slug) {
+			if !alive[site.Slug] {
 				continue
 			}
 			wg.Add(1)

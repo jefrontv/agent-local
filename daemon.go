@@ -26,10 +26,29 @@ import (
 // Daemon hosts the router + agent API in one long-lived process.
 
 // APIToken reads (or creates) the shared-secret token file.
+//
+// Cached against the file's mtime: the MCP client reads it per call and the
+// daemon's auth middleware reads it per request, so an uncached read was two
+// file reads on every single tool invocation. A rotated token (new mtime) is
+// picked up on the next call; a missing file regenerates as before.
 func APIToken() (string, error) {
 	p := P().Token()
+	st, err := os.Stat(p)
+	if err == nil {
+		tokenMu.Lock()
+		if tokenVal != "" && tokenMtime.Equal(st.ModTime()) {
+			tok := tokenVal
+			tokenMu.Unlock()
+			return tok, nil
+		}
+		tokenMu.Unlock()
+	}
 	if b, err := os.ReadFile(p); err == nil && len(strings.TrimSpace(string(b))) >= 16 {
-		return strings.TrimSpace(string(b)), nil
+		tok := strings.TrimSpace(string(b))
+		tokenMu.Lock()
+		tokenVal, tokenMtime = tok, st.ModTime()
+		tokenMu.Unlock()
+		return tok, nil
 	}
 	raw := make([]byte, 24)
 	if _, err := rand.Read(raw); err != nil {
@@ -39,8 +58,19 @@ func APIToken() (string, error) {
 	if err := os.WriteFile(p, []byte(tok), 0o600); err != nil {
 		return "", err
 	}
+	tokenMu.Lock()
+	tokenVal, tokenMtime = tok, fileModTime(p)
+	tokenMu.Unlock()
 	return tok, nil
 }
+
+// tokenVal/tokenMtime back APIToken's cache; tokenMu guards them because the
+// daemon reads the token from every request goroutine.
+var (
+	tokenMu    sync.Mutex
+	tokenVal   string
+	tokenMtime time.Time
+)
 
 // restoreRunning starts the pools for every site and worktree whose persisted
 // state says it was running. Returns how many came back.
@@ -49,14 +79,15 @@ func restoreRunning(e *Engine, store *Store) int {
 		id, dir, php string
 	}
 	var want []target
+	alive := e.AliveAll()
 	for _, site := range store.Sites() {
-		if site.State == StateRunning && !e.FPMRunning(site.Slug) {
+		if site.State == StateRunning && !alive[site.Slug] {
 			want = append(want, target{site.Slug, site.WPDir, site.PHPVersion})
 		}
 	}
 	for _, w := range store.Data.Worktrees {
 		site := store.Site(w.Site)
-		if site == nil || w.State != StateRunning || e.FPMRunning(w.ID) {
+		if site == nil || w.State != StateRunning || alive[w.ID] {
 			continue
 		}
 		want = append(want, target{w.ID, e.wtServeDir(w), site.PHPVersion})
@@ -1346,9 +1377,15 @@ func (a *APIServer) handleRemoveWorktree(w http.ResponseWriter, r *http.Request)
 
 func (a *APIServer) handleListWorktrees(w http.ResponseWriter, r *http.Request) {
 	out := []map[string]interface{}{}
-	for _, wt := range a.store.WorktreesFor(r.PathValue("slug")) {
+	wts := a.store.WorktreesFor(r.PathValue("slug"))
+	ids := make([]string, len(wts))
+	for i, wt := range wts {
+		ids[i] = wt.ID
+	}
+	alive := a.engine.fpmAliveBatch(ids)
+	for _, wt := range wts {
 		state := "stopped"
-		if a.engine.FPMRunning(wt.ID) {
+		if alive[wt.ID] {
 			state = "running"
 		}
 		out = append(out, map[string]interface{}{

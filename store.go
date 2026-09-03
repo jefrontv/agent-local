@@ -300,20 +300,26 @@ func mergeEntries(base, mine, disk json.RawMessage, deleted map[string]bool) (js
 
 // ReloadIfChanged re-reads the store file if its mtime advanced. Lets the
 // daemon observe sites/worktrees/front changes the CLI made without IPC.
+//
+// It runs at the top of every routed request, so the common case — nothing
+// changed — must not take the write lock: that serialised every concurrent
+// request behind one mutex just to compare two timestamps. The check runs
+// under a read lock and only escalates when a reload is actually due, then
+// re-checks, since another request may have reloaded in the gap.
 func (s *Store) ReloadIfChanged() {
 	st, err := os.Stat(s.path)
 	if err != nil {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.dirty {
-		// Unsaved Put/Del mutations are pending. Reloading now would replace
-		// s.Data wholesale and silently drop them; the next Save persists
-		// them and clears dirty, at which point a reload is safe again.
+	s.mu.RLock()
+	stale := s.reloadDue(st.ModTime())
+	s.mu.RUnlock()
+	if !stale {
 		return
 	}
-	if !s.loadedAt.IsZero() && !st.ModTime().After(s.loadedAt) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.reloadDue(st.ModTime()) {
 		return
 	}
 	release, err := s.lock()
@@ -333,6 +339,17 @@ func (s *Store) ReloadIfChanged() {
 	s.normalize()
 	s.loadedAt = fileModTime(s.path)
 	s.base = s.snapshot()
+}
+
+// reloadDue reports whether the on-disk store (with the given mtime) should
+// replace what is in memory. Caller holds mu (either mode). Unsaved Put/Del
+// mutations veto a reload: replacing s.Data wholesale would silently drop
+// them; the next Save persists them and clears dirty.
+func (s *Store) reloadDue(mtime time.Time) bool {
+	if s.dirty {
+		return false
+	}
+	return s.loadedAt.IsZero() || mtime.After(s.loadedAt)
 }
 
 // Site fetches a site by slug.

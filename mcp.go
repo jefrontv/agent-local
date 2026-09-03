@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -61,7 +63,22 @@ func runMCP(args []string) error {
 
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
-	enc := json.NewEncoder(os.Stdout)
+	// Every request runs on its own goroutine. The loop used to handle them
+	// in order, so one long synchronous call (an import without async=true)
+	// held the whole connection: even status or get_job — the calls meant to
+	// watch that import — got no answer until it finished. JSON-RPC matches
+	// replies by id, so out-of-order is fine; one encoder behind a mutex keeps
+	// each reply a whole line.
+	var (
+		out   sync.Mutex
+		enc   = json.NewEncoder(os.Stdout)
+		inflt sync.WaitGroup
+	)
+	reply := func(resp *mcpResp) {
+		out.Lock()
+		defer out.Unlock()
+		enc.Encode(resp)
+	}
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
 		if len(line) == 0 {
@@ -69,7 +86,7 @@ func runMCP(args []string) error {
 		}
 		var req mcpReq
 		if err := json.Unmarshal(line, &req); err != nil {
-			enc.Encode(&mcpResp{JSONRPC: "2.0", Error: &mcpErr{Code: -32700, Message: "parse error: " + err.Error()}})
+			reply(&mcpResp{JSONRPC: "2.0", Error: &mcpErr{Code: -32700, Message: "parse error: " + err.Error()}})
 			continue
 		}
 		// A request without an id is a notification: the spec forbids answering
@@ -78,16 +95,24 @@ func runMCP(args []string) error {
 		if req.ID == nil {
 			continue
 		}
-		resp := mcpHandle(&req)
-		if resp != nil {
+		inflt.Add(1)
+		go func(req mcpReq) {
+			defer inflt.Done()
+			resp := mcpHandle(&req)
+			if resp == nil {
+				return
+			}
 			// Set centrally so no handler can forget it. Responses used to go out
 			// as `"jsonrpc":""`, which a strict client rejects — the server looked
 			// like it was doing nothing at all.
 			resp.JSONRPC = "2.0"
 			resp.ID = req.ID
-			enc.Encode(resp)
-		}
+			reply(resp)
+		}(req)
 	}
+	// stdin closed: the client is going away. Let in-flight calls finish so a
+	// mutation that already reached the daemon still gets its result written.
+	inflt.Wait()
 	return sc.Err()
 }
 
@@ -136,7 +161,7 @@ func mcpHandle(req *mcpReq) *mcpResp {
 	case "notifications/initialized", "initialized":
 		return nil // notification, no response
 	case "tools/list":
-		return &mcpResp{Result: map[string]interface{}{"tools": mcpTools()}}
+		return &mcpResp{Result: map[string]interface{}{"tools": tools()}}
 	case "tools/call":
 		return mcpCall(req.Params)
 	case "ping":
@@ -165,6 +190,34 @@ func prop(t, desc string) map[string]interface{} {
 	return map[string]interface{}{"type": t, "description": desc}
 }
 
+// toolTable is the catalogue built once. mcpTools constructs ~60 descriptors
+// with nested schema maps; rebuilding that on every tools/list and every
+// tools/call — the old lookup was a linear scan over a fresh build — was
+// pure allocation on the hot path of every agent request.
+var (
+	toolTableOnce sync.Once
+	toolTable     []mcpTool
+	toolIndex     map[string]*mcpTool
+)
+
+func tools() []mcpTool {
+	toolTableOnce.Do(func() {
+		toolTable = mcpTools()
+		toolIndex = make(map[string]*mcpTool, len(toolTable))
+		for i := range toolTable {
+			toolIndex[toolTable[i].Name] = &toolTable[i]
+		}
+	})
+	return toolTable
+}
+
+// toolByName is the tools/call lookup: one map hit, nil for an unknown name.
+func toolByName(name string) *mcpTool {
+	tools()
+	return toolIndex[name]
+}
+
+// mcpTools builds the catalogue. Read it through tools(), which caches it.
 func mcpTools() []mcpTool {
 	return []mcpTool{
 		{"status", "Daemon + stack status (db, http, runtimes, counts)", schema(nil)},
@@ -398,13 +451,7 @@ func mcpCall(raw json.RawMessage) *mcpResp {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return &mcpResp{Error: &mcpErr{Code: -32602, Message: "bad params: " + err.Error()}}
 	}
-	var tool *mcpTool
-	for _, t := range mcpTools() {
-		if t.Name == p.Name {
-			tool = &t
-			break
-		}
-	}
+	tool := toolByName(p.Name)
 	if tool == nil {
 		out := map[string]string{"error": "unknown tool: " + p.Name}
 		text, _ := json.Marshal(out)
@@ -689,12 +736,29 @@ func worktreeSiteSlug(id string) (string, bool) {
 
 func apiBase() string { return fmt.Sprintf("http://127.0.0.1:%d", DefaultAPIPort) }
 
+// apiHTTP is the one client every call shares, so loopback connections are
+// reused across a session instead of a fresh dial per call. No client-level
+// timeout: that is set per request in apiDo by method.
+var apiHTTP = &http.Client{}
+
+// apiTimeout bounds one daemon call. Reads must fail fast — a wedged daemon
+// used to leave `status` or a `get_job` poll hanging for the full 30 minutes
+// meant for imports, with no way to tell "working" from "stuck". Mutations
+// keep the long bound: create/import/install genuinely run for minutes, and
+// callers wanting a quick return already have async=true plus get_job.
+func apiTimeout(method string) time.Duration {
+	if method == http.MethodGet {
+		return 20 * time.Second
+	}
+	return 30 * time.Minute
+}
+
 func apiClient() (*http.Client, string, error) {
 	tok, err := APIToken()
 	if err != nil {
 		return nil, "", err
 	}
-	return &http.Client{Timeout: 1800 * time.Second}, tok, nil
+	return apiHTTP, tok, nil
 }
 
 func apiDo(method, path string, body interface{}) (interface{}, bool) {
@@ -710,7 +774,9 @@ func apiDo(method, path string, body interface{}) (interface{}, bool) {
 		}
 		rd = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, apiBase()+path, rd)
+	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout(method))
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, method, apiBase()+path, rd)
 	if err != nil {
 		return map[string]string{"error": err.Error()}, true
 	}

@@ -438,6 +438,22 @@ func (e *Engine) fpmAliveBatch(ids []string) map[string]bool {
 	return out
 }
 
+// AliveAll is fpmAliveBatch over every site and worktree in the store: the
+// one-call answer for anything that renders or filters the whole catalog
+// (list, doctor, boot restore, the API's list routes). Callers index the
+// result by site slug or worktree id.
+func (e *Engine) AliveAll() map[string]bool {
+	sites := e.Store.Sites()
+	ids := make([]string, 0, len(sites)+len(e.Store.Data.Worktrees))
+	for _, s := range sites {
+		ids = append(ids, s.Slug)
+	}
+	for id := range e.Store.Data.Worktrees {
+		ids = append(ids, id)
+	}
+	return e.fpmAliveBatch(ids)
+}
+
 // ensurePool boots the php-fpm pool for a site or worktree id if it is not
 // already serving. Used by the router so a known domain never 503s just
 // because a pool went away (reboot, daemon replacement, stale state).

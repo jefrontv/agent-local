@@ -217,11 +217,19 @@ func (r *Router) serveStatic(w http.ResponseWriter, req *http.Request, wpdir str
 	if !strings.HasPrefix(full, filepath.Clean(wpdir)+string(os.PathSeparator)) && full != filepath.Clean(wpdir) {
 		return false
 	}
-	st, err := os.Stat(full)
-	if err != nil || st.IsDir() {
+	// One open: the handle's own Stat answers "exists, not a directory" and
+	// ServeContent streams from it. ServeFile after a separate os.Stat paid a
+	// second stat and a second open per asset — dozens of them per page view.
+	f, err := os.Open(full)
+	if err != nil {
 		return false // let FPM / WordPress handle it (404 or rewrite)
 	}
-	http.ServeFile(w, req, full)
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || st.IsDir() {
+		return false
+	}
+	http.ServeContent(w, req, full, st.ModTime(), f)
 	return true
 }
 
