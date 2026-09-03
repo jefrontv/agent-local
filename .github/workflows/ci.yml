@@ -35,7 +35,7 @@ jobs:
       - name: smoke
         run: |
           ./agent-local version
-          ./agent-local help | grep -q "agent-local create"
+          ./agent-local help | grep -q "create and install"
           ./agent-local doctor || true   # findings are expected on a bare runner
 
       - name: goreleaser config is valid
