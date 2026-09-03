@@ -112,6 +112,22 @@ func Doctor(store *Store) *DoctorReport {
 			FixCmd: "agent-local alias", AutoFix: true, FixRoot: true})
 	}
 
+	// passwordless root for the scoped commands is what lets site setup add
+	// hosts entries and trust certs without stopping. An allowlist installed
+	// by an older release names retired commands, so everything looks
+	// configured until the first privileged write fails mid-setup — exactly
+	// the failure this finding exists to get ahead of.
+	switch allow := sudoAllowlist(); {
+	case allow == "":
+		add(Finding{Check: "sudo", Status: "warn", Detail: "no passwordless root — first hosts/cert write will stop and ask",
+			FixCmd: "agent-local sudo", FixRoot: true})
+	case !allowlistCurrent(allow):
+		add(Finding{Check: "sudo", Status: "warn", Detail: "sudo allowlist predates this release — re-run agent-local sudo once",
+			FixCmd: "agent-local sudo", FixRoot: true})
+	default:
+		add(Finding{Check: "sudo", Status: "ok", Detail: "passwordless root for hosts, alias, front"})
+	}
+
 	// per-site + per-worktree hosts entries
 	var missingHosts []string
 	for _, site := range store.Sites() {

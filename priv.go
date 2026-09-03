@@ -46,6 +46,29 @@ func CanRootNonInteractive() bool {
 	return sudoN("-n", "true") == nil
 }
 
+// sudoAllowlist returns what passwordless sudo this user has, via `sudo -n
+// -l`, which lists without ever prompting. Empty when sudo refuses outright
+// (no rights at all) or the helper itself is missing.
+func sudoAllowlist() string {
+	out, err := runCmdOut("sudo", "-n", "-l")
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
+// allowlistCurrent reports whether a `sudo -n -l` listing covers this
+// release's scoped writes. A general NOPASSWD grant covers everything;
+// otherwise the tee entry for /etc/hosts marks the current template. An
+// older allowlist (staged-file cp entries, cert-trust wildcard) fails this
+// even though its own entries still pass.
+func allowlistCurrent(listing string) bool {
+	if strings.Contains(listing, "NOPASSWD: ALL") {
+		return true
+	}
+	return strings.Contains(listing, "/usr/bin/tee /etc/hosts")
+}
+
 // quoteForOsascript renders argv for `do shell script`: each arg becomes a
 // single-quoted sh word (so $ and spaces survive), then the whole command is
 // escaped for the enclosing AppleScript double-quoted string.
