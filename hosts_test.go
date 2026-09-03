@@ -67,7 +67,10 @@ func TestHostsEntriesCoverActiveFamilies(t *testing.T) {
 }
 
 // The addresses we claim to serve have to be the ones the front daemon binds, or a
-// hosts entry points at silence.
+// hosts entry points at silence. Which lines count as shadowed depends on whether
+// the loopback alias is up — 127.0.0.1 leftovers only shadow when something else
+// answers there — so the test pins the alias state instead of inheriting the
+// machine's: on a bare CI runner the alias is down and the unpinned test fails.
 func TestCommentShadowedHostsLeavesOursAndCommentsLocalWP(t *testing.T) {
 	in := []string{
 		"::1\tdev-ohm2023.local",
@@ -79,21 +82,41 @@ func TestCommentShadowedHostsLeavesOursAndCommentsLocalWP(t *testing.T) {
 		"127.0.0.1 dev-ohm2023.local #Local Site",
 		"127.0.0.1 other.test #Local Site",
 	}
-	out, n := commentShadowedHosts(in, []string{"dev-ohm2023.local"})
-	if n != 4 {
-		t.Fatalf("commented %d lines, want 4 (the LocalWP leftovers)", n)
-	}
-	for i, line := range out {
-		switch i {
-		case 0, 1, 5, 6:
-			if !strings.HasPrefix(strings.TrimSpace(line), "#") {
-				t.Errorf("line %d should be commented: %q", i, line)
+	oldCache := aliasCache
+	defer func() { aliasCache = oldCache }()
+	for _, tc := range []struct {
+		name    string
+		aliasUp bool
+		wantN   int
+		comment []int
+		live    []int
+	}{
+		// Alias up: 127.0.0.1 leftovers shadow our 127.0.0.2 lines, so they go.
+		{"alias up", true, 4, []int{0, 1, 5, 6}, []int{2, 3, 4, 7}},
+		// Alias down: we serve from 127.0.0.1 itself, so those lines stay.
+		{"alias down", false, 2, []int{0, 5}, []int{1, 2, 3, 4, 6, 7}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.aliasUp {
+				aliasCache = 1
+			} else {
+				aliasCache = 2
 			}
-		case 2, 3, 4, 7:
-			if strings.HasPrefix(strings.TrimSpace(line), "#") {
-				t.Errorf("line %d should stay live: %q", i, line)
+			out, n := commentShadowedHosts(in, []string{"dev-ohm2023.local"})
+			if n != tc.wantN {
+				t.Fatalf("commented %d lines, want %d", n, tc.wantN)
 			}
-		}
+			for _, i := range tc.comment {
+				if !strings.HasPrefix(strings.TrimSpace(out[i]), "#") {
+					t.Errorf("line %d should be commented: %q", i, out[i])
+				}
+			}
+			for _, i := range tc.live {
+				if strings.HasPrefix(strings.TrimSpace(out[i]), "#") {
+					t.Errorf("line %d should stay live: %q", i, out[i])
+				}
+			}
+		})
 	}
 }
 
