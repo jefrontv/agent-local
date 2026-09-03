@@ -65,9 +65,13 @@ func FrontKind(store *Store) string {
 
 // StopDaemons terminates every agent-local daemon (pid file plus any process
 // orphaned by an earlier restart) and waits for the API port to free, so the
-// next spawn cannot lose a bind race.
+// next spawn cannot lose a bind race. The launchd job is booted out first:
+// killing its process while the job stays loaded would only have launchd
+// (KeepAlive on failure) race the next spawn for the ports — and a signalled
+// exit counts as failure.
 func StopDaemons() {
 	self := os.Getpid()
+	runCmdQuiet("launchctl", "bootout", fmt.Sprintf("gui/%d/%s", os.Getuid(), daemonAgentLabel))
 	if b, err := os.ReadFile(filepath.Join(P().Run(), "daemon.pid")); err == nil {
 		var pid int
 		fmt.Sscanf(strings.TrimSpace(string(b)), "%d", &pid)
@@ -91,11 +95,29 @@ func StopDaemons() {
 	os.Remove(filepath.Join(P().Run(), "daemon.pid"))
 }
 
-// spawnDaemon launches `agent-local daemon` detached, logging to daemon.log.
-// No-op when a daemon already answers (avoids duplicate-bind races).
+// spawnDaemon brings the daemon up. No-op when one already answers (avoids
+// duplicate-bind races).
+//
+// It goes through launchd, not a direct fork. A process forked from a
+// terminal inherits that terminal's macOS file-access grants: launched from
+// an app without Documents access, the daemon serves PHP fine (php-fpm's
+// own grant) but every static file under ~/Documents comes back 403, and
+// pools it starts fail to read their plugins. launchd runs the job in the
+// user's session with the user's grants, which is the context sites live
+// in. The direct fork remains as the fallback for the rare machine where
+// the agent cannot load.
 func spawnDaemon() error {
 	if portOpen(DefaultAPIPort) {
 		return nil
+	}
+	if err := EnsureDaemonAutostart(); err == nil {
+		// EnsureDaemonAutostart bootstraps the agent and RunAtLoad starts it;
+		// when the job was already loaded (just idle after a clean exit),
+		// kickstart is what actually starts it.
+		runCmdQuiet("launchctl", "kickstart", fmt.Sprintf("gui/%d/%s", os.Getuid(), daemonAgentLabel))
+		if waitPort(DefaultAPIPort, 8*time.Second) == nil {
+			return nil
+		}
 	}
 	self, err := os.Executable()
 	if err != nil {

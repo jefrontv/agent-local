@@ -6,7 +6,9 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -83,6 +85,20 @@ func restoreRunning(e *Engine, store *Store) int {
 	return started
 }
 
+// unreadableDocroots lists sites whose docroot exists on disk but this process
+// is refused permission to list — the signature of a macOS folder-access
+// denial, as opposed to a docroot that is simply gone. A missing docroot is
+// the user's business (they moved it); a denied one is ours.
+func unreadableDocroots(store *Store) []string {
+	var denied []string
+	for _, s := range store.Sites() {
+		if _, err := os.ReadDir(s.WPDir); err != nil && errors.Is(err, fs.ErrPermission) {
+			denied = append(denied, s.Slug)
+		}
+	}
+	return denied
+}
+
 // RunDaemon is the `daemon` entrypoint.
 func RunDaemon(background bool) error {
 	// Armed before anything else so a signal arriving during the standby wait,
@@ -120,6 +136,17 @@ func RunDaemon(background bool) error {
 	store.Save()
 
 	e := NewEngine(store)
+
+	// A daemon that cannot read its own sites must not take the ports. macOS
+	// grants folder access (Documents, Desktop, …) per launching app, and a
+	// daemon forked from an app without it serves PHP (php-fpm's own grant)
+	// while every static file 403s and pools it starts cannot load plugins —
+	// a half-working stack that looks like a bug in each site. Bail here so
+	// the launchd job, which runs with the user's grants, takes over instead.
+	if denied := unreadableDocroots(store); len(denied) > 0 {
+		return fmt.Errorf("this process cannot read %d site docroot(s) (%s): macOS denies it folder access; run `agent-local restart-daemon` from Terminal, or start via launchd",
+			len(denied), strings.Join(denied, ", "))
+	}
 
 	// Residue from deletes that predate pool cleanup: sweep before starting pools,
 	// so php-fpm never parses a config naming a directory that is gone. This used
