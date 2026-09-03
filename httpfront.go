@@ -64,19 +64,26 @@ func FrontKind(store *Store) string {
 }
 
 // StopDaemons terminates every agent-local daemon (pid file plus any process
-// orphaned by an earlier restart) and waits for the API port to free, so the
-// next spawn cannot lose a bind race. The launchd job is booted out first:
-// killing its process while the job stays loaded would only have launchd
-// (KeepAlive on failure) race the next spawn for the ports — and a signalled
-// exit counts as failure.
+// orphaned by an earlier restart) and waits for it to be gone, so the next
+// spawn cannot lose a bind race. The launchd job is booted out first: killing
+// its process while the job stays loaded would only have launchd (KeepAlive
+// on failure) race the next spawn for the ports — and a signalled exit counts
+// as failure.
+//
+// The wait is for the processes, not just the API port. SIGTERM makes the
+// daemon close its API listener first and then spend up to several seconds
+// draining jobs and shares; a caller that stopped waiting at "port closed"
+// spawned the replacement into that window, launchd saw two instances, and
+// both restarted. That was the 8-second first call after every restart.
 func StopDaemons() {
 	self := os.Getpid()
 	runCmdQuiet("launchctl", "bootout", fmt.Sprintf("gui/%d/%s", os.Getuid(), daemonAgentLabel))
+	var pids []int
 	if b, err := os.ReadFile(filepath.Join(P().Run(), "daemon.pid")); err == nil {
 		var pid int
 		fmt.Sscanf(strings.TrimSpace(string(b)), "%d", &pid)
 		if pid > 0 && pid != self && Alive(pid) {
-			syscall.Kill(pid, syscall.SIGTERM)
+			pids = append(pids, pid)
 		}
 	}
 	if out, err := runCmdOut("pgrep", "-f", "agent-local daemon"); err == nil {
@@ -85,11 +92,24 @@ func StopDaemons() {
 			if err != nil || pid == self {
 				continue
 			}
-			syscall.Kill(pid, syscall.SIGTERM)
+			pids = append(pids, pid)
 		}
 	}
-	deadline := time.Now().Add(4 * time.Second)
-	for time.Now().Before(deadline) && portOpen(DefaultAPIPort) {
+	for _, pid := range pids {
+		syscall.Kill(pid, syscall.SIGTERM)
+	}
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		live := false
+		for _, pid := range pids {
+			if Alive(pid) {
+				live = true
+				break
+			}
+		}
+		if !live && !portOpen(DefaultAPIPort) {
+			break
+		}
 		time.Sleep(150 * time.Millisecond)
 	}
 	os.Remove(filepath.Join(P().Run(), "daemon.pid"))
