@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -84,6 +85,11 @@ func restoreRunning(e *Engine, store *Store) int {
 
 // RunDaemon is the `daemon` entrypoint.
 func RunDaemon(background bool) error {
+	// Armed before anything else so a signal arriving during the standby wait,
+	// store load, or pool restoration below is still caught for a clean exit
+	// instead of falling through to the OS default (an untidy, log-less kill).
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	// A daemon already serving owns the ports. Wait rather than exit: exiting
 	// meant launchd (KeepAlive on failure only) never brought the login job back
 	// when that other instance later died, so a machine could end up with nothing
@@ -92,7 +98,12 @@ func RunDaemon(background bool) error {
 	if !background && portOpen(DefaultAPIPort) {
 		log.Printf("another agent-local daemon holds :%d — standing by to take over", DefaultAPIPort)
 		for portOpen(DefaultAPIPort) {
-			time.Sleep(2 * time.Second)
+			select {
+			case <-sig:
+				log.Printf("shutting down while standing by")
+				return nil
+			case <-time.After(2 * time.Second):
+			}
 		}
 		log.Printf("the other daemon is gone — taking over")
 	}
@@ -135,6 +146,10 @@ func RunDaemon(background bool) error {
 	if err := applyFront(store); err != nil {
 		log.Printf("front: %v", err)
 	}
+	// The router binds its listeners and serves them on background goroutines,
+	// reporting only bind failures: a nil return means "up", not "done". So it
+	// runs inline — waiting on its return as an exit signal would shut the
+	// daemon down the moment boot succeeded.
 	if FrontKind(store) == "router" {
 		if err := router.ListenAndServe(DefaultHTTPPort, DefaultHTTPSPort); err != nil {
 			return fmt.Errorf("router: %w", err)
@@ -148,7 +163,8 @@ func RunDaemon(background bool) error {
 	}
 
 	// Agent API
-	api := &APIServer{store: store, engine: e, jobs: NewJobHub()}
+	jobs := NewJobHub()
+	api := &APIServer{store: store, engine: e, jobs: jobs}
 	mux := api.routes()
 	srv := &http.Server{
 		Addr:              fmt.Sprintf("127.0.0.1:%d", DefaultAPIPort),
@@ -168,10 +184,16 @@ func RunDaemon(background bool) error {
 		// detach: daemon was spawned already detached by EnsureRouterDaemon;
 		// just block until signaled.
 	}
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	log.Printf("shutting down")
+	// Give any in-flight import/deploy job a moment to finish rather than
+	// being cut off mid-write.
+	jobs.DrainRunning(5 * time.Second)
+	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutCtx); err != nil {
+		log.Printf("api shutdown: %v", err)
+	}
 	for _, sh := range shares.All() {
 		sh.shutdown()
 	}
@@ -209,11 +231,13 @@ func ok(w http.ResponseWriter, data interface{}) {
 func (a *APIServer) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a.store.ReloadIfChanged()
-		// /mail-ui is the apache front's ProxyPass target for the inbox UI —
-		// the same pages the router serves unauthenticated on a site's own
-		// domain, so gating them here would only break one front of the two.
-		// Both listeners are loopback-only.
-		if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/mail-ui/") {
+		// /mail-ui and /hub-ui are the apache front's ProxyPass targets for the
+		// inbox UI and the tooling index — the same pages the router serves
+		// unauthenticated on a site's own domain, so gating them here would
+		// only break one front of the two. Both listeners are loopback-only.
+		// Neither page carries secrets: the inbox needs its id, the index is
+		// only links.
+		if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/mail-ui/") || strings.HasPrefix(r.URL.Path, "/hub-ui/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -286,6 +310,7 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /sites/{slug}/mail", a.handleMailClear)
 	mux.HandleFunc("/mail-ui/{id}", a.handleMailUI)
 	mux.HandleFunc("/mail-ui/{id}/{rest...}", a.handleMailUI)
+	mux.HandleFunc("/hub-ui/{id}", a.handleHubUI)
 	mux.HandleFunc("POST /sites/{slug}/share", a.handleShareStart)
 	mux.HandleFunc("GET /sites/{slug}/share", a.handleShareGet)
 	mux.HandleFunc("DELETE /sites/{slug}/share", a.handleShareStop)
@@ -391,6 +416,25 @@ func (a *APIServer) handleMailUI(w http.ResponseWriter, r *http.Request) {
 		rest = "/" + rest
 	}
 	serveMailUI(w, r, id, MailPath, rest, id)
+}
+
+// handleHubUI renders the tooling index for the apache front, whose vhosts
+// ProxyPass the exact /.agent-local path here. Base stays HubPath for the
+// same reason as the inbox: links must work on the browser-facing path.
+// The id is validated like the inbox's — this route skips the token — but
+// unlike mail it never touches disk, it only picks the title.
+func (a *APIServer) handleHubUI(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	title := id
+	if site := a.store.Site(id); site != nil {
+		title = site.Domain
+	} else if wt := a.store.Data.Worktrees[id]; wt != nil {
+		title = wt.Domain
+	} else {
+		http.NotFound(w, r)
+		return
+	}
+	serveHubUI(w, HubPath, title)
 }
 
 type shareReq struct {
@@ -851,7 +895,10 @@ func (a *APIServer) handleRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := r.PathValue("slug")
-	_ = a.engine.StopSite(slug)
+	if err := a.engine.StopSite(slug); err != nil {
+		fail(w, 500, fmt.Sprintf("stop: %v", err))
+		return
+	}
 	if err := a.engine.StartSite(slug); err != nil {
 		fail(w, 500, err.Error())
 		return

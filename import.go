@@ -305,6 +305,7 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 			return nil, err
 		}
 		if err := runCmdQuiet("cp", "-R", docroot, targetWPDir); err != nil {
+			os.RemoveAll(targetWPDir)
 			return nil, fmt.Errorf("copy docroot: %w", err)
 		}
 	}
@@ -499,6 +500,7 @@ func (e *Engine) copyDatabase(site *Site, srcDB, srcSocket, srcHost string, srcP
 	}
 	if err := load.Start(); err != nil {
 		dump.Process.Kill()
+		dump.Wait()
 		return fmt.Errorf("start load: %w", err)
 	}
 
@@ -511,14 +513,16 @@ func (e *Engine) copyDatabase(site *Site, srcDB, srcSocket, srcHost string, srcP
 
 	dumpWait := dump.Wait()
 	loadWait := load.Wait()
-	if dumpWait != nil {
-		return fmt.Errorf("dump: %w (%s)", dumpWait, tail(dumpErr.String(), 300))
-	}
-	if streamErr != nil {
-		return fmt.Errorf("stream: %w", streamErr)
-	}
-	if loadWait != nil {
+	switch {
+	case loadWait != nil:
+		// A broken-pipe streamErr is usually just this: the load process
+		// already exited and closed its stdin. The load's own error is the
+		// one worth surfacing, not the write failure it caused.
 		return fmt.Errorf("load: %w (%s)", loadWait, tail(loadErr.String(), 300))
+	case dumpWait != nil:
+		return fmt.Errorf("dump: %w (%s)", dumpWait, tail(dumpErr.String(), 300))
+	case streamErr != nil:
+		return fmt.Errorf("stream: %w", streamErr)
 	}
 	return nil
 }
@@ -649,6 +653,7 @@ func (e *Engine) ImportSQL(slug, path string, rewriteURLs, snapshot bool) (strin
 		return "", fmt.Errorf("no such file: %s", path)
 	}
 	saved := ""
+	var preImportPath string
 	if snapshot {
 		took, err := e.autoSnapshot(slug, "import")
 		if err != nil {
@@ -656,12 +661,19 @@ func (e *Engine) ImportSQL(slug, path string, rewriteURLs, snapshot bool) (strin
 		}
 		if took != "" {
 			saved = "saved " + took + ", "
+			preImportPath = filepath.Join(P().SnapshotsDir(slug), took+".sql.gz")
 		}
 	}
 	if err := e.ResetDB(slug); err != nil {
 		return "", err
 	}
 	if err := e.loadSQLFile(site, path); err != nil {
+		if preImportPath != "" {
+			if rerr := e.rollbackLoad(slug, site, preImportPath); rerr != nil {
+				return "", fmt.Errorf("import %s failed: %w; auto-restore of pre-import snapshot also failed: %v", filepath.Base(path), err, rerr)
+			}
+			return "", fmt.Errorf("import %s failed: %w; automatically rolled back to the pre-import snapshot", filepath.Base(path), err)
+		}
 		return "", err
 	}
 	msg := fmt.Sprintf("%simported %s into %s (%d tables)", saved, filepath.Base(path), site.DBName, e.tableCount(site))
@@ -695,10 +707,14 @@ func (e *Engine) missingActiveAssets(site *Site) string {
 	// assuming wp_ silenced this warning for exactly the hardened sites that
 	// rename it.
 	prefix := e.tablePrefixFromDB(site)
+	table := prefix + "options"
+	if !sqlIdentRe.MatchString(table) {
+		return ""
+	}
 	hosts := []string{}
 	for _, opt := range []string{"template", "stylesheet"} {
 		out, err := e.DBIn(site.DBName, fmt.Sprintf(
-			"SELECT option_value FROM `%soptions` WHERE option_name='%s'", prefix, opt))
+			"SELECT option_value FROM %s WHERE option_name='%s'", quoteIdent(table), opt))
 		if err != nil {
 			return ""
 		}
@@ -720,8 +736,36 @@ func (e *Engine) missingActiveAssets(site *Site) string {
 	return fmt.Sprintf("WARNING: active theme %q is not in wp-content/themes — the site will render blank until the files are added (a dump carries no files; use import_site to bring files+DB together)", strings.Join(hosts, "/"))
 }
 
+// sqlIdentRe matches an identifier safe to interpolate when backtick-quoted
+// (or, for DBUser, single-quoted) in a SQL string. DBName/DBUser are normally
+// ours ("al_"+slug, and slugs contain hyphens), but a serve-only import reads
+// them straight out of someone else's wp-config.php — trust nothing that
+// reaches SQL text without checking it. Backtick quoting makes hyphens safe;
+// backticks, quotes, semicolons and whitespace stay rejected.
+var sqlIdentRe = regexp.MustCompile(`^[A-Za-z0-9_$-]+$`)
+
+// quoteIdent backtick-quotes a SQL identifier, doubling any embedded
+// backtick. Belt-and-suspenders alongside requireSQLIdent: cheap, and it
+// keeps a table name read back from information_schema from ever landing
+// unescaped in a query we build.
+func quoteIdent(name string) string {
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+}
+
+// requireSQLIdent fails closed on any DBName/DBUser/prefix that is not a
+// plain identifier, rather than trusting it inside a SQL string.
+func requireSQLIdent(kind, name string) error {
+	if !sqlIdentRe.MatchString(name) {
+		return fmt.Errorf("refusing to use %q as a %s: not a plain identifier", name, kind)
+	}
+	return nil
+}
+
 // tableCount counts tables in a site's database.
 func (e *Engine) tableCount(site *Site) int {
+	if requireSQLIdent("database name", site.DBName) != nil {
+		return 0
+	}
 	out, err := e.DB(fmt.Sprintf(
 		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='%s'", site.DBName))
 	if err != nil {
@@ -739,6 +783,9 @@ func (e *Engine) tableCount(site *Site) int {
 // with, from the shortest table ending in "options" (wp_options → "wp_").
 // "" when the schema has no options table yet.
 func (e *Engine) tablePrefixFromDB(site *Site) string {
+	if requireSQLIdent("database name", site.DBName) != nil {
+		return ""
+	}
 	out, err := e.DB(fmt.Sprintf(
 		"SELECT table_name FROM information_schema.tables WHERE table_schema='%s' "+
 			"AND table_name LIKE '%%options' ORDER BY LENGTH(table_name) LIMIT 1", site.DBName))
@@ -757,6 +804,9 @@ func (e *Engine) tablePrefixFromDB(site *Site) string {
 // --format=plain, and a dump can reference plugins whose files are absent.
 // The options table is found by suffix so any $table_prefix works.
 func (e *Engine) siteHostsFromDB(site *Site) []string {
+	if requireSQLIdent("database name", site.DBName) != nil {
+		return nil
+	}
 	out, err := e.DB(fmt.Sprintf(
 		"SELECT table_name FROM information_schema.tables WHERE table_schema='%s' "+
 			"AND table_name LIKE '%%options' ORDER BY LENGTH(table_name) LIMIT 1", site.DBName))
@@ -768,8 +818,11 @@ func (e *Engine) siteHostsFromDB(site *Site) []string {
 		return nil
 	}
 	table := strings.TrimSpace(lines[1])
+	if !sqlIdentRe.MatchString(table) {
+		return nil
+	}
 	vals, err := e.DB(fmt.Sprintf(
-		"SELECT option_value FROM `%s`.`%s` WHERE option_name IN ('siteurl','home')", site.DBName, table))
+		"SELECT option_value FROM %s.%s WHERE option_name IN ('siteurl','home')", quoteIdent(site.DBName), quoteIdent(table)))
 	if err != nil {
 		return nil
 	}
@@ -800,15 +853,27 @@ func (e *Engine) ExportSQL(slug, path string) (string, error) {
 		}
 		path = filepath.Join(dir, fmt.Sprintf("%s-%s.sql", slug, time.Now().Format("20060102-150405")))
 	}
-	f, err := os.Create(path)
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
-	if err := e.dumpDB(site, f); err != nil {
+	err = e.dumpDB(site, f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmp)
 		return "", err
 	}
-	fi, _ := f.Stat()
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return "", err
+	}
+	fi, statErr := os.Stat(path)
+	if statErr != nil {
+		return "", statErr
+	}
 	return fmt.Sprintf("%s (%d bytes)", path, fi.Size()), nil
 }
 
@@ -841,15 +906,22 @@ func (e *Engine) ResetDB(slug string) error {
 	if site == nil {
 		return fmt.Errorf("no such site: %s", slug)
 	}
+	if err := requireSQLIdent("database name", site.DBName); err != nil {
+		return err
+	}
+	if err := requireSQLIdent("database user", site.DBUser); err != nil {
+		return err
+	}
 	if err := e.EnsureDB(); err != nil {
 		return err
 	}
+	db := quoteIdent(site.DBName)
 	_, err := e.DB(fmt.Sprintf(
-		"DROP DATABASE IF EXISTS `%s`;"+
-			"CREATE DATABASE `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"+
-			"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'127.0.0.1';"+
-			"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost';FLUSH PRIVILEGES;",
-		site.DBName, site.DBName, site.DBName, site.DBUser, site.DBName, site.DBUser))
+		"DROP DATABASE IF EXISTS %s;"+
+			"CREATE DATABASE %s CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"+
+			"GRANT ALL PRIVILEGES ON %s.* TO '%s'@'127.0.0.1';"+
+			"GRANT ALL PRIVILEGES ON %s.* TO '%s'@'localhost';FLUSH PRIVILEGES;",
+		db, db, db, site.DBUser, db, site.DBUser))
 	return err
 }
 

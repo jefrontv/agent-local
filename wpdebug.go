@@ -97,10 +97,33 @@ func (e *Engine) SetWPDebug(slug string, on bool) (WPDebugState, error) {
 	} else {
 		src = setWPConstRaw(src, "WP_DEBUG", "false")
 	}
-	if err := os.WriteFile(cfg, []byte(src), 0o644); err != nil {
+	if err := writeWPConfigSrc(cfg, b, []byte(src)); err != nil {
 		return WPDebugState{}, err
 	}
 	return WPDebugStatus(site), nil
+}
+
+// writeWPConfig replaces a wp-config.php with new content. A fresh backup of
+// the previous bytes is written every time — this toggle is meant to be
+// flipped back and forth, so a stale first-write-only backup would stop
+// matching whatever is actually running — and the new content lands via a
+// tmp file + rename, so a crash mid-write never leaves wp-config.php
+// truncated.
+func writeWPConfigSrc(path string, oldBytes, newBytes []byte) error {
+	bak := path + ".agent-local.bak"
+	if err := os.WriteFile(bak, oldBytes, 0o644); err != nil {
+		return fmt.Errorf("back up wp-config.php: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, newBytes, 0o644); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // readWPConstRaw extracts the raw PHP expression of a define('NAME', …):

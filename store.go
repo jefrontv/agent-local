@@ -17,7 +17,7 @@ import (
 // The daemon calls ReloadIfChanged before reads so CLI writes are visible;
 // all disk IO goes through an advisory flock so the two never interleave.
 type Store struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	path     string
 	loadedAt time.Time
 	// base is the document as last loaded or written: the common ancestor a save
@@ -30,6 +30,10 @@ type Store struct {
 	// path does not walk the catalog.
 	domains map[string]domainHit
 	Data    storeData
+	// dirty is set by any Put/Del mutation and cleared by Save. While set, a
+	// reload from disk would silently discard local changes that were never
+	// persisted, so ReloadIfChanged skips itself until the next Save clears it.
+	dirty bool
 }
 
 // domainHit is one Host-header resolution.
@@ -105,18 +109,28 @@ func (s *Store) reindexDomains() {
 
 // LookupDomain resolves a Host header to a site and optional worktree.
 func (s *Store) LookupDomain(domain string) (*Site, *Worktree) {
+	s.mu.RLock()
 	if s.domains == nil {
-		s.reindexDomains()
+		s.mu.RUnlock()
+		s.mu.Lock()
+		if s.domains == nil {
+			s.reindexDomains()
+		}
+		s.mu.Unlock()
+		s.mu.RLock()
 	}
 	hit, ok := s.domains[domain]
 	if !ok {
+		s.mu.RUnlock()
 		return nil, nil
 	}
 	site := s.Data.Sites[hit.siteSlug]
-	if hit.wtID == "" {
-		return site, nil
+	var wt *Worktree
+	if hit.wtID != "" {
+		wt = s.Data.Worktrees[hit.wtID]
 	}
-	return site, s.Data.Worktrees[hit.wtID]
+	s.mu.RUnlock()
+	return site, wt
 }
 
 // lock takes the advisory store lock. A failed flock used to return a no-op
@@ -169,6 +183,7 @@ func (s *Store) Save() error {
 	// deletions are now on disk.
 	s.base = s.snapshot()
 	s.deleted = nil
+	s.dirty = false
 	return nil
 }
 
@@ -186,9 +201,11 @@ func (s *Store) mergedBytes() ([]byte, error) {
 	}
 	merged, err := mergeStore(s.base, mine, onDisk, s.deleted)
 	if err != nil {
-		// A merge we cannot reason about must not lose this process's work:
-		// fall back to our own document rather than writing nothing.
-		return json.MarshalIndent(s.Data, "", "  ")
+		// A merge we cannot reason about must not silently clobber whatever
+		// another process wrote to disk: surface the error instead of
+		// guessing with a blind overwrite. The caller's in-memory Data is
+		// untouched, so nothing here is lost — the next Save retries the merge.
+		return nil, fmt.Errorf("merge store: %w", err)
 	}
 	return merged, nil
 }
@@ -290,6 +307,12 @@ func (s *Store) ReloadIfChanged() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.dirty {
+		// Unsaved Put/Del mutations are pending. Reloading now would replace
+		// s.Data wholesale and silently drop them; the next Save persists
+		// them and clears dirty, at which point a reload is safe again.
+		return
+	}
 	if !s.loadedAt.IsZero() && !st.ModTime().After(s.loadedAt) {
 		return
 	}
@@ -313,10 +336,16 @@ func (s *Store) ReloadIfChanged() {
 }
 
 // Site fetches a site by slug.
-func (s *Store) Site(slug string) *Site { return s.Data.Sites[slug] }
+func (s *Store) Site(slug string) *Site {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Data.Sites[slug]
+}
 
 // Sites returns sites sorted by name.
 func (s *Store) Sites() []*Site {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make([]*Site, 0, len(s.Data.Sites))
 	for _, v := range s.Data.Sites {
 		out = append(out, v)
@@ -334,8 +363,11 @@ func (s *Store) FindSiteByDomain(domain string) *Site {
 
 // PutSite inserts/updates a site.
 func (s *Store) PutSite(site *Site) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.Data.Sites[site.Slug] = site
 	s.reindexDomains()
+	s.dirty = true
 }
 
 // DelSite removes a site row.
@@ -344,13 +376,18 @@ func (s *Store) PutSite(site *Site) {
 // in-memory copy into a delete order: records vanished while their database,
 // hosts entry and pool config stayed behind. Intent is now explicit.
 func (s *Store) DelSite(slug string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	delete(s.Data.Sites, slug)
 	s.markDeleted("sites", slug)
 	s.reindexDomains()
+	s.dirty = true
 }
 
 // WorktreesFor returns worktrees of a site sorted by branch.
 func (s *Store) WorktreesFor(slug string) []*Worktree {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var out []*Worktree
 	for _, w := range s.Data.Worktrees {
 		if w.Site == slug {
@@ -363,20 +400,26 @@ func (s *Store) WorktreesFor(slug string) []*Worktree {
 
 // PutWorktree inserts/updates a worktree.
 func (s *Store) PutWorktree(w *Worktree) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.Data.Worktrees[w.ID] = w
 	s.reindexDomains()
+	s.dirty = true
 }
 
 // DelWorktree removes a worktree row.
 // DelWorktree removes a worktree, recording the intent for the same reason.
 func (s *Store) DelWorktree(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	delete(s.Data.Worktrees, id)
 	s.markDeleted("worktrees", id)
 	s.reindexDomains()
+	s.dirty = true
 }
 
 // markDeleted notes a deletion this process performed, so a merge can apply it
-// without guessing. Callers hold no lock; the map is only read while saving.
+// without guessing. Callers hold the write lock already.
 func (s *Store) markDeleted(kind, key string) {
 	if s.deleted == nil {
 		s.deleted = map[string]map[string]bool{}
@@ -389,6 +432,8 @@ func (s *Store) markDeleted(kind, key string) {
 
 // NextPorts scans sites for free http/https port pairs.
 func (s *Store) NextPorts() (int, int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	used := map[int]bool{}
 	for _, site := range s.Data.Sites {
 		used[site.HTTPPort] = true

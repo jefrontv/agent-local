@@ -99,15 +99,19 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if isAdminerPath(req.URL.Path) || isMailPath(req.URL.Path) {
-		// A share exposes the site, not its tooling: the database GUI and the
-		// inbox stay local-only.
+	if isAdminerPath(req.URL.Path) || isMailPath(req.URL.Path) || isHubPath(req.URL.Path) {
+		// A share exposes the site, not its tooling: the database GUI, the
+		// inbox and this index stay local-only.
 		if shared {
 			http.NotFound(w, req)
 			return
 		}
 		if isAdminerPath(req.URL.Path) {
 			r.serveAdminer(w, req, host, wpdir)
+			return
+		}
+		if isHubPath(req.URL.Path) {
+			serveHubUI(w, HubPath, host)
 			return
 		}
 		// The inbox is per serving pool, so a preview domain reads the

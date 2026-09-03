@@ -41,18 +41,24 @@ if ( $al_docs ) {
 <body <?php body_class(); ?>>
 <?php wp_body_open(); ?>
 
+<?php
+// The section links are homepage anchors. Bare "#…" links work there, but on
+// /docs/ pages they resolve against the docs URL and go nowhere — so docs
+// pages get them rooted at home instead.
+$al_home = $al_docs ? home_url( '/' ) : '';
+?>
 <a class="skip" href="#main">Skip to content</a>
 <nav class="nav" aria-label="Page">
 	<a class="nav__mark" href="<?php echo esc_url( home_url( '/' ) ); ?>">AGENT-LOCAL</a>
 	<div class="nav__links">
-		<a href="#speed">Speed</a>
-		<a href="#benchmarks">Benchmarks</a>
-		<a href="#how">How</a>
-		<a href="#agents">Agents</a>
-		<a href="#features">Features</a>
-		<a href="#compare">Compare</a>
+		<a href="<?php echo esc_url( $al_home . '#speed' ); ?>">Speed</a>
+		<a href="<?php echo esc_url( $al_home . '#benchmarks' ); ?>">Benchmarks</a>
+		<a href="<?php echo esc_url( $al_home . '#how' ); ?>">How</a>
+		<a href="<?php echo esc_url( $al_home . '#agents' ); ?>">Agents</a>
+		<a href="<?php echo esc_url( $al_home . '#features' ); ?>">Features</a>
+		<a href="<?php echo esc_url( $al_home . '#compare' ); ?>">Compare</a>
 		<a href="<?php echo esc_url( home_url( '/docs/' ) ); ?>">Docs</a>
 		<a class="nav__ext" href="https://github.com/jefrontv/agent-local">GitHub<span aria-hidden="true"> ↗</span></a>
 	</div>
-	<a class="nav__cta" href="#install">Install <span aria-hidden="true"><svg viewBox="0 0 14 14" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 11 11 3M4.5 3H11v6.5"/></svg></span></a>
+	<a class="nav__cta" href="<?php echo esc_url( $al_home . '#install' ); ?>">Install <span aria-hidden="true"><svg viewBox="0 0 14 14" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 11 11 3M4.5 3H11v6.5"/></svg></span></a>
 </nav>

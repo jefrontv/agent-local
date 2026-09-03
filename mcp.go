@@ -69,6 +69,7 @@ func runMCP(args []string) error {
 		}
 		var req mcpReq
 		if err := json.Unmarshal(line, &req); err != nil {
+			enc.Encode(&mcpResp{JSONRPC: "2.0", Error: &mcpErr{Code: -32700, Message: "parse error: " + err.Error()}})
 			continue
 		}
 		// A request without an id is a notification: the spec forbids answering
@@ -324,20 +325,27 @@ func mcpTools() []mcpTool {
 	}
 }
 
-// strArgs coerces a JSON array argument into []string, tolerating absent or
-// non-string members so a sloppy tool call still runs.
-func strArgs(v interface{}) []string {
-	out := []string{}
+// strArgs coerces a JSON array argument into []string, erroring on a
+// non-string member instead of silently dropping it — a malformed element
+// (e.g. a stray number in a wp-cli arg list) is a caller bug worth surfacing,
+// not something to swallow.
+func strArgs(v interface{}) ([]string, error) {
+	if v == nil {
+		return []string{}, nil
+	}
 	arr, ok := v.([]interface{})
 	if !ok {
-		return out
+		return nil, fmt.Errorf("expected an array, got %T", v)
 	}
-	for _, x := range arr {
-		if s, ok := x.(string); ok {
-			out = append(out, s)
+	out := make([]string, 0, len(arr))
+	for i, x := range arr {
+		s, ok := x.(string)
+		if !ok {
+			return nil, fmt.Errorf("element %d is not a string (got %T)", i, x)
 		}
+		out = append(out, s)
 	}
-	return out
+	return out, nil
 }
 
 type toolCallParams struct {
@@ -345,10 +353,66 @@ type toolCallParams struct {
 	Arguments map[string]interface{} `json:"arguments"`
 }
 
+// validateRequired checks a tool call's arguments against the "required"
+// list baked into its schema (see mcpTools/schema), so every dispatchTool
+// case can assume its required arguments are present instead of building a
+// path out of an empty string. Array-typed required arguments (e.g.
+// "domains") only need to be present and array-shaped; string-typed ones
+// must also be non-empty.
+func validateRequired(tool mcpTool, args map[string]interface{}) *mcpErr {
+	sch, _ := tool.InputSchema.(map[string]interface{})
+	var required []string
+	switch r := sch["required"].(type) {
+	case []string:
+		required = r
+	case []interface{}:
+		for _, x := range r {
+			if s, ok := x.(string); ok {
+				required = append(required, s)
+			}
+		}
+	}
+	props, _ := sch["properties"].(map[string]interface{})
+	for _, key := range required {
+		v, present := args[key]
+		if !present || v == nil {
+			return &mcpErr{Code: -32602, Message: "missing required argument: " + key}
+		}
+		if p, ok := props[key].(map[string]interface{}); ok {
+			if t, _ := p["type"].(string); t == "array" {
+				if _, ok := v.([]interface{}); !ok {
+					return &mcpErr{Code: -32602, Message: "argument " + key + " must be an array"}
+				}
+				continue
+			}
+		}
+		if s, ok := v.(string); !ok || s == "" {
+			return &mcpErr{Code: -32602, Message: "missing required argument: " + key}
+		}
+	}
+	return nil
+}
+
 func mcpCall(raw json.RawMessage) *mcpResp {
 	var p toolCallParams
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return &mcpResp{Error: &mcpErr{Code: -32602, Message: "bad params"}}
+		return &mcpResp{Error: &mcpErr{Code: -32602, Message: "bad params: " + err.Error()}}
+	}
+	var tool *mcpTool
+	for _, t := range mcpTools() {
+		if t.Name == p.Name {
+			tool = &t
+			break
+		}
+	}
+	if tool == nil {
+		out := map[string]string{"error": "unknown tool: " + p.Name}
+		text, _ := json.Marshal(out)
+		content := []map[string]interface{}{{"type": "text", "text": string(text)}}
+		return &mcpResp{Result: map[string]interface{}{"content": content, "isError": true}}
+	}
+	if verr := validateRequired(*tool, p.Arguments); verr != nil {
+		return &mcpResp{Error: verr}
 	}
 	out, isErr := dispatchTool(p.Name, p.Arguments)
 	text, _ := json.Marshal(out)
@@ -487,7 +551,11 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 	case "db_tables":
 		return apiGet("/sites/" + get("slug") + "/db/tables")
 	case "wp_cli":
-		return apiPost("/sites/"+get("slug")+"/wp-cli", map[string]interface{}{"args": strArgs(args["args"])})
+		wpArgs, err := strArgs(args["args"])
+		if err != nil {
+			return map[string]string{"error": "args: " + err.Error()}, true
+		}
+		return apiPost("/sites/"+get("slug")+"/wp-cli", map[string]interface{}{"args": wpArgs})
 	case "yield_ports":
 		body := map[string]interface{}{}
 		if n, okn := args["seconds"].(float64); okn {
@@ -500,15 +568,24 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		return apiGet("/sites/" + get("slug") + "/worktrees")
 	case "start_worktree":
 		id := get("id")
-		site := strings.SplitN(id, "--", 2)[0]
+		site, ok := worktreeSiteSlug(id)
+		if !ok {
+			return map[string]string{"error": "invalid worktree id: " + id}, true
+		}
 		return apiPost("/sites/"+site+"/worktrees/"+id+"/start", nil)
 	case "stop_worktree":
 		id := get("id")
-		site := strings.SplitN(id, "--", 2)[0]
+		site, ok := worktreeSiteSlug(id)
+		if !ok {
+			return map[string]string{"error": "invalid worktree id: " + id}, true
+		}
 		return apiPost("/sites/"+site+"/worktrees/"+id+"/stop", nil)
 	case "remove_worktree":
 		id := get("id")
-		site := strings.SplitN(id, "--", 2)[0]
+		site, ok := worktreeSiteSlug(id)
+		if !ok {
+			return map[string]string{"error": "invalid worktree id: " + id}, true
+		}
 		return apiDelete("/sites/" + site + "/worktrees/" + id)
 	case "list_runtimes":
 		return apiGet("/runtimes")
@@ -543,12 +620,27 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		return apiGet("/sites/" + get("slug") + "/branches")
 	case "worktree_wp_cli":
 		id := get("id")
-		site := strings.SplitN(id, "--", 2)[0]
-		return apiPost("/sites/"+site+"/worktrees/"+id+"/wp-cli", map[string]interface{}{"args": strArgs(args["args"])})
+		site, ok := worktreeSiteSlug(id)
+		if !ok {
+			return map[string]string{"error": "invalid worktree id: " + id}, true
+		}
+		wtArgs, err := strArgs(args["args"])
+		if err != nil {
+			return map[string]string{"error": "args: " + err.Error()}, true
+		}
+		return apiPost("/sites/"+site+"/worktrees/"+id+"/wp-cli", map[string]interface{}{"args": wtArgs})
 	case "add_hosts_entries":
-		return apiPost("/hosts", map[string]interface{}{"domains": strArgs(args["domains"])})
+		domains, err := strArgs(args["domains"])
+		if err != nil {
+			return map[string]string{"error": "domains: " + err.Error()}, true
+		}
+		return apiPost("/hosts", map[string]interface{}{"domains": domains})
 	case "remove_hosts_entries":
-		return apiDeleteBody("/hosts", map[string]interface{}{"domains": strArgs(args["domains"])})
+		domains, err := strArgs(args["domains"])
+		if err != nil {
+			return map[string]string{"error": "domains: " + err.Error()}, true
+		}
+		return apiDeleteBody("/hosts", map[string]interface{}{"domains": domains})
 	case "list_jobs":
 		return apiGet("/jobs")
 	case "get_job":
@@ -578,6 +670,21 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 	}
 }
 
+// worktreeSiteSlug extracts the site-slug prefix from a worktree id. Worktree
+// ids are built as slug + "--" + branchSlug (see AddWorktree in sites.go);
+// both halves are produced by Slugify, which collapses every run of non-
+// alphanumeric characters to a single "-", so neither half can itself
+// contain "--". The id's first "--" is therefore always the separator, and
+// splitting there is unambiguous for any id this codebase produced — it only
+// fails for a caller-supplied id that never came from AddWorktree.
+func worktreeSiteSlug(id string) (string, bool) {
+	i := strings.Index(id, "--")
+	if i <= 0 || i+2 >= len(id) {
+		return "", false
+	}
+	return id[:i], true
+}
+
 // ---------- daemon API client ----------
 
 func apiBase() string { return fmt.Sprintf("http://127.0.0.1:%d", DefaultAPIPort) }
@@ -597,7 +704,10 @@ func apiDo(method, path string, body interface{}) (interface{}, bool) {
 	}
 	var rd io.Reader
 	if body != nil {
-		b, _ := json.Marshal(body)
+		b, merr := json.Marshal(body)
+		if merr != nil {
+			return map[string]string{"error": "encoding request body: " + merr.Error()}, true
+		}
 		rd = bytes.NewReader(b)
 	}
 	req, err := http.NewRequest(method, apiBase()+path, rd)
@@ -608,10 +718,16 @@ func apiDo(method, path string, body interface{}) (interface{}, bool) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		// daemon down → start it, retry once. Used to only retry GET, so the
-		// first import_site after a reboot failed instead of spawning.
+		// Daemon down. GET is idempotent, so it is safe to start the daemon and
+		// retry once — that's what makes the first call after a reboot spawn it
+		// instead of failing. A POST/PUT/DELETE might have partially landed on
+		// the daemon side before the connection dropped; retrying it blindly
+		// could run a mutation twice, so it only gets the daemon started for
+		// next time and fails this call.
 		EnsureRouterDaemonQuiet()
-		resp, err = client.Do(req)
+		if method == http.MethodGet {
+			resp, err = client.Do(req)
+		}
 		if err != nil {
 			return map[string]string{"error": "daemon unreachable: " + err.Error()}, true
 		}
@@ -622,7 +738,9 @@ func apiDo(method, path string, body interface{}) (interface{}, bool) {
 		Error string          `json:"error"`
 		Data  json.RawMessage `json:"data"`
 	}
-	json.NewDecoder(resp.Body).Decode(&out)
+	if derr := json.NewDecoder(resp.Body).Decode(&out); derr != nil {
+		return map[string]string{"error": "decoding response: " + derr.Error()}, true
+	}
 	if resp.StatusCode >= 400 || !out.OK {
 		msg := out.Error
 		if msg == "" {

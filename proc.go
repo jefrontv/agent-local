@@ -20,6 +20,12 @@ type Proc struct {
 	LogTo  string
 	PidTo  string
 	Silent bool // don't inherit stdio
+	// Marker is a substring that must appear in a live pid's command line
+	// (checked via `pgrep -f`, same technique as reapStrayFPM) before that pid
+	// is trusted. A pid file surviving a reboot can point at a reused pid that
+	// is now something else entirely; an empty Marker keeps the old
+	// liveness-only check for callers that have no unique substring to check.
+	Marker string
 }
 
 // Start launches the process detached, writing pid + log files.
@@ -27,6 +33,9 @@ type Proc struct {
 func (p *Proc) Start() (int, error) {
 	if pid, ok := p.Pid(); ok {
 		return pid, nil
+	}
+	if len(p.Args) == 0 {
+		return 0, fmt.Errorf("%s: no command specified", p.Name)
 	}
 	bin, err := exec.LookPath(p.Args[0])
 	if err != nil {
@@ -48,12 +57,18 @@ func (p *Proc) Start() (int, error) {
 	cmd.Env = append(os.Environ(), p.Env...)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
-	devnull, _ := os.Open(os.DevNull)
+	devnull, err := os.Open(os.DevNull)
+	if err != nil {
+		return 0, fmt.Errorf("%s: open %s: %w", p.Name, os.DevNull, err)
+	}
 	cmd.Stdin = devnull
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
+		devnull.Close()
 		return 0, fmt.Errorf("%s: start: %w", p.Name, err)
 	}
+	// exec.Cmd duped this fd into the child; our copy is no longer needed.
+	devnull.Close()
 	go cmd.Wait()
 	if p.PidTo != "" {
 		if err := os.WriteFile(p.PidTo, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644); err != nil {
@@ -63,7 +78,9 @@ func (p *Proc) Start() (int, error) {
 	return cmd.Process.Pid, nil
 }
 
-// Pid reads the pid file and verifies the process is alive.
+// Pid reads the pid file and verifies the process is alive — and, when
+// Marker is set, that it is still the process we started rather than an
+// unrelated one that reused the same pid.
 func (p *Proc) Pid() (int, bool) {
 	if p.PidTo == "" {
 		return 0, false
@@ -73,16 +90,40 @@ func (p *Proc) Pid() (int, bool) {
 		return 0, false
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil {
+	if err != nil || pid <= 0 {
 		return 0, false
 	}
 	if !Alive(pid) {
 		return 0, false
 	}
+	if p.Marker != "" && !verifyPid(pid, p.Marker) {
+		return 0, false
+	}
 	return pid, true
 }
 
-// Stop signals the process SIGTERM, then SIGKILL after grace.
+// verifyPid reports whether a live pid's command line still contains marker,
+// using the same `pgrep -f` technique as engine.go's reapStrayFPM.
+func verifyPid(pid int, marker string) bool {
+	if pid <= 0 || marker == "" {
+		return false
+	}
+	out, err := runCmdOut("pgrep", "-f", marker)
+	if err != nil {
+		return false
+	}
+	for _, f := range strings.Fields(out) {
+		if p, err := strconv.Atoi(f); err == nil && p == pid {
+			return true
+		}
+	}
+	return false
+}
+
+// Stop signals the process SIGTERM, then SIGKILL after grace. A pid this
+// process cannot verify (Marker set, no longer matching) is never
+// group-killed — Pid() already refuses to trust it, so there is nothing left
+// to signal, only a stale pid file to clean up.
 func (p *Proc) Stop() error {
 	pid, ok := p.Pid()
 	if !ok {

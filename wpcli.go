@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha512"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,7 +13,20 @@ import (
 	"strings"
 )
 
-// EnsureWPCLI downloads the wp-cli phar to our bin dir (once).
+// wpCLIURL is the "latest stable" build wp-cli publishes; wpCLISHA512URL is
+// its digest, at the same location. There is no version pin here — both
+// move together whenever wp-cli cuts a release — so the digest is fetched
+// fresh each time rather than hardcoded, and a mismatch fails closed instead
+// of installing an unverified phar.
+const (
+	wpCLIURL       = "https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar"
+	wpCLISHA512URL = wpCLIURL + ".sha512"
+)
+
+var sha512HexRe = regexp.MustCompile(`^[0-9a-f]{128}$`)
+
+// EnsureWPCLI downloads the wp-cli phar to our bin dir (once), verifying it
+// against wp-cli's own published SHA-512 before it is ever made executable.
 func EnsureWPCLI() (string, error) {
 	bin := filepath.Join(P().Bin(), "wp")
 	if fileExists(bin) {
@@ -22,8 +38,38 @@ func EnsureWPCLI() (string, error) {
 	}
 	tmp.Close()
 	defer os.Remove(tmp.Name())
-	if err := runCmdQuiet("curl", "-fsSL", "-o", tmp.Name(), "https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar"); err != nil {
+	if err := runCmdQuiet("curl", "-fsSL", "-o", tmp.Name(), wpCLIURL); err != nil {
 		return "", fmt.Errorf("download wp-cli: %w", err)
+	}
+	sumFile, err := os.CreateTemp("", "wp-cli-sha512-*.txt")
+	if err != nil {
+		return "", err
+	}
+	sumFile.Close()
+	defer os.Remove(sumFile.Name())
+	if err := runCmdQuiet("curl", "-fsSL", "-o", sumFile.Name(), wpCLISHA512URL); err != nil {
+		return "", fmt.Errorf("download wp-cli checksum: %w", err)
+	}
+	wantB, err := os.ReadFile(sumFile.Name())
+	if err != nil {
+		return "", err
+	}
+	// The published file may be a bare digest or a "hash  filename" line;
+	// either way the digest is the first field.
+	fields := strings.Fields(strings.TrimSpace(string(wantB)))
+	want := ""
+	if len(fields) > 0 {
+		want = strings.ToLower(fields[0])
+	}
+	if !sha512HexRe.MatchString(want) {
+		return "", fmt.Errorf("wp-cli checksum file did not contain a sha512 digest: %q", tail(strings.TrimSpace(string(wantB)), 80))
+	}
+	got, err := sha512File(tmp.Name())
+	if err != nil {
+		return "", err
+	}
+	if got != want {
+		return "", fmt.Errorf("wp-cli.phar checksum mismatch: got %s, published %s — refusing to install an unverified phar", got, want)
 	}
 	if err := os.Chmod(tmp.Name(), 0o755); err != nil {
 		return "", err
@@ -32,6 +78,20 @@ func EnsureWPCLI() (string, error) {
 		return "", err
 	}
 	return bin, nil
+}
+
+// sha512File hashes a file on disk without holding it all in memory.
+func sha512File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha512.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // wpCLI runs wp-cli against a site using that site's PHP runtime.

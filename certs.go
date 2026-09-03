@@ -35,10 +35,13 @@ func EnsureCert(domain string) (cert, key string, created bool, err error) {
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: domain, Organization: []string{AppName}},
 		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(10 * 365 * 24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{domain},
+		// 398 days: the max lifetime modern browsers/OSes accept for a
+		// leaf cert (Apple/Chrome cap at 397). A 10-year cert used to
+		// outlive that policy and start failing TLS handshakes silently.
+		NotAfter:    time.Now().Add(398 * 24 * time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:    []string{domain},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &priv.PublicKey, priv)
 	if err != nil {

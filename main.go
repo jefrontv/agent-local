@@ -1520,25 +1520,23 @@ func cmdAlias(args []string) error {
 // operations (hosts writes, pf/alias setup, cert trust) run via `sudo -n`
 // silently — no more osascript dialogs. One authorization installs it.
 func cmdSudoSetup() error {
-	root := Root()
 	user := os.Getenv("USER")
 	dst := "/Library/LaunchDaemons/local.agent-local.front.plist"
 	content := fmt.Sprintf(`# agent-local: scoped passwordless root. Exact commands only.
-%[1]s ALL=(root) NOPASSWD: /bin/cp %[2]s/run/hosts.tmp /etc/hosts
-%[1]s ALL=(root) NOPASSWD: /bin/cp %[2]s/run/pf.conf.new /etc/pf.conf
-%[1]s ALL=(root) NOPASSWD: /bin/cp %[2]s/run/front.plist %[3]s
-%[1]s ALL=(root) NOPASSWD: /usr/sbin/chown root\:wheel %[3]s
-%[1]s ALL=(root) NOPASSWD: /bin/chmod 644 %[3]s
-%[1]s ALL=(root) NOPASSWD: /bin/launchctl load %[3]s
-%[1]s ALL=(root) NOPASSWD: /bin/launchctl unload %[3]s
-%[1]s ALL=(root) NOPASSWD: /bin/rm %[3]s
+%[1]s ALL=(root) NOPASSWD: /usr/bin/tee /etc/hosts
+%[1]s ALL=(root) NOPASSWD: /usr/bin/tee /etc/pf.conf
+%[1]s ALL=(root) NOPASSWD: /usr/bin/tee %[2]s
+%[1]s ALL=(root) NOPASSWD: /usr/sbin/chown root\:wheel %[2]s
+%[1]s ALL=(root) NOPASSWD: /bin/chmod 644 %[2]s
+%[1]s ALL=(root) NOPASSWD: /bin/launchctl load %[2]s
+%[1]s ALL=(root) NOPASSWD: /bin/launchctl unload %[2]s
+%[1]s ALL=(root) NOPASSWD: /bin/rm %[2]s
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 alias 127.0.0.2
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 -alias 127.0.0.2
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 inet6 fd00\:a10c\:\:2 prefixlen 128 alias
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 inet6 fd00\:a10c\:\:2 -alias
-%[1]s ALL=(root) NOPASSWD: /usr/bin/security add-trusted-cert *
 %[1]s ALL=(root) NOPASSWD: /sbin/pfctl -d
-`, user, root, dst)
+`, user, dst)
 	tmp := P().Run() + "/sudoers.agent-local"
 	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
 		return err
@@ -1560,7 +1558,7 @@ if /usr/sbin/visudo -cf "$stage"; then mv "$stage" /etc/sudoers.d/agent-local; e
 	}
 	outTitle(AppName, "sudo")
 	outStep("installed /etc/sudoers.d/agent-local; root operations run without a prompt")
-	outNote("exact commands only: hosts, the loopback alias, the front daemon, cert trust")
+	outNote("exact commands only: hosts, the loopback alias, the front daemon; cert trust always prompts")
 	outHint("remove", "sudo rm /etc/sudoers.d/agent-local")
 	return nil
 }

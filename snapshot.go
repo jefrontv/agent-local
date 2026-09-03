@@ -71,7 +71,8 @@ func (e *Engine) SnapshotDB(slug, label string) (*SnapshotInfo, error) {
 	for i := 2; fileExists(path); i++ {
 		path = filepath.Join(dir, fmt.Sprintf("%s-%d.sql.gz", name, i))
 	}
-	f, err := os.Create(path)
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +87,11 @@ func (e *Engine) SnapshotDB(slug, label string) (*SnapshotInfo, error) {
 	if err != nil {
 		// A half-written snapshot restoring as half a database is worse
 		// than no snapshot at all.
-		os.Remove(path)
+		os.Remove(tmp)
+		return nil, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
 		return nil, err
 	}
 	fi, err := os.Stat(path)
@@ -191,6 +196,7 @@ func (e *Engine) RestoreSnapshot(slug, name string, backup bool) (string, error)
 		}
 	}
 	msg := ""
+	var preRestorePath string
 	if backup {
 		took, err := e.autoSnapshot(slug, "restore")
 		if err != nil {
@@ -198,15 +204,32 @@ func (e *Engine) RestoreSnapshot(slug, name string, backup bool) (string, error)
 		}
 		if took != "" {
 			msg = "saved " + took + ", "
+			preRestorePath = filepath.Join(P().SnapshotsDir(slug), took+".sql.gz")
 		}
 	}
 	if err := e.ResetDB(slug); err != nil {
 		return "", err
 	}
 	if err := e.loadSQLFile(site, pick.Path); err != nil {
+		if preRestorePath != "" {
+			if rerr := e.rollbackLoad(slug, site, preRestorePath); rerr != nil {
+				return "", fmt.Errorf("restore %s failed: %w; auto-restore of pre-restore snapshot also failed: %v", pick.Name, err, rerr)
+			}
+			return "", fmt.Errorf("restore %s failed: %w; automatically rolled back to the pre-restore snapshot", pick.Name, err)
+		}
 		return "", err
 	}
 	return fmt.Sprintf("%srestored %s into %s (%d tables)", msg, pick.Name, site.DBName, e.tableCount(site)), nil
+}
+
+// rollbackLoad resets the database and reloads a known-good snapshot. Used
+// to recover from a failed load: best-effort, since it can only fail closed,
+// not undo whatever partial state the failed attempt left behind.
+func (e *Engine) rollbackLoad(slug string, site *Site, path string) error {
+	if err := e.ResetDB(slug); err != nil {
+		return err
+	}
+	return e.loadSQLFile(site, path)
 }
 
 // ResetDBBackup empties a site's database the way `db reset` means it: with

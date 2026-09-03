@@ -236,7 +236,7 @@ func ensureDDEVRunning(p *DDEVProject, cb func(stage, detail string)) (*DDEVProj
 	if !p.Running() {
 		cb("source", p.Name+" is not running — asking DDEV to start it")
 		bin := ddevBin()
-		cmd := exec.Command(bin, "start", p.Name, "-y")
+		cmd := exec.Command(bin, "start", "-y", "--", p.Name)
 		if err := streamCmd(cmd, func(line string) {
 			if line = strings.TrimSpace(line); line != "" {
 				cb("ddev", line)
@@ -302,7 +302,7 @@ func detachDDEVProject(name string, cb func(stage, detail string)) error {
 		return fmt.Errorf("ddev is not installed")
 	}
 	cb("ddev", "removing the DDEV project (its own snapshot is kept in .ddev/db_snapshots)")
-	cmd := exec.Command(bin, "delete", name, "-y")
+	cmd := exec.Command(bin, "delete", "-y", "--", name)
 	return streamCmd(cmd, func(line string) {
 		if line = strings.TrimSpace(line); line != "" {
 			cb("ddev", line)

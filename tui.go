@@ -224,6 +224,20 @@ func (m *model) refresh() {
 	// agent all share sites.json, and the TUI is usually the long-lived reader.
 	m.store.ReloadIfChanged()
 	m.sites = m.store.Sites()
+	// Deleted/recreated slugs must not keep an old cached size — this is cheap
+	// (map lookups, no disk walk) unlike siteSize itself, so it's safe to do
+	// on every refresh, including the periodic tick.
+	if len(m.sizes) > 0 {
+		live := make(map[string]bool, len(m.sites))
+		for _, s := range m.sites {
+			live[s.Slug] = true
+		}
+		for slug := range m.sizes {
+			if !live[slug] {
+				delete(m.sizes, slug)
+			}
+		}
+	}
 	m.inv = *m.store.Inventory()
 	// Clamp each cursor to its own list: deleting the last row otherwise leaves
 	// a cursor pointing past the end.
@@ -523,6 +537,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if msg.result != "" {
 				m.setMsg(msg.result, false)
 			}
+			// A completed action (create/delete/import/db-import/...) can change
+			// a site's disk usage; actions are infrequent, so a full clear here
+			// is cheap and simpler than tracking which slug each action touched.
+			m.sizes = nil
 			m.refresh()
 			return m, nil
 		}
@@ -564,6 +582,17 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// half-changed site is how people end up with two problems.
 		if k.String() == "ctrl+c" {
 			m.quitting = true
+			// Update stops calling waitForAction once we quit, so the
+			// goroutine's progress sends (buffered) and its final done send
+			// (unbuffered-equivalent once the buffer fills) would otherwise
+			// block forever on a channel nobody reads — drain it in the
+			// background so the action can still finish and exit.
+			if ch := m.progress; ch != nil {
+				go func() {
+					for range ch {
+					}
+				}()
+			}
 			return m, tea.Quit
 		}
 		return m, nil
@@ -709,8 +738,9 @@ func (m model) handleInputKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "backspace":
-		if len(m.input.value) > 0 {
-			m.input.value = m.input.value[:len(m.input.value)-1]
+		if m.input.value != "" {
+			r := []rune(m.input.value)
+			m.input.value = string(r[:len(r)-1])
 			if m.input.target == inputNewDir || m.input.target == inputSitesDir || m.input.target == inputImportSource {
 				m.input.note = ""
 			}

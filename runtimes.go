@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -637,6 +638,11 @@ func InstallBrew(cb func(line string)) error {
 	return streamCmd(cmd, cb)
 }
 
+// streamCmdMaxLine caps how much unterminated output streamCmd will buffer
+// before giving up on finding a newline — a runaway or binary-garbage
+// process must not grow this buffer without bound.
+const streamCmdMaxLine = 1 << 20
+
 // streamCmd runs cmd piping each output line to cb.
 func streamCmd(cmd *exec.Cmd, cb func(line string)) error {
 	stdout, err := cmd.StdoutPipe()
@@ -654,7 +660,7 @@ func streamCmd(cmd *exec.Cmd, cb func(line string)) error {
 		if n > 0 {
 			leftover = append(leftover, buf[:n]...)
 			for {
-				idx := strings.IndexByte(string(leftover), '\n')
+				idx := bytes.IndexByte(leftover, '\n')
 				if idx < 0 {
 					break
 				}
@@ -663,6 +669,15 @@ func streamCmd(cmd *exec.Cmd, cb func(line string)) error {
 				if cb != nil {
 					cb(strings.TrimRight(line, "\r"))
 				}
+			}
+			if len(leftover) > streamCmdMaxLine {
+				// No newline in a megabyte of output: flush what is held so
+				// a chatty, newline-free process cannot grow this without
+				// bound, then keep reading.
+				if cb != nil {
+					cb(strings.TrimRight(string(leftover), "\r"))
+				}
+				leftover = leftover[:0]
 			}
 		}
 		if rerr != nil {

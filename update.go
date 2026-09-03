@@ -112,11 +112,11 @@ func SelfUpdate(progress func(string)) (string, error) {
 	if !UpdateAvailable(Version, rel) {
 		return rel.TagName, nil
 	}
-	var assetURL, sumsURL string
+	var assetURL, assetName, sumsURL string
 	for _, a := range rel.Assets {
 		switch {
 		case strings.Contains(a.Name, updateAssetOS) && strings.HasSuffix(a.Name, ".tar.gz"):
-			assetURL = a.URL
+			assetURL, assetName = a.URL, a.Name
 		case a.Name == "checksums.txt":
 			sumsURL = a.URL
 		}
@@ -138,7 +138,7 @@ func SelfUpdate(progress func(string)) (string, error) {
 		return "", fmt.Errorf("release %s publishes no checksums.txt; refusing to install unverified bytes", rel.TagName)
 	}
 	progress("verifying checksum")
-	if err := verifyChecksum(archive, sumsURL); err != nil {
+	if err := verifyChecksum(archive, assetName, sumsURL); err != nil {
 		return "", err
 	}
 
@@ -169,6 +169,11 @@ func SelfUpdate(progress func(string)) (string, error) {
 	return rel.TagName, nil
 }
 
+// maxDownloadSize bounds any file this process pulls over the network — the
+// release archive and checksums.txt both fit comfortably inside it, and it
+// matches extractBinary's own cap on what it will unpack from the archive.
+const maxDownloadSize = 200 << 20
+
 func downloadTemp(url, pattern string) (string, error) {
 	client := &http.Client{Timeout: 10 * time.Minute}
 	req, _ := http.NewRequest("GET", url, nil)
@@ -181,20 +186,31 @@ func downloadTemp(url, pattern string) (string, error) {
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("download %s: %s", url, resp.Status)
 	}
+	if resp.ContentLength > maxDownloadSize {
+		return "", fmt.Errorf("download %s: %d bytes exceeds the %d byte limit", url, resp.ContentLength, int64(maxDownloadSize))
+	}
 	f, err := os.CreateTemp("", pattern)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	n, err := io.Copy(f, io.LimitReader(resp.Body, maxDownloadSize+1))
+	if err != nil {
 		os.Remove(f.Name())
 		return "", err
+	}
+	if n > maxDownloadSize {
+		os.Remove(f.Name())
+		return "", fmt.Errorf("download %s: exceeds the %d byte limit", url, int64(maxDownloadSize))
 	}
 	return f.Name(), nil
 }
 
-// verifyChecksum matches the archive against its line in checksums.txt.
-func verifyChecksum(archivePath, sumsURL string) error {
+// verifyChecksum matches the archive against checksums.txt, binding the
+// digest to assetName — the exact release asset this download was meant to
+// be — instead of accepting any line in the file that happens to carry a
+// matching hash.
+func verifyChecksum(archivePath, assetName, sumsURL string) error {
 	sums, err := downloadTemp(sumsURL, "agent-local-sums-*.txt")
 	if err != nil {
 		return err
@@ -214,19 +230,31 @@ func verifyChecksum(archivePath, sumsURL string) error {
 		return err
 	}
 	got := hex.EncodeToString(h.Sum(nil))
-	name := filepath.Base(archivePath)
+	var want string
 	for _, line := range strings.Split(string(b), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 2 {
 			continue
 		}
-		// The temp file is renamed, so match on the checksum itself: any line
-		// carrying this digest proves the bytes are published.
-		if fields[0] == got {
-			return nil
+		// checksums.txt pairs a hash with a filename; goreleaser emits
+		// "hash  filename" but the ordering costs nothing to accept either way.
+		switch {
+		case fields[1] == assetName:
+			want = fields[0]
+		case fields[0] == assetName:
+			want = fields[1]
+		default:
+			continue
 		}
+		break
 	}
-	return fmt.Errorf("checksum mismatch for %s (%s not published)", name, got[:12])
+	if want == "" {
+		return fmt.Errorf("checksums.txt has no entry for %s", assetName)
+	}
+	if !strings.EqualFold(want, got) {
+		return fmt.Errorf("checksum mismatch for %s: got %s, published %s", assetName, got[:12], want[:12])
+	}
+	return nil
 }
 
 // extractBinary pulls one file out of a .tar.gz.

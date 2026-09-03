@@ -568,6 +568,16 @@ func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 	if site == nil {
 		return fmt.Errorf("no such site: %s", slug)
 	}
+	// The schema about to be dropped is often the only copy of local work, so
+	// it is saved under ~/.agent-local/snapshots/<slug>/ before anything else
+	// here touches the site — stopping the pool, pruning worktrees, or
+	// removing pool config are all steps this function cannot undo, and none
+	// of them should run if the snapshot that makes the rest safe failed.
+	if !o.KeepDB && !o.NoSnapshot {
+		if _, err := e.autoSnapshot(slug, "delete"); err != nil {
+			return fmt.Errorf("pre-delete snapshot: %w (--no-snapshot skips it)", err)
+		}
+	}
 	_ = e.StopSite(slug)
 	e.StopShare(slug) // no site, no tunnel
 	for _, w := range e.Store.WorktreesFor(slug) {
@@ -579,14 +589,6 @@ func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 	// The inbox is transient capture, not user data: it goes with the site.
 	os.RemoveAll(P().MailDir(slug))
 	if !o.KeepDB {
-		// The schema about to be dropped is often the only copy of local work,
-		// so it is saved under ~/.agent-local/snapshots/<slug>/ first — that
-		// directory deliberately survives the delete.
-		if !o.NoSnapshot {
-			if _, err := e.autoSnapshot(slug, "delete"); err != nil {
-				return fmt.Errorf("pre-delete snapshot: %w (--no-snapshot skips it)", err)
-			}
-		}
 		if err := e.DropSiteDB(site); err != nil {
 			return fmt.Errorf("drop db: %w", err)
 		}
@@ -649,15 +651,24 @@ func (e *Engine) StartSite(slug string) error {
 	}
 	if err := e.StartFPM(site.Slug, site.WPDir, site.PHPVersion); err != nil {
 		site.State = StateError
-		e.Store.Save()
+		if serr := e.Store.Save(); serr != nil {
+			return fmt.Errorf("%w (also failed to persist error state: %v)", err, serr)
+		}
 		return err
 	}
 	if err := EnsureHTTPFront(e.Store); err != nil {
+		site.State = StateError
+		_ = e.Store.Save()
 		return err
 	}
 	if _, err := EnsureHosts(e.HostsInteractive, []string{site.Domain}); err != nil {
+		site.State = StateError
+		_ = e.Store.Save()
 		return fmt.Errorf("hosts entry for %s needs root: run `agent-local doctor --fix`", site.Domain)
 	}
+	// Only now, with DB + pool + front + hosts all up, is the site actually
+	// running — marking it so any earlier meant a crash between steps left a
+	// site that says "running" while nothing behind it works.
 	site.State = StateRunning
 	return e.Store.Save()
 }
@@ -668,10 +679,11 @@ func (e *Engine) StopSite(slug string) error {
 	if site == nil {
 		return fmt.Errorf("no such site: %s", slug)
 	}
-	err := e.StopFPM(site.Slug)
+	if err := e.StopFPM(site.Slug); err != nil {
+		return err
+	}
 	site.State = StateStopped
-	e.Store.Save()
-	return err
+	return e.Store.Save()
 }
 
 // startForInstall boots minimal stack without hosts mutation.
@@ -725,7 +737,7 @@ func (e *Engine) SwitchPHPEnsure(slug, version string, install, allowTap bool, c
 	if e.Store.Inventory().FindPHP(version) == nil {
 		return e.phpMissingErr(version)
 	}
-	site.PHPVersion = version
+	prevVersion := site.PHPVersion
 	if e.FPMRunning(site.Slug) {
 		if err := e.FPMRestart(site.Slug, site.WPDir, version); err != nil {
 			return err
@@ -734,10 +746,20 @@ func (e *Engine) SwitchPHPEnsure(slug, version string, install, allowTap bool, c
 	for _, w := range e.Store.WorktreesFor(slug) {
 		if e.FPMRunning(w.ID) {
 			if err := e.FPMRestart(w.ID, e.wtServeDir(w), version); err != nil {
+				// Roll the site pool back to the version it was on so a
+				// worktree failure never leaves the site pool switched with
+				// nothing persisted to say so.
+				if e.FPMRunning(site.Slug) {
+					_ = e.FPMRestart(site.Slug, site.WPDir, prevVersion)
+				}
 				return err
 			}
 		}
 	}
+	// Only assign and persist once every pool that needed restarting on the
+	// new version actually did — a restart failure above must never leave
+	// the stored PHPVersion pointing at a version nothing is actually running.
+	site.PHPVersion = version
 	return e.Store.Save()
 }
 
@@ -795,8 +817,12 @@ func (e *Engine) SetDomain(slug, domain string) error {
 		_ = TrustCert(cert, false)
 	}
 	if site.State == StateRunning {
-		_ = e.StopSite(slug)
-		_ = e.StartSite(slug)
+		if err := e.StopSite(slug); err != nil {
+			return fmt.Errorf("restart after domain change: stop: %w", err)
+		}
+		if err := e.StartSite(slug); err != nil {
+			return fmt.Errorf("restart after domain change: start: %w", err)
+		}
 	}
 	// WordPress stores its own URLs, so a rename that stops here leaves every
 	// request redirecting straight back to the old domain — the new one only looks
@@ -1229,6 +1255,9 @@ func (e *Engine) StartWorktree(id string) error {
 		return fmt.Errorf("no such worktree: %s", id)
 	}
 	site := e.Store.Site(w.Site)
+	if site == nil {
+		return fmt.Errorf("worktree %s: parent site %q no longer exists", id, w.Site)
+	}
 	if err := e.EnsureDB(); err != nil {
 		return err
 	}
@@ -1245,11 +1274,14 @@ func (e *Engine) StartWorktree(id string) error {
 
 // StopWorktree stops a worktree's pool.
 func (e *Engine) StopWorktree(id string) error {
+	if err := e.StopFPM(id); err != nil {
+		return err
+	}
 	if w, ok := e.Store.Data.Worktrees[id]; ok {
 		w.State = StateStopped
-		_ = e.Store.Save()
+		return e.Store.Save()
 	}
-	return e.StopFPM(id)
+	return nil
 }
 
 // RemoveWorktree stops + prunes the git worktree.

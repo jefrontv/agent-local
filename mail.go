@@ -81,6 +81,12 @@ func runSendmail(args []string) error {
 // filename is the capture instant, which doubles as the message id and the
 // sort key.
 func StoreMail(id string, raw []byte) (string, error) {
+	// id lands in a filesystem path. Pool ids are generated internally, but
+	// --site arrives via process argv, so reject anything that could escape
+	// the mail tree rather than trusting the caller.
+	if id == "" || strings.ContainsAny(id, `/\.`) {
+		return "", fmt.Errorf("sendmail: bad site id %q", id)
+	}
 	dir := P().MailDir(id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err

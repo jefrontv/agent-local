@@ -215,11 +215,17 @@ DirectoryIndex index.php index.html
 			// The pool id keys the inbox, so previews keep their own.
 			b.WriteString(fmt.Sprintf("  ProxyPass %s http://127.0.0.1:%d/mail-ui/%s\n  ProxyPassReverse %s http://127.0.0.1:%d/mail-ui/%s\n",
 				MailPath, DefaultAPIPort, id, MailPath, DefaultAPIPort, id))
+			// The tooling index is one exact path, not a subtree: anchor the
+			// regex so the adminer Alias and the inbox ProxyPass above keep
+			// winning their longer, more specific paths.
+			b.WriteString(fmt.Sprintf("  ProxyPassMatch ^/\\.agent-local/?$ http://127.0.0.1:%d/hub-ui/%s\n",
+				DefaultAPIPort, id))
 			b.WriteString(fmt.Sprintf(`  <FilesMatch \.php$>
     SetHandler "proxy:unix:%s|fcgi://localhost"
   </FilesMatch>
   RewriteEngine On
   RewriteCond %%{REQUEST_URI} !^/\.agent-local/
+  RewriteCond %%{REQUEST_URI} !^/\.agent-local/?$
   RewriteCond %%{REQUEST_FILENAME} !-f
   RewriteCond %%{REQUEST_FILENAME} !-d
   RewriteRule ^ /index.php [L]

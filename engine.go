@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -21,6 +22,27 @@ type Engine struct {
 
 // NewEngine wires an engine to the store.
 func NewEngine(s *Store) *Engine { return &Engine{Store: s} }
+
+// fpmStartLocks serializes StartFPM per pool id so two concurrent callers —
+// the router's ensurePool and an explicit CLI/API start racing each other —
+// can never both pass the "not up yet" check and spawn two masters for the
+// same pool, one of which then silently loses its socket.
+var (
+	fpmStartMu    sync.Mutex
+	fpmStartLocks = map[string]*sync.Mutex{}
+)
+
+func lockFPMStart(id string) func() {
+	fpmStartMu.Lock()
+	l, ok := fpmStartLocks[id]
+	if !ok {
+		l = &sync.Mutex{}
+		fpmStartLocks[id] = l
+	}
+	fpmStartMu.Unlock()
+	l.Lock()
+	return l.Unlock
+}
 
 // ---------- MySQL/MariaDB ----------
 
@@ -50,7 +72,8 @@ func (e *Engine) EnsureDB() error {
 	}
 	bindir := filepath.Dir(inv.MySQL.Bin)
 	proc := &Proc{
-		Name: "mysql",
+		Name:   "mysql",
+		Marker: datadir,
 		Args: []string{
 			inv.MySQL.Bin,
 			"--defaults-file=" + e.engineDefaults(),
@@ -244,7 +267,7 @@ func (e *Engine) DropSiteDB(site *Site) error {
 
 // StopDB stops the shared DB server.
 func (e *Engine) StopDB() error {
-	proc := &Proc{Name: "mysql", PidTo: e.dbPid()}
+	proc := &Proc{Name: "mysql", PidTo: e.dbPid(), Marker: e.dbDir()}
 	return proc.Stop()
 }
 
@@ -316,17 +339,21 @@ func selfExe() string {
 // pool config, no longer tracked by the pid file) are reaped so repeated
 // starts cannot pile up processes holding unlinked sockets.
 func (e *Engine) StartFPM(id, wpdir, phpVersion string) error {
+	unlock := lockFPMStart(id)
+	defer unlock()
 	rt := e.Store.Inventory().FindPHP(phpVersion)
 	if rt == nil {
 		return fmt.Errorf("php %s not installed; run: agent-local install php %s", phpVersion, phpVersion)
 	}
-	tracked, isUp := (&Proc{PidTo: e.fpmPid(id)}).Pid()
+	tracked, isUp := (&Proc{Name: FPMName(id), PidTo: e.fpmPid(id), Marker: e.fpmConf(id)}).Pid()
 	if isUp && fileExists(e.fpmSock(id)) {
 		e.reapStrayFPM(id, tracked)
 		return nil
 	}
 	if isUp {
-		_ = e.StopFPM(id) // live master, dead socket: would deadlock
+		// Live master but no socket: stop it before starting fresh, or the
+		// old master keeps running untracked while the new one takes over.
+		_ = e.StopFPM(id)
 	}
 	e.reapStrayFPM(id, 0)
 	if err := e.writeFPMConf(id, wpdir, phpVersion); err != nil {
@@ -334,10 +361,11 @@ func (e *Engine) StartFPM(id, wpdir, phpVersion string) error {
 	}
 	os.Remove(e.fpmSock(id)) // stale socket
 	proc := &Proc{
-		Name:  FPMName(id),
-		Args:  []string{rt.FPM, "-y", e.fpmConf(id), "-F"},
-		LogTo: e.fpmLog(id),
-		PidTo: e.fpmPid(id),
+		Name:   FPMName(id),
+		Args:   []string{rt.FPM, "-y", e.fpmConf(id), "-F"},
+		LogTo:  e.fpmLog(id),
+		PidTo:  e.fpmPid(id),
+		Marker: e.fpmConf(id),
 	}
 	if _, err := proc.Start(); err != nil {
 		return err
@@ -370,11 +398,22 @@ func (e *Engine) reapStrayFPM(id string, keep int) {
 	}
 }
 
+// FPMAlive reports whether a pool's php-fpm master is up AND its socket
+// exists. A tracked pid with no socket (crashed mid-init, or the socket was
+// cleaned up by something else) is not a pool anything can actually route
+// to, so callers that mean "is this pool serving" use this, not a bare pid
+// check.
+func (e *Engine) FPMAlive(id string) bool {
+	proc := &Proc{Name: FPMName(id), PidTo: e.fpmPid(id), Marker: e.fpmConf(id)}
+	_, ok := proc.Pid()
+	return ok && fileExists(e.fpmSock(id))
+}
+
 // ensurePool boots the php-fpm pool for a site or worktree id if it is not
 // already serving. Used by the router so a known domain never 503s just
 // because a pool went away (reboot, daemon replacement, stale state).
 func (e *Engine) ensurePool(id string) error {
-	if fileExists(e.fpmSock(id)) {
+	if e.FPMAlive(id) {
 		return nil
 	}
 	if e.Store.Site(id) != nil {
@@ -389,7 +428,7 @@ func (e *Engine) ensurePool(id string) error {
 // StopFPM stops a pool. The generated config is left in place so a restart
 // reuses it; RemovePool is the teardown that deletes it.
 func (e *Engine) StopFPM(id string) error {
-	proc := &Proc{Name: FPMName(id), PidTo: e.fpmPid(id)}
+	proc := &Proc{Name: FPMName(id), PidTo: e.fpmPid(id), Marker: e.fpmConf(id)}
 	err := proc.Stop()
 	os.Remove(e.fpmSock(id))
 	return err
@@ -432,9 +471,14 @@ func (e *Engine) SweepOrphanPools() int {
 		}
 		// A pool still serving is not an orphan: leave it and let its owner
 		// stop it, rather than pulling the config out from under it.
-		if e.FPMRunning(id) {
+		if e.FPMAlive(id) {
 			continue
 		}
+		// Anything still holding this config that the pid file lost track of
+		// (a replaced master, an unclean crash) must die before the config it
+		// is running goes away, or it keeps serving off a deleted file handle
+		// indefinitely with nothing left to stop it.
+		e.reapStrayFPM(id, 0)
 		os.Remove(filepath.Join(P().Conf(), name))
 		os.Remove(e.fpmPid(id))
 		os.Remove(e.fpmSock(id))
@@ -443,11 +487,9 @@ func (e *Engine) SweepOrphanPools() int {
 	return removed
 }
 
-// FPMRunning reports pool liveness.
+// FPMRunning reports pool liveness (alive and reachable — see FPMAlive).
 func (e *Engine) FPMRunning(id string) bool {
-	proc := &Proc{Name: FPMName(id), PidTo: e.fpmPid(id)}
-	_, ok := proc.Pid()
-	return ok
+	return e.FPMAlive(id)
 }
 
 // FPMRestart restarts a pool (php version switch).

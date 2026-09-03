@@ -153,12 +153,7 @@ func RemovePFWiring(interactive bool) error {
 		dropping = false
 		kept = append(kept, line)
 	}
-	tmp := P().Run() + "/pf.conf.new"
-	if err := os.WriteFile(tmp, []byte(strings.Join(kept, "\n")), 0o644); err != nil {
-		return nil
-	}
-	defer os.Remove(tmp)
-	_ = RunPrivileged(interactive, "/bin/cp", tmp, "/etc/pf.conf")
+	_ = runPrivilegedWrite(interactive, "/etc/pf.conf", []byte(strings.Join(kept, "\n")))
 	// pf stays DISABLED: enabling it stalls loopback for unknown reasons on
 	// this system; nothing needs it.
 	return nil
@@ -198,14 +193,9 @@ func installFrontDaemon(interactive bool) error {
 </dict>
 </plist>
 `, self, P().Run(), P().Log("front"), P().Log("front"))
-	tmp := P().Run() + "/front.plist"
-	if err := os.WriteFile(tmp, []byte(plist), 0o644); err != nil {
-		return err
-	}
-	defer os.Remove(tmp)
 	dst := frontPlistPath()
 	_ = RunPrivileged(interactive, "/bin/launchctl", "unload", dst)
-	if err := RunPrivileged(interactive, "/bin/cp", tmp, dst); err != nil {
+	if err := runPrivilegedWrite(interactive, dst, []byte(plist)); err != nil {
 		return err
 	}
 	_ = RunPrivileged(interactive, "/usr/sbin/chown", "root:wheel", dst)

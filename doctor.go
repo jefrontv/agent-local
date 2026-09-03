@@ -328,7 +328,7 @@ func hostsHas(domain string) bool {
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		if len(fields) < 2 || strings.HasPrefix(fields[0], "#") {
 			continue
 		}
 		for _, f := range fields[1:] {
@@ -380,7 +380,12 @@ func brokenPHPFindings(inv *Inventory) []Finding {
 	return out
 }
 
-// DoctorFix applies auto-fixable findings. Returns what it did.
+// DoctorFix applies auto-fixable findings. Returns what it did, alongside
+// any per-check errors so a caller can tell a fix that silently did nothing
+// (nothing to fix) from one that tried and failed — a fix that ran and
+// failed is reported as "failed: <check>: <error>" in the same slice, since
+// changing this signature would ripple into every caller across the CLI,
+// TUI and API for no functional gain.
 func DoctorFix(store *Store, interactive bool) []string {
 	var done []string
 	rep := Doctor(store)
@@ -392,36 +397,56 @@ func DoctorFix(store *Store, interactive bool) []string {
 		case strings.HasPrefix(f.Check, "dns"):
 			// AllDomains, not just missing: EnsureHosts also comments leftover
 			// LocalWP ::1 / 127.0.0.1 lines that shadow our alias.
-			if n, err := EnsureHosts(interactive, store.AllDomains()); err == nil && n > 0 {
+			if n, err := EnsureHosts(interactive, store.AllDomains()); err != nil {
+				done = append(done, fmt.Sprintf("failed: dns: %v", err))
+			} else if n > 0 {
 				done = append(done, fmt.Sprintf("updated %d /etc/hosts line(s)", n))
 			}
 		case f.Check == "tls":
 			for _, d := range store.AllDomains() {
 				cert, _, created, err := EnsureCert(d)
-				if err == nil && created {
-					_ = TrustCert(cert, interactive)
+				if err != nil {
+					done = append(done, fmt.Sprintf("failed: tls %s: %v", d, err))
+					continue
+				}
+				if created {
+					if terr := TrustCert(cert, interactive); terr != nil {
+						done = append(done, fmt.Sprintf("failed: trust cert %s: %v", d, terr))
+					}
 					done = append(done, "issued cert for "+d)
 				}
 			}
 		case strings.HasPrefix(f.Check, "php:"):
 			v := strings.TrimPrefix(f.Check, "php:")
-			if err := RepairPHP(store, v, nil); err == nil {
+			if err := RepairPHP(store, v, nil); err != nil {
+				done = append(done, fmt.Sprintf("failed: php %s: %v", v, err))
+			} else {
 				_ = store.Save()
 				done = append(done, "repaired php "+v)
 			}
 		case f.Check == "http":
-			if err := EnsureHTTPFront(store); err == nil {
+			if err := EnsureHTTPFront(store); err != nil {
+				done = append(done, fmt.Sprintf("failed: http: %v", err))
+			} else {
 				done = append(done, "started http front")
 			}
 		case f.Check == "bare-urls":
-			if err := EnsureLoopAlias(interactive); err == nil {
-				if n, err := EnsureHosts(interactive, store.AllDomains()); err == nil {
-					// daemon restart binds the alias :80/:443 listeners
-					StopDaemons()
-					_ = EnsureHTTPFront(store)
-					done = append(done, fmt.Sprintf("bare URLs enabled (%d hosts lines on %s)", n, LoopbackAlias))
-				}
+			if err := EnsureLoopAlias(interactive); err != nil {
+				done = append(done, fmt.Sprintf("failed: bare-urls: %v", err))
+				continue
 			}
+			n, err := EnsureHosts(interactive, store.AllDomains())
+			if err != nil {
+				done = append(done, fmt.Sprintf("failed: bare-urls hosts: %v", err))
+				continue
+			}
+			// daemon restart binds the alias :80/:443 listeners
+			StopDaemons()
+			if err := EnsureHTTPFront(store); err != nil {
+				done = append(done, fmt.Sprintf("failed: bare-urls http front: %v", err))
+				continue
+			}
+			done = append(done, fmt.Sprintf("bare URLs enabled (%d hosts lines on %s)", n, LoopbackAlias))
 		}
 	}
 	return done

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -342,16 +344,52 @@ func RemoveHosts(interactive bool, domains []string) error {
 	return writeRootFile("/etc/hosts", strings.Join(keep, "\n"), interactive)
 }
 
-// writeRootFile writes content to a root-owned file via sudo tee.
-func writeRootFile(path, content string, interactive bool) error {
-	tmp := P().Run() + "/hosts.tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
-		return err
+// runPrivilegedWrite writes content to path as root by piping it straight
+// into `tee`, instead of staging it in a user-writable temp file and then
+// `cp`-ing that as root. Staging left a TOCTOU window: anything with write
+// access to the staging path (Root().Run()) could swap the file's content
+// between our write and the privileged copy running as root. Piping the
+// bytes over stdin means root only ever sees what we hand it directly.
+func runPrivilegedWrite(interactive bool, path string, content []byte) error {
+	if sudoNStdin(content, "/usr/bin/tee", path) == nil {
+		return nil
 	}
-	defer os.Remove(tmp)
-	err := RunPrivileged(interactive, "cp", tmp, path)
+	if !interactive {
+		return fmt.Errorf("needs root: tee %s (run: agent-local sudo)", path)
+	}
+	// osascript's `do shell script` has no stdin channel to pipe into, so the
+	// GUI-prompt fallback carries the payload as base64 inside the script
+	// text itself — still no file touches disk before root writes it.
+	b64 := base64.StdEncoding.EncodeToString(content)
+	cmd := fmt.Sprintf("echo %s | base64 -D | /usr/bin/tee %s", shQuote(b64), shQuote(path))
+	script := fmt.Sprintf(`do shell script "%s" with administrator privileges`,
+		strings.ReplaceAll(strings.ReplaceAll(cmd, `\`, `\\`), `"`, `\"`))
+	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
 	if err != nil {
-		err = fmt.Errorf("write %s: %w", path, err)
+		return fmt.Errorf("authorization failed: %v %s", err, strings.TrimSpace(string(out)))
 	}
-	return err
+	return nil
+}
+
+// sudoNStdin runs sudo -n with args, feeding stdin bytes to the child.
+func sudoNStdin(stdin []byte, args ...string) error {
+	cmd := exec.Command("sudo", append([]string{"-n"}, args...)...)
+	cmd.Stdin = bytes.NewReader(stdin)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Run()
+}
+
+// shQuote wraps s in single quotes for embedding in a generated sh command.
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// writeRootFile writes content to a root-owned file via tee, piped directly
+// (no staged copy on disk — see runPrivilegedWrite).
+func writeRootFile(path, content string, interactive bool) error {
+	if err := runPrivilegedWrite(interactive, path, []byte(content)); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
 }

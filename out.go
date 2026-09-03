@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -73,11 +74,32 @@ func outState(running bool) string {
 	return stGutter.Render("●") + " " + stDim.Render("stopped")
 }
 
+// ansiEscapeRe matches CSI sequences (colors, cursor movement) and OSC
+// sequences (title-setting, hyperlinks) that a subprocess may emit.
+var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[@-_]`)
+
+// sanitizeSubOutput strips ANSI/OSC escape sequences and other C0 control
+// characters (tab excepted) from subprocess output before it's rendered.
+// brew/git/curl occasionally emit cursor moves or a bare ESC/BEL; left in,
+// those can repaint the wrong terminal line or hide text instead of just
+// looking odd in a gutter.
+func sanitizeSubOutput(s string) string {
+	s = ansiEscapeRe.ReplaceAllString(s, "")
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '\t' || r >= 0x20 {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // outSub routes a subprocess line (brew, git) into a dim gutter, so the
 // tool's own steps stay legible above it. brew's "==>" headers are its real
 // milestones and are promoted to steps; its progress bars are dropped.
 func outSub(line string) {
-	line = strings.TrimRight(line, "\r\n")
+	line = sanitizeSubOutput(strings.TrimRight(line, "\r\n"))
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
 		return

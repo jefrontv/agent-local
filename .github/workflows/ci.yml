@@ -27,6 +27,9 @@ jobs:
       - name: build
         run: go build -o agent-local .
 
+      - name: test
+        run: go test ./...
+
       # Cheap smoke test: the binary must start and answer. Anything that needs
       # PHP, MariaDB or root belongs in a manual run, not in CI.
       - name: smoke

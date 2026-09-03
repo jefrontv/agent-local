@@ -60,9 +60,14 @@ func (j *Job) Snapshot() JobView {
 	defer j.mu.Unlock()
 	steps := make([]JobStep, len(j.Steps))
 	copy(steps, j.Steps)
+	var finished *time.Time
+	if j.FinishedAt != nil {
+		t := *j.FinishedAt
+		finished = &t
+	}
 	return JobView{
 		ID: j.ID, Op: j.Op, Status: j.Status, Steps: steps,
-		Result: j.Result, Error: j.Error, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt,
+		Result: j.Result, Error: j.Error, StartedAt: j.StartedAt, FinishedAt: finished,
 	}
 }
 
@@ -109,6 +114,34 @@ type JobHub struct {
 
 // NewJobHub builds an empty hub.
 func NewJobHub() *JobHub { return &JobHub{jobs: map[string]*Job{}} }
+
+// DrainRunning blocks until no job is running or timeout elapses, giving an
+// in-flight import/deploy a chance to finish before the process that started
+// it exits, instead of leaving it silently truncated mid-operation. This is
+// a bounded best-effort wait, not cancellation: Start's fn has no way to be
+// told to stop, since threading a context through every job callback across
+// the codebase would be a much larger, riskier change than the daemon
+// shutdown path calling for.
+func (h *JobHub) DrainRunning(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !h.anyRunning() {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (h *JobHub) anyRunning() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, j := range h.jobs {
+		if j.running() {
+			return true
+		}
+	}
+	return false
+}
 
 // Start runs fn in the background and returns the job immediately.
 func (h *JobHub) Start(op string, fn func(cb func(stage, detail string)) (any, error)) *Job {

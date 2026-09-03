@@ -117,7 +117,7 @@ func renderHelp() string {
 			}
 		}
 	}
-	b.WriteString("\n" + stDim.Render("Every command here is also an MCP tool for the agents you connect.") + "\n")
+	b.WriteString("\n" + stDim.Render("Every command here is also an MCP tool for the agents you connect —\nexcept mcp, connect, api-token, alias, sudo, autostart, daemon, restart-daemon,\nupdate and version, which only make sense run by hand.") + "\n")
 	return b.String()
 }
 
