@@ -174,8 +174,12 @@ type model struct {
 	width      int
 	height     int
 	health     healthSnapshot
-	sizes      map[string]string
-	quitting   bool
+	// alive caches per-pool liveness, sampled on refresh like health: FPMAlive
+	// verifies the pid against the pool config via pgrep, and running one of
+	// those per row per frame turned arrow keys into a stall.
+	alive    map[string]bool
+	sizes    map[string]string
+	quitting bool
 	// siteFilter is the Sites-tab search. The full catalog stays in sites;
 	// visibleSites() is what the cursor and the table walk.
 	siteFilter string
@@ -239,6 +243,17 @@ func (m *model) refresh() {
 		}
 	}
 	m.inv = *m.store.Inventory()
+	// Liveness for every row in one shared scan per refresh — not one spawn
+	// per row per frame. A refresh happens on the periodic tick and after
+	// actions; keypresses between them read this map.
+	var ids []string
+	for _, s := range m.sites {
+		ids = append(ids, s.Slug)
+		for _, w := range m.store.WorktreesFor(s.Slug) {
+			ids = append(ids, w.ID)
+		}
+	}
+	m.alive = m.engine.fpmAliveBatch(ids)
 	// Clamp each cursor to its own list: deleting the last row otherwise leaves
 	// a cursor pointing past the end.
 	for _, t := range []tab{tabSites, tabWorktrees, tabRuntimes, tabDoctor} {
@@ -280,7 +295,7 @@ func (m *model) siteSize(slug string) string {
 func (m model) phpInUse() map[string]bool {
 	used := map[string]bool{}
 	for _, s := range m.sites {
-		if m.engine.FPMRunning(s.Slug) {
+		if m.alive[s.Slug] {
 			used[s.PHPVersion] = true
 		}
 	}
@@ -1799,7 +1814,7 @@ func (m *model) viewSites() string {
 		}
 		body := fmt.Sprintf("%-20s %-5s %-30s %8s",
 			trunc(s.Slug, 20), s.PHPVersion, trunc(s.Domain, 30), previews)
-		live := m.engine.FPMRunning(s.Slug)
+		live := m.alive[s.Slug]
 		gutter := lamp(live) + " "
 		if gone {
 			// Files removed behind our back: the pool may still be up, so a green
@@ -1902,7 +1917,7 @@ func (m model) viewWorktrees() string {
 	b.WriteString("    " + stHead.Render(fmt.Sprintf("%-16s %-20s %-30s", "SITE", "BRANCH", "DOMAIN")) + "\n")
 	for i, w := range wts {
 		body := fmt.Sprintf("%-16s %-20s %-30s", trunc(w.Site, 16), trunc(w.Branch, 20), trunc(w.Domain, 30))
-		live := m.engine.FPMRunning(w.ID)
+		live := m.alive[w.ID]
 		gutter := lamp(live) + " "
 		// A row whose checkout is gone can never serve: a grey lamp would read as
 		// "stopped", which is a lie the user only discovers via a dead connection.

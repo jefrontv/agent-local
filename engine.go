@@ -409,6 +409,35 @@ func (e *Engine) FPMAlive(id string) bool {
 	return ok && fileExists(e.fpmSock(id))
 }
 
+// fpmAliveBatch reports FPMAlive for many pools with a single shared cmdline
+// scan. Same rule per pool (tracked pid alive, verified against its config,
+// socket present) — the verification is just done once for all of them, for
+// refresh loops where a spawn per pool would stutter rendering.
+func (e *Engine) fpmAliveBatch(ids []string) map[string]bool {
+	out := make(map[string]bool, len(ids))
+	type cand struct {
+		id   string
+		pid  int
+		conf string
+	}
+	var pending []cand
+	for _, id := range ids {
+		pid, ok := (&Proc{PidTo: e.fpmPid(id)}).pidLive()
+		if !ok || !fileExists(e.fpmSock(id)) {
+			continue
+		}
+		pending = append(pending, cand{id: id, pid: pid, conf: e.fpmConf(id)})
+	}
+	if len(pending) == 0 {
+		return out
+	}
+	cmds := procCmdlines(P().Conf() + "/")
+	for _, c := range pending {
+		out[c.id] = strings.Contains(cmds[c.pid], c.conf)
+	}
+	return out
+}
+
 // ensurePool boots the php-fpm pool for a site or worktree id if it is not
 // already serving. Used by the router so a known domain never 503s just
 // because a pool went away (reboot, daemon replacement, stale state).

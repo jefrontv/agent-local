@@ -82,6 +82,21 @@ func (p *Proc) Start() (int, error) {
 // Marker is set, that it is still the process we started rather than an
 // unrelated one that reused the same pid.
 func (p *Proc) Pid() (int, bool) {
+	pid, ok := p.pidLive()
+	if !ok {
+		return 0, false
+	}
+	if p.Marker != "" && !verifyPid(pid, p.Marker) {
+		return 0, false
+	}
+	return pid, true
+}
+
+// pidLive reads the pid file and reports whether that pid is a live process,
+// with no identity check. Acting on the pid (Stop) still needs Pid's
+// verification; this split lets callers batch the expensive check across
+// many pools instead of paying a spawn each.
+func (p *Proc) pidLive() (int, bool) {
 	if p.PidTo == "" {
 		return 0, false
 	}
@@ -96,28 +111,46 @@ func (p *Proc) Pid() (int, bool) {
 	if !Alive(pid) {
 		return 0, false
 	}
-	if p.Marker != "" && !verifyPid(pid, p.Marker) {
-		return 0, false
-	}
 	return pid, true
 }
 
-// verifyPid reports whether a live pid's command line still contains marker,
-// using the same `pgrep -f` technique as engine.go's reapStrayFPM.
+// verifyPid reports whether a live pid's command line still contains marker.
 func verifyPid(pid int, marker string) bool {
 	if pid <= 0 || marker == "" {
 		return false
 	}
-	out, err := runCmdOut("pgrep", "-f", marker)
+	cmds := procCmdlines(marker)
+	cmd, ok := cmds[pid]
+	return ok && strings.Contains(cmd, marker)
+}
+
+// procCmdlines runs one `ps` scan and returns pid → command line for every
+// process whose command line contains sub. One spawn shared across many
+// pools, for refresh loops that cannot afford a spawn per pool; an empty map
+// on any failure, so callers fail closed to "not verified". (macOS pgrep has
+// no full-command listing flag, so ps carries the scan.)
+func procCmdlines(sub string) map[int]string {
+	out := map[int]string{}
+	if sub == "" {
+		return out
+	}
+	raw, err := runCmdOut("ps", "-ax", "-o", "pid=,command=")
 	if err != nil {
-		return false
+		return out
 	}
-	for _, f := range strings.Fields(out) {
-		if p, err := strconv.Atoi(f); err == nil && p == pid {
-			return true
+	for _, line := range strings.Split(raw, "\n") {
+		pidStr, cmd, _ := strings.Cut(strings.TrimSpace(line), " ")
+		cmd = strings.TrimSpace(cmd)
+		if cmd == "" || !strings.Contains(cmd, sub) {
+			continue
 		}
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil || pid <= 0 {
+			continue
+		}
+		out[pid] = cmd
 	}
-	return false
+	return out
 }
 
 // Stop signals the process SIGTERM, then SIGKILL after grace. A pid this
