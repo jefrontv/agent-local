@@ -134,9 +134,17 @@ func spawnDaemon() error {
 		// EnsureDaemonAutostart bootstraps the agent and RunAtLoad starts it;
 		// when the job was already loaded (just idle after a clean exit),
 		// kickstart is what actually starts it.
-		runCmdQuiet("launchctl", "kickstart", fmt.Sprintf("gui/%d/%s", os.Getuid(), daemonAgentLabel))
+		label := fmt.Sprintf("gui/%d/%s", os.Getuid(), daemonAgentLabel)
+		runCmdQuiet("launchctl", "kickstart", label)
 		if waitPort(DefaultAPIPort, 8*time.Second) == nil {
 			return nil
+		}
+		// Slow to answer but loaded: launchd owns it and will bring it up.
+		// Forking a second daemon here is how an unsupervised instance ended
+		// up holding the ports while the supervised one sat in standby. Only
+		// fall through when launchd genuinely has no such job.
+		if runCmdQuiet("launchctl", "print", label) == nil {
+			return waitPort(DefaultAPIPort, 20*time.Second)
 		}
 	}
 	self, err := os.Executable()

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // The front daemon has always had a LaunchDaemon, but the router/API daemon had
@@ -64,16 +65,30 @@ func EnsureDaemonAutostart() error {
 
 // loadDaemonAgent (re)loads the agent for this GUI session. Best-effort: a
 // failure here costs autostart, not the daemon that is already running.
+//
+// bootout is asynchronous on the launchd side: it returns while the job's
+// process is still exiting, and a bootstrap that lands inside that window is
+// refused with EIO ("Input/output error") as if the label were still taken.
+// One refused bootstrap used to send the caller down the direct-fork
+// fallback, producing an unsupervised daemon nobody would restart. Retry
+// across the window; it is a few hundred milliseconds at most.
 func loadDaemonAgent(path string) {
 	target := fmt.Sprintf("gui/%d", os.Getuid())
 	// bootout first so an edited plist is picked up; ignore its error, the job
 	// may simply not be loaded yet.
 	runCmdQuiet("launchctl", "bootout", target+"/"+daemonAgentLabel)
-	if err := runCmdQuiet("launchctl", "bootstrap", target, path); err != nil {
-		// Older macOS syntax, and the fallback when bootstrap refuses because the
-		// job is already loaded.
-		runCmdQuiet("launchctl", "load", "-w", path)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if runCmdQuiet("launchctl", "bootstrap", target, path) == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
 	}
+	// Older macOS syntax, and the fallback when bootstrap keeps refusing.
+	runCmdQuiet("launchctl", "load", "-w", path)
 }
 
 // RemoveDaemonAutostart unloads and deletes the agent.
