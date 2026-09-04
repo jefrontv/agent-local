@@ -47,6 +47,8 @@ var helpGroups = []helpGroup{
 		{"db", "SLUG snapshot [NAME]", "save a restore point"},
 		{"db", "SLUG snapshots", "list restore points"},
 		{"db", "SLUG restore [NAME]", "restore one (default: newest)"},
+		{"db", "SLUG search NEEDLE", "where a string still lives: table, column, count"},
+		{"db", "SLUG search-replace OLD NEW [--apply]", "replace across every table; a dry run unless --apply"},
 	}},
 	{"Develop", []helpEntry{
 		{"worktree", "SLUG BRANCH [--remove]", "serve a git branch on its own URL"},
@@ -59,6 +61,13 @@ var helpGroups = []helpGroup{
 		{"media", "SLUG [URL | --auto | --off]", "send missing uploads to a production origin"},
 		{"share", "SLUG [--minutes N] [--off]", "public URL through a Cloudflare tunnel"},
 		{"cert", "DOMAIN [--trust]", "TLS state for a domain; --trust issues and trusts it"},
+		{"probe", "SLUG [PATH] [--follow]", "request the site like a browser would; PHP errors and a verdict"},
+		{"errors", "SLUG [--since 1h]", "PHP errors from the pool and debug logs, deduplicated"},
+		{"wpinfo", "SLUG", "the WordPress install in one JSON document"},
+		{"wpconst", "SLUG [NAME VALUE | NAME --remove]", "read, set or remove wp-config constants"},
+		{"checkpoint", "SLUG [LABEL] [--scope all] [--list]", "save a restore point: database + wp-content"},
+		{"rollback", "SLUG CHECKPOINT", "put the site back; what was there is kept aside"},
+		{"login", "SLUG [USER] [--open]", "one-time URL straight into wp-admin"},
 	}},
 	{"Agents", []helpEntry{
 		{"connect", "[--list | --all | --remove] [HARNESS...]", "register the MCP server in Claude Code, Codex, Cursor and friends"},

@@ -466,6 +466,20 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("GET /jobs", a.handleListJobs)
 	mux.HandleFunc("GET /jobs/{id}", a.handleGetJob)
 	mux.HandleFunc("GET /sites/{slug}/adminer", a.handleAdminer)
+	// Working on a site: diagnose, fix, undo.
+	mux.HandleFunc("POST /sites/{slug}/probe", a.handleProbe)
+	mux.HandleFunc("POST /sites/{slug}/request", a.handleRequest)
+	mux.HandleFunc("GET /sites/{slug}/wp-info", a.handleWPInfo)
+	mux.HandleFunc("GET /sites/{slug}/errors", a.handleErrors)
+	mux.HandleFunc("POST /sites/{slug}/checkpoints", a.handleCheckpoint)
+	mux.HandleFunc("GET /sites/{slug}/checkpoints", a.handleListCheckpoints)
+	mux.HandleFunc("POST /sites/{slug}/checkpoints/{name}/rollback", a.handleRollback)
+	mux.HandleFunc("DELETE /sites/{slug}/checkpoints/{name}", a.handleDeleteCheckpoint)
+	mux.HandleFunc("POST /sites/{slug}/db/search", a.handleDBSearch)
+	mux.HandleFunc("POST /sites/{slug}/db/search-replace", a.handleSearchReplace)
+	mux.HandleFunc("POST /sites/{slug}/login", a.handleMagicLogin)
+	mux.HandleFunc("GET /sites/{slug}/wp-config/constants", a.handleWPConstants)
+	mux.HandleFunc("POST /sites/{slug}/wp-config/constant", a.handleSetWPConstant)
 	return mux
 }
 

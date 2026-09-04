@@ -375,6 +375,53 @@ func mcpTools() []mcpTool {
 		}, "slug")},
 		{"unshare_local_site", "Close a site's public tunnel", schema(map[string]interface{}{
 			"slug": prop("string", "site slug")}, "slug")},
+		// ---- working on a site: diagnose, fix, undo ----
+		{"probe_site", "The one call to make when a site 'doesn't work'. Requests /, /wp-login.php, /wp-admin/, /wp-json/ and a static asset through the real stack and returns each status, redirect target, timing, body size and title — plus every PHP error the site logged while answering — and a verdict: healthy, fatal (with the message), redirects_offsite (with the host), blank, down, error, asset_404 or slow. Replaces the curl-then-read-the-log loop.", schema(map[string]interface{}{
+			"slug": prop("string", "site slug")}, "slug")},
+		{"http_request", "One request to a site through the real stack (right Host, TLS): status, headers of note, redirect chain if followed, ms, body size, <title>, an excerpt, and the PHP errors logged during that request. For reproducing a specific URL after probe_site has narrowed it down.", schema(map[string]interface{}{
+			"slug":             prop("string", "site slug"),
+			"path":             prop("string", "request path, e.g. /about/ or /wp-json/wp/v2/posts"),
+			"method":           prop("string", "GET (default) or HEAD"),
+			"follow_redirects": prop("boolean", "follow up to 10 redirects and report the chain (default false)"),
+			"body_max":         prop("number", "excerpt length in bytes (default 4096)"),
+		}, "slug", "path")},
+		{"wp_info", "Everything about a WordPress install in one call: version, php, home/siteurl and whether they match the served domain, multisite, permalinks, table prefix, theme, plugins (active, version, update available), drop-ins, debug flags, cron, administrators, uploads dir, wp-config URL pins. One WordPress boot instead of a dozen wp_cli calls. Fails with the boot error when WordPress cannot load — then run probe_site.", schema(map[string]interface{}{
+			"slug": prop("string", "site slug")}, "slug")},
+		{"get_errors", "PHP errors from a site's pool log and WP debug log, deduplicated: level, message, file:line, count, first and last seen, newest first. 'What broke' rather than 400 raw lines. since accepts 30m, 2h, 7d (default 1h).", schema(map[string]interface{}{
+			"slug":  prop("string", "site slug"),
+			"since": prop("string", "look back this far (default 1h)"),
+			"limit": prop("number", "max distinct errors (default 50)")}, "slug")},
+		{"checkpoint", "Save a restore point before risky work: a database snapshot plus a copy of wp-content (or the whole docroot with scope=all) — an APFS clone, so seconds and near-zero space. Roll back with rollback. Named checkpoints are never pruned.", schema(map[string]interface{}{
+			"slug":  prop("string", "site slug"),
+			"label": prop("string", "what this is before, e.g. plugin-updates"),
+			"scope": prop("string", "wp-content (default) or all")}, "slug")},
+		{"list_checkpoints", "Restore points saved for a site, newest first", schema(map[string]interface{}{
+			"slug": prop("string", "site slug")}, "slug")},
+		{"rollback", "Put a site back to a checkpoint: database restored from its snapshot, the saved files put back, pool restarted. What was there is kept beside the checkpoint as pre-rollback-<time>, so a rollback is itself undoable.", schema(map[string]interface{}{
+			"slug": prop("string", "site slug"),
+			"name": prop("string", "checkpoint name from list_checkpoints")}, "slug", "name")},
+		{"delete_checkpoint", "Remove a saved checkpoint (its snapshot and file copy)", schema(map[string]interface{}{
+			"slug": prop("string", "site slug"),
+			"name": prop("string", "checkpoint name")}, "slug", "name")},
+		{"db_search", "Where a string still lives in the database: table, column and count for every hit, across all tables including serialized data. The question behind 'why does it still redirect to staging'.", schema(map[string]interface{}{
+			"slug":   prop("string", "site slug"),
+			"needle": prop("string", "text to find, e.g. an old hostname (3+ chars)")}, "slug", "needle")},
+		{"search_replace", "Replace a string across the whole database, serialized data included, with wp-config URL pins for the same host repointed. dry_run is true unless you say otherwise: the first call shows table/column/count, the second applies. Take a checkpoint first for anything you are not sure about.", schema(map[string]interface{}{
+			"slug":    prop("string", "site slug"),
+			"old":     prop("string", "text to replace"),
+			"new":     prop("string", "replacement"),
+			"dry_run": prop("boolean", "report only (default true); false applies")}, "slug", "old", "new")},
+		{"magic_login", "A one-time URL that logs a browser straight into wp-admin as an administrator (or the named user), valid for five minutes, no password needed. For browser-driving agents: open the URL, then work in the admin. The mechanism removes itself once used or expired.", schema(map[string]interface{}{
+			"slug": prop("string", "site slug"),
+			"user": prop("string", "user login, email or id (default: the first administrator)")}, "slug")},
+		{"get_wp_constants", "Every define() in the site's wp-config.php with its raw value and line", schema(map[string]interface{}{
+			"slug": prop("string", "site slug")}, "slug")},
+		{"set_wp_constant", "Set, add or remove a wp-config.php constant — SCRIPT_DEBUG, DISABLE_WP_CRON, WP_MEMORY_LIMIT, WP_ENVIRONMENT_TYPE and the like — without editing PHP by hand. A backup of the previous file is kept. type auto (default) writes true/false/null and numbers bare and quotes everything else; string always quotes; raw writes your text verbatim. DB_* and the salts are refused (db_creds owns those).", schema(map[string]interface{}{
+			"slug":   prop("string", "site slug"),
+			"name":   prop("string", "constant name, e.g. SCRIPT_DEBUG"),
+			"value":  prop("string", "value as text, e.g. true, 512M, production"),
+			"type":   prop("string", "auto (default) | string | raw"),
+			"remove": prop("boolean", "delete the constant instead of setting it")}, "slug", "name")},
 	}
 }
 
@@ -712,6 +759,46 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		return apiPost(path, body)
 	case "unshare_local_site":
 		return apiDelete("/sites/" + get("slug") + "/share")
+	case "probe_site":
+		return apiPost("/sites/"+get("slug")+"/probe", nil)
+	case "http_request":
+		body := map[string]interface{}{"path": get("path"), "method": get("method"),
+			"follow_redirects": args["follow_redirects"] == true}
+		if n, okn := args["body_max"].(float64); okn && n > 0 {
+			body["body_max"] = int(n)
+		}
+		return apiPost("/sites/"+get("slug")+"/request", body)
+	case "wp_info":
+		return apiGet("/sites/" + get("slug") + "/wp-info")
+	case "get_errors":
+		q := "/sites/" + get("slug") + "/errors?since=" + url.QueryEscape(get("since"))
+		if n, okn := args["limit"].(float64); okn && n > 0 {
+			q += fmt.Sprintf("&limit=%d", int(n))
+		}
+		return apiGet(q)
+	case "checkpoint":
+		return apiPost("/sites/"+get("slug")+"/checkpoints", map[string]string{"label": get("label"), "scope": get("scope")})
+	case "list_checkpoints":
+		return apiGet("/sites/" + get("slug") + "/checkpoints")
+	case "rollback":
+		return apiPost("/sites/"+get("slug")+"/checkpoints/"+url.PathEscape(get("name"))+"/rollback", nil)
+	case "delete_checkpoint":
+		return apiDelete("/sites/" + get("slug") + "/checkpoints/" + url.PathEscape(get("name")))
+	case "db_search":
+		return apiPost("/sites/"+get("slug")+"/db/search", map[string]string{"needle": get("needle")})
+	case "search_replace":
+		body := map[string]interface{}{"old": get("old"), "new": get("new")}
+		if v, okv := args["dry_run"].(bool); okv {
+			body["dry_run"] = v
+		}
+		return apiPost("/sites/"+get("slug")+"/db/search-replace", body)
+	case "magic_login":
+		return apiPost("/sites/"+get("slug")+"/login", map[string]string{"user": get("user")})
+	case "get_wp_constants":
+		return apiGet("/sites/" + get("slug") + "/wp-config/constants")
+	case "set_wp_constant":
+		return apiPost("/sites/"+get("slug")+"/wp-config/constant", map[string]interface{}{
+			"name": get("name"), "value": get("value"), "type": get("type"), "remove": args["remove"] == true})
 	default:
 		return map[string]string{"error": "unknown tool: " + name}, true
 	}

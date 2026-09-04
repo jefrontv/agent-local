@@ -113,6 +113,20 @@ func main() {
 		err = cmdJob(rest)
 	case "logs":
 		err = cmdLogs(rest)
+	case "probe":
+		err = cmdProbe(rest)
+	case "errors":
+		err = cmdErrors(rest)
+	case "checkpoint":
+		err = cmdCheckpoint(rest)
+	case "rollback":
+		err = cmdRollback(rest)
+	case "login":
+		err = cmdLogin(rest)
+	case "wpinfo":
+		err = cmdWPInfo(rest)
+	case "wpconst":
+		err = cmdWPConst(rest)
 	case "version", "--version":
 		outTitle(AppName, Version)
 		if buildCommit != "" {
@@ -698,6 +712,31 @@ func cmdDB(args []string) error {
 			outTitle(AppName, "db", slug, "gui")
 			outRow("url", url)
 			return exec.Command("open", url).Start()
+		case "search":
+			if len(pos) < 3 {
+				return fmt.Errorf("usage: agent-local db SLUG search NEEDLE")
+			}
+			outTitle(AppName, "db", slug, "search")
+			rep, err := e.DBSearch(site, pos[2])
+			if err != nil {
+				return err
+			}
+			printSearchReport(rep)
+			return nil
+		case "search-replace":
+			if len(pos) < 4 {
+				return fmt.Errorf("usage: agent-local db SLUG search-replace OLD NEW [--apply]")
+			}
+			outTitle(AppName, "db", slug, "search-replace")
+			rep, err := e.SearchReplace(site, pos[2], pos[3], !hasFlag(args, "--apply"))
+			if err != nil {
+				return err
+			}
+			printSearchReport(rep)
+			if rep.DryRun {
+				outHint("apply", AppName+" db "+slug+" search-replace "+pos[2]+" "+pos[3]+" --apply")
+			}
+			return nil
 		}
 		// anything else: raw SQL against this site's schema; the result is
 		// data, printed as the server returned it.
@@ -712,6 +751,300 @@ func cmdDB(args []string) error {
 	outRow("pass", site.DBPass)
 	outHint("gui", AppName+" db "+slug+" gui")
 	return nil
+}
+
+// printSearchReport renders a db search / search-replace result: one row per
+// table.column hit, then the total.
+func printSearchReport(rep *searchReport) {
+	for _, h := range rep.Hits {
+		fmt.Printf("  %s%s  %d\n", stName.Render(h.Table), stDim.Render("."+h.Column), h.Count)
+	}
+	what := "occurrence(s)"
+	if rep.Replacement != "" {
+		what = "replacement(s)"
+		if rep.DryRun {
+			what += " to be made"
+		}
+	}
+	outStep(fmt.Sprintf("%d %s across %d column(s)", rep.Total, what, len(rep.Hits)))
+	if rep.ConfigPinsRewritten {
+		outStep("wp-config URL pins repointed")
+	}
+	if len(rep.Hits) == 0 && rep.RawTail != "" {
+		outNote(rep.RawTail)
+	}
+}
+
+// siteEnv is openEnv plus the site named by the first positional argument.
+func siteEnv(args []string) (*Store, *Engine, *Site, error) {
+	slug, err := slugArg(args)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	store, e, err := openEnv()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	site := store.Site(slug)
+	if site == nil {
+		return nil, nil, nil, fmt.Errorf("no such site: %s", slug)
+	}
+	return store, e, site, nil
+}
+
+// cmdProbe is probe_site: the standard set of requests and a verdict.
+func cmdProbe(args []string) error {
+	_, e, site, err := siteEnv(args)
+	if err != nil {
+		return err
+	}
+	pos := positional(args)
+	outTitle(AppName, "probe", site.Slug)
+	if len(pos) > 1 {
+		// One URL, in full.
+		r := e.requestSite(site, "GET", pos[1], hasFlag(args, "--follow"), 4096)
+		printRequestReport(pos[1], r)
+		return nil
+	}
+	rep := e.probeSite(site)
+	for _, p := range probePaths {
+		printRequestReport(p, rep.Requests[p])
+	}
+	fmt.Println()
+	if rep.Verdict == "healthy" {
+		outStep("healthy")
+	} else {
+		outWarn(rep.Verdict + ": " + rep.Reason)
+	}
+	return nil
+}
+
+// printRequestReport is one probed path on one line, lamp coloured by what
+// came back: a path is too long for the label gutter and reads better as the
+// subject of its own line.
+func printRequestReport(path string, r requestReport) {
+	lamp := stOK.Render("●")
+	switch {
+	case r.Error != "" || r.Status >= 500:
+		lamp = stErr.Render("●")
+	case r.Status >= 400:
+		lamp = stWarn.Render("●")
+	case r.Status >= 300:
+		lamp = stDim.Render("●")
+	}
+	if r.Error != "" {
+		fmt.Println("  " + lamp + " " + path + "  " + stErr.Render(r.Error))
+		return
+	}
+	line := fmt.Sprintf("  %s %s  %d  %dms  %s", lamp, path, r.Status, r.Ms, humanBytes(r.BodyBytes))
+	if r.Location != "" {
+		line += "  → " + r.Location
+	}
+	if r.Title != "" {
+		line += "  " + dimf(r.Title)
+	}
+	fmt.Println(line)
+	for _, e := range r.PHPErrors {
+		outSub(e)
+	}
+}
+
+// cmdErrors is get_errors: the site's PHP errors, deduplicated.
+func cmdErrors(args []string) error {
+	_, e, site, err := siteEnv(args)
+	if err != nil {
+		return err
+	}
+	since, err := parseSince(flagValue(args, "--since"))
+	if err != nil {
+		return err
+	}
+	outTitle(AppName, "errors", site.Slug)
+	entries, scanned := e.SiteErrors(site, since, 50)
+	if len(entries) == 0 {
+		outStep(fmt.Sprintf("no PHP errors in the last %s (%d lines read)", since, scanned))
+		return nil
+	}
+	for _, en := range entries {
+		where := en.File
+		if en.Line > 0 {
+			where += fmt.Sprintf(":%d", en.Line)
+		}
+		outRow(fmt.Sprintf("%dx", en.Count), en.Level+"  "+en.Message)
+		if where != "" {
+			outSub(where + "  " + dimf("last "+en.Last.Format("15:04:05")))
+		}
+	}
+	return nil
+}
+
+// cmdCheckpoint saves or lists whole-site restore points.
+func cmdCheckpoint(args []string) error {
+	_, e, site, err := siteEnv(args)
+	if err != nil {
+		return err
+	}
+	pos := positional(args)
+	if hasFlag(args, "--list") {
+		list, err := e.ListCheckpoints(site.Slug)
+		if err != nil {
+			return err
+		}
+		outTitle(AppName, "checkpoint", site.Slug, "list")
+		if len(list) == 0 {
+			outNote("none yet")
+		}
+		for _, c := range list {
+			db := "no db snapshot"
+			if c.DBSnapshot != "" {
+				db = "db + files"
+			}
+			outRow(c.CreatedAt.Format("01-02 15:04"), c.Name+"  "+dimf(c.Scope+", "+db))
+		}
+		return nil
+	}
+	label, scope := "", flagValue(args, "--scope")
+	if len(pos) > 1 {
+		label = pos[1]
+	}
+	outTitle(AppName, "checkpoint", site.Slug)
+	info, err := e.Checkpoint(site.Slug, label, scope)
+	if err != nil {
+		return err
+	}
+	outStep("saved " + info.Name + "  " + dimf(info.Scope+" ("+info.SizeHint+")"))
+	if info.DBSnapshot != "" {
+		outStep("database snapshot " + info.DBSnapshot)
+	} else if info.Warning != "" {
+		outWarn(info.Warning)
+	}
+	outHint("undo", AppName+" rollback "+site.Slug+" "+info.Name)
+	return nil
+}
+
+// cmdRollback puts a site back to a checkpoint.
+func cmdRollback(args []string) error {
+	_, e, site, err := siteEnv(args)
+	if err != nil {
+		return err
+	}
+	pos := positional(args)
+	if len(pos) < 2 {
+		return fmt.Errorf("usage: agent-local rollback SLUG CHECKPOINT   (agent-local checkpoint SLUG --list)")
+	}
+	outTitle(AppName, "rollback", site.Slug, pos[1])
+	rep, err := e.Rollback(site.Slug, pos[1])
+	if err != nil {
+		return err
+	}
+	if rep.DBRestored {
+		outStep("database restored  " + dimf(rep.DBMessage))
+	}
+	if rep.FilesRestored {
+		outStep("files restored")
+		if rep.PreviousFiles != "" {
+			outNote("what was there is kept at " + shortHome(rep.PreviousFiles))
+		}
+	}
+	if rep.Restarted {
+		outStep("pool restarted")
+	}
+	return nil
+}
+
+// cmdLogin mints a one-time admin login URL.
+func cmdLogin(args []string) error {
+	_, e, site, err := siteEnv(args)
+	if err != nil {
+		return err
+	}
+	pos := positional(args)
+	user := ""
+	if len(pos) > 1 {
+		user = pos[1]
+	}
+	link, err := e.MagicLogin(site, user)
+	if err != nil {
+		return err
+	}
+	outTitle(AppName, "login", site.Slug)
+	outRow("user", link.User)
+	outRow("url", link.URL)
+	outNote("one use, valid until " + link.Expires.Format("15:04:05"))
+	if hasFlag(args, "--open") {
+		return exec.Command("open", link.URL).Start()
+	}
+	return nil
+}
+
+// cmdWPInfo prints wp_info as JSON: it is a document, not a few rows.
+func cmdWPInfo(args []string) error {
+	_, e, site, err := siteEnv(args)
+	if err != nil {
+		return err
+	}
+	info, err := e.WPInfo(site)
+	if err != nil {
+		return err
+	}
+	b, _ := json.MarshalIndent(info, "", "  ")
+	fmt.Println(string(b))
+	return nil
+}
+
+// cmdWPConst lists, sets or removes wp-config constants.
+func cmdWPConst(args []string) error {
+	_, e, site, err := siteEnv(args)
+	if err != nil {
+		return err
+	}
+	pos := positional(args)
+	switch {
+	case len(pos) == 1:
+		list, err := e.WPConstants(site)
+		if err != nil {
+			return err
+		}
+		outTitle(AppName, "wpconst", site.Slug)
+		for _, c := range list {
+			printWPConstant(c)
+		}
+		outHint("set", AppName+" wpconst "+site.Slug+" NAME VALUE [--string|--raw]  · --remove")
+		return nil
+	case hasFlag(args, "--remove"):
+		removed, err := e.RemoveWPConstant(site, pos[1])
+		if err != nil {
+			return err
+		}
+		outTitle(AppName, "wpconst", site.Slug)
+		if removed {
+			outStep("removed " + pos[1])
+		} else {
+			outNote(pos[1] + " was not defined")
+		}
+		return nil
+	case len(pos) >= 3:
+		typ := "auto"
+		if hasFlag(args, "--string") {
+			typ = "string"
+		} else if hasFlag(args, "--raw") {
+			typ = "raw"
+		}
+		c, err := e.SetWPConstant(site, pos[1], strings.Join(pos[2:], " "), typ)
+		if err != nil {
+			return err
+		}
+		outTitle(AppName, "wpconst", site.Slug)
+		printWPConstant(c)
+		return nil
+	}
+	return fmt.Errorf("usage: agent-local wpconst SLUG [NAME VALUE [--string|--raw] | NAME --remove]")
+}
+
+// printWPConstant is one `NAME = value` line: constant names run past the
+// label gutter, and a define is read as an assignment anyway.
+func printWPConstant(c wpConstant) {
+	fmt.Println("  " + stName.Render(c.Name) + stDim.Render(" = ") + c.Value)
 }
 
 func cmdPHP(args []string) error {

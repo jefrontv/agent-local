@@ -22,7 +22,7 @@ missing — Homebrew, PHP, MariaDB, Apache, wp-cli — the app detects and insta
 
 - [Install](#install) · [Quick start](#quick-start) · [Zero prompts](#zero-prompts-recommended-one-time)
 - [Create a site](#create-a-site) · [Import an existing site](#import-an-existing-site) · [Domains](#domains)
-- [PHP versions](#php-versions) · [Databases](#databases) · [Snapshots](#snapshots) · [Branch previews](#branch-previews-git-worktrees)
+- [PHP versions](#php-versions) · [Databases](#databases) · [Snapshots](#snapshots) · [Branch previews](#branch-previews-git-worktrees) · [Working on a site](#working-on-a-site)
 - [Outgoing mail](#outgoing-mail) · [WP_DEBUG](#wp_debug-without-the-ritual) · [Sharing publicly](#sharing-a-site-publicly)
 - [For agents](#for-agents) · [HTTP fronts](#http-fronts) · [CLI reference](#cli-reference)
 - [Layout & ports](#layout--ports) · [How it works](#how-it-works) · [Troubleshooting](#troubleshooting) · [Releasing](#releasing) · [Uninstall](#uninstall)
@@ -679,6 +679,47 @@ What a preview is:
 
 Same database both sides — the difference between them is code.
 
+## Working on a site
+
+The tools an agent (or you) reaches for when a site is open in front of you and
+something is off. Every one is a CLI command and an MCP tool of the same name.
+
+```sh
+agent-local probe mysite                  # /, wp-login, wp-admin, wp-json, an asset: status, redirect, ms, title,
+                                          #   the PHP errors logged while answering — and a verdict
+agent-local probe mysite /about/ --follow # one URL in full, redirect chain followed
+agent-local errors mysite --since 2h      # pool log + debug log, deduplicated: message, file:line, count
+agent-local wpinfo mysite                 # the install as one JSON document (theme, plugins, debug, cron, admins…)
+agent-local wpconst mysite SCRIPT_DEBUG true      # set a wp-config constant; --remove to drop one
+agent-local checkpoint mysite before-updates      # database snapshot + APFS clone of wp-content, in seconds
+agent-local rollback mysite 20260904-183000-before-updates
+agent-local db mysite search efront.dev           # where a string still lives: table, column, count
+agent-local db mysite search-replace old.host new.host --apply   # dry run without --apply
+agent-local login mysite --open           # one-time URL straight into wp-admin, no password
+```
+
+**`probe` replaces the curl-then-read-the-log loop.** It requests the site
+through the real stack (right Host, TLS) and tells you what a browser would see
+and what PHP said while it happened. The verdict is one word — `healthy`,
+`fatal`, `redirects_offsite`, `blank`, `down`, `error`, `asset_404`, `slow` — with
+the reason beside it: the fatal's message, the host it redirects to.
+
+**`checkpoint` / `rollback` make risky work cheap.** A checkpoint is a database
+snapshot plus a copy of `wp-content` (or the whole docroot with `--scope all`).
+On APFS the copy is a clone: seconds, near-zero space, whatever the size. A
+rollback restores both and restarts the pool; what was there is moved beside the
+checkpoint as `pre-rollback-<time>`, so a rollback is itself undoable. Named
+checkpoints are never pruned; they live under `~/.agent-local/checkpoints/<slug>/`.
+
+**`login` is for browser-driving agents.** The URL is good for five minutes and
+one use; the mu-plugin behind it deletes itself on every path through, so
+nothing is left in the site afterwards.
+
+**`wpconst` refuses `DB_*` and the salts** — `db` owns the former and nothing
+should be rewriting the latter. Values type themselves: `true`, `false`, `null`
+and numbers are written bare, everything else quoted; `--raw` writes your text
+verbatim for the odd `WP_HOME . '/x'`.
+
 ## For agents
 
 ### Connect a coding-agent harness
@@ -831,6 +872,15 @@ agent-local db SLUG snapshot [NAME] | snapshots | restore [NAME] [--no-snapshot]
 agent-local mail SLUG [ID] [--open] [--clear]  captured outgoing email
 agent-local media SLUG [URL | --auto | --off]  send missing uploads to a production origin
 agent-local wpdebug SLUG [on|off]      WP_DEBUG with the log in ~/.agent-local/logs
+agent-local probe SLUG [PATH] [--follow]   request the site; PHP errors and a verdict
+agent-local errors SLUG [--since 1h]   deduplicated PHP errors from the logs
+agent-local wpinfo SLUG                the WordPress install as JSON
+agent-local wpconst SLUG [NAME VALUE | NAME --remove]   wp-config constants
+agent-local checkpoint SLUG [LABEL] [--scope all] [--list]   database + files restore point
+agent-local rollback SLUG CHECKPOINT   restore one; the current state is kept aside
+agent-local login SLUG [USER] [--open] one-time wp-admin login URL
+agent-local db SLUG search NEEDLE      table/column/count of a string
+agent-local db SLUG search-replace OLD NEW [--apply]   dry run unless --apply
 agent-local share SLUG [--minutes N | --forever] [--off]   public quick-tunnel URL
 agent-local jobs | job ID              long-running create/import status
 agent-local php SLUG VERSION [--tap]   switch PHP (live), installing it if needed

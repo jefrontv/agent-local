@@ -223,6 +223,30 @@ GET|POST /front                      // "router" | "apache"
 POST|DELETE /hosts                   {"domains":["a.test"]}
 ```
 
+### Working on a site  *(v0.27.0)*
+
+```
+POST   /sites/{slug}/probe                          // /, wp-login, wp-admin, wp-json, an asset; each status/redirect/ms/title
+                                                    //   + php_errors logged during the request; verdict: healthy|fatal|redirects_offsite|blank|down|error|asset_404|slow
+POST   /sites/{slug}/request                        {"path":"/about/","method?":"GET","follow_redirects?":false,"body_max?":4096}
+GET    /sites/{slug}/wp-info                        // one WP boot: version, php, home/siteurl (+served_domain_matches), theme, plugins, dropins, debug, cron, admins, pins
+GET    /sites/{slug}/errors?since=1h&limit=50       // deduplicated PHP errors {level,message,file,line,count,first,last,source}
+POST   /sites/{slug}/checkpoints                    {"label?":"before-updates","scope?":"wp-content|all"}  -> {name, db_snapshot, files_path, size_hint, warning?}
+GET    /sites/{slug}/checkpoints
+POST   /sites/{slug}/checkpoints/{name}/rollback    -> {db_restored, files_restored, previous_files, restarted}
+DELETE /sites/{slug}/checkpoints/{name}
+POST   /sites/{slug}/db/search                      {"needle":"old.host"}            -> {hits:[{table,column,count}], total}
+POST   /sites/{slug}/db/search-replace              {"old","new","dry_run?":true}    -> same shape + config_pins_rewritten
+POST   /sites/{slug}/login                          {"user?":"admin"}                -> {url, user, expires}   // one use, 5 minutes
+GET    /sites/{slug}/wp-config/constants            -> [{name, value (raw PHP), line}]
+POST   /sites/{slug}/wp-config/constant             {"name","value","type?":"auto|string|raw","remove?":false}
+```
+
+After an import that patched its own constants but not `WP_HOME`/`WP_SITEURL`,
+`POST /sites/{slug}/db/search-replace {"old":"<origin host>","new":"<local domain>","dry_run":false}`
+repoints both the database and the wp-config pins in one call; `probe` afterwards
+should say `healthy`.
+
 `GET  /sites/{slug}/media  -> {"media_fallback":"…","htaccess_implies":"…"}
 POST /sites/{slug}/media {"url":"https://origin"|"auto"|""}
    → where a missing /wp-content/uploads/ file 302s to. The router cannot read
