@@ -153,7 +153,7 @@ func searchReplaceArgs(old, new string, dryRun bool) []string {
 	}
 	args = append(args,
 		"--all-tables",
-		"--skip-columns=guid",
+		"--skip-columns=guid,user_email",
 		"--report-changed-only",
 		"--format=table",
 		"--skip-plugins",

@@ -1161,8 +1161,10 @@ func (e *Engine) rewriteImportedURLs(site *Site, olds map[string]bool, cb func(s
 	for old := range olds {
 		cb("urls", fmt.Sprintf("search-replace %s → %s", old, site.Domain))
 		for _, scheme := range []string{"https://", "http://"} {
+			// guid is an identifier, not a URL; user_email shares the old host on
+			// sites whose staff use it, and rewriting it locks them out.
 			out, err := wpCLI(site, "search-replace", scheme+old, scheme+site.Domain,
-				"--all-tables", "--skip-columns=guid", "--skip-plugins", "--skip-themes")
+				"--all-tables", "--skip-columns=guid,user_email", "--skip-plugins", "--skip-themes")
 			if err != nil && first == nil {
 				first = fmt.Errorf("%s%s: %s", scheme, old, tail(out, 200))
 			}
