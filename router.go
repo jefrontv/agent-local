@@ -270,6 +270,13 @@ func (r *Router) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 		return c, nil
 	}
 	r.mu.RUnlock()
+	// The handshake runs before ServeHTTP, so this is the first place a
+	// request touches the store — and the only place that used to skip the
+	// reload. A domain the CLI just renamed was refused here for as long as
+	// nothing else happened to reload the daemon's copy: the browser saw
+	// ERR_SSL_PROTOCOL_ERROR for the new name until, seconds later, some
+	// unrelated request reloaded it and the same URL worked.
+	r.engine.Store.ReloadIfChanged()
 	if !r.knownHost(host) {
 		return nil, fmt.Errorf("agent-local: no site for host %q", host)
 	}

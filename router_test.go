@@ -1,11 +1,13 @@
 package main
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // What a share tunnel must never hand out: the repository, dotfiles with
@@ -76,5 +78,54 @@ func TestLogNameGate(t *testing.T) {
 		if logName.MatchString(bad) {
 			t.Errorf("%q should be refused", bad)
 		}
+	}
+}
+
+// The TLS handshake resolves the SNI host before ServeHTTP ever runs, so it
+// has to see a rename another process just saved. It used to consult a stale
+// copy of the store: the CLI renamed a site, and the daemon's handshake kept
+// refusing the new name ("no site for host") until some other request
+// happened to reload — the browser showed ERR_SSL_PROTOCOL_ERROR for the new
+// domain for seconds after every rename.
+func TestHandshakeSeesRenameFromAnotherProcess(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	docroot := filepath.Join(home, "wp")
+	if err := os.MkdirAll(docroot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon's store: loaded once, then only reloaded on demand.
+	daemonStore, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemonStore.PutSite(&Site{Slug: "s", Domain: "old.test", WPDir: docroot, PHPVersion: "8.4",
+		DBName: "al_s", DBUser: "al_s", DBPass: "x"})
+	if err := daemonStore.Save(); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRouter(NewEngine(daemonStore))
+
+	// The CLI's store: a separate process renaming the site and saving.
+	cliStore, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := cliStore.Site("s")
+	site.Domain = "new.test"
+	cliStore.PutSite(site)
+	if err := cliStore.Save(); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	os.Chtimes(cliStore.path, future, future)
+
+	// First thing the daemon does for the new name is the handshake. It must
+	// resolve without any prior request having reloaded the store.
+	if _, err := r.getCertificate(&tls.ClientHelloInfo{ServerName: "new.test"}); err != nil {
+		t.Fatalf("handshake for the renamed domain failed: %v", err)
+	}
+	if _, err := r.getCertificate(&tls.ClientHelloInfo{ServerName: "old.test"}); err == nil {
+		t.Error("the old name should no longer get a certificate")
 	}
 }
