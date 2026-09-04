@@ -292,6 +292,35 @@ func Doctor(store *Store) *DoctorReport {
 		}
 	}
 
+	// Drop-ins generated on another machine embed that machine's docroot, and
+	// the failure is a blank 200 with nothing in any log — the one shape the
+	// user cannot debug from the browser. WP Rocket's is regenerable through
+	// the plugin; the rest are named so the user knows which plugin to poke.
+	for _, site := range store.Sites() {
+		for _, d := range staleDropins(site.WPDir) {
+			f := Finding{Check: "dropin:" + site.Slug, Status: "warn",
+				Detail: d.File + " points at " + d.Paths + " (origin server), not this docroot"}
+			if d.File == "wp-content/advanced-cache.php" {
+				f.FixCmd, f.AutoFix = "agent-local doctor --fix", true
+			} else {
+				f.FixHint = "deactivate and reactivate the plugin that wrote it"
+			}
+			add(f)
+		}
+	}
+
+	// A plugin that cannot run on the site's PHP dies with a fatal on every
+	// request; with display off that is a white page. The pool log has the
+	// answer, so surface it — count and the last message — instead of leaving
+	// it to be found by hand.
+	for _, site := range store.Sites() {
+		if n, last := recentFatals(e.fpmLog(site.Slug), 400, 24*time.Hour); n > 0 {
+			add(Finding{Check: "fatal:" + site.Slug, Status: "warn",
+				Detail:  fmt.Sprintf("%d PHP fatal(s) in the recent pool log: %s", n, last),
+				FixHint: "agent-local logs fpm-" + site.Slug + " · a plugin/PHP mismatch is the usual cause; try agent-local php " + site.Slug + " 8.3, or update the plugin"})
+		}
+	}
+
 	// Same for a site: a docroot removed behind our back leaves a row that looks
 	// healthy and answers 404. Say so rather than let it be discovered by hand.
 	for _, site := range store.Sites() {
@@ -432,6 +461,22 @@ func DoctorFix(store *Store, interactive bool) []string {
 					}
 					done = append(done, "issued cert for "+d)
 				}
+			}
+		case strings.HasPrefix(f.Check, "dropin:"):
+			slug := strings.TrimPrefix(f.Check, "dropin:")
+			site := store.Site(slug)
+			if site == nil {
+				continue
+			}
+			fixed, left, err := NewEngine(store).RegenerateDropins(site)
+			for _, name := range fixed {
+				done = append(done, "regenerated "+name+" for "+slug)
+			}
+			if err != nil {
+				done = append(done, fmt.Sprintf("failed: dropin %s: %v", slug, err))
+			}
+			for _, d := range left {
+				done = append(done, fmt.Sprintf("left %s for %s: regenerate it from its plugin", d.File, slug))
 			}
 		case strings.HasPrefix(f.Check, "php:"):
 			v := strings.TrimPrefix(f.Check, "php:")

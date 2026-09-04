@@ -406,6 +406,18 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 		}
 	}
 
+	// Drop-ins written on the origin machine carry its absolute paths and
+	// nothing in WordPress fixes them after a move — the site answers 200
+	// with an empty body and no error anywhere. Say so now, while the user
+	// is watching, and name the repair.
+	for _, d := range staleDropins(site.WPDir) {
+		hint := "regenerate it from the plugin that wrote it"
+		if d.File == "wp-content/advanced-cache.php" {
+			hint = "agent-local doctor --fix regenerates it"
+		}
+		cb("warn", d.File+" still points at "+d.Paths+" from the origin server — "+hint)
+	}
+
 	if err := e.StartSite(slug); err != nil {
 		return nil, fmt.Errorf("start: %w", err)
 	}
