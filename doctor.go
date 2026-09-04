@@ -149,6 +149,16 @@ func Doctor(store *Store) *DoctorReport {
 		add(Finding{Check: "dns", Status: "ok", Detail: "all domains resolve via /etc/hosts"})
 	}
 
+	// The reverse: lines we manage for names no site or preview has any more.
+	// Renames used to leave the old name behind (the store's domain index was
+	// not rebuilt, so the old name still looked like ours), and each one keeps
+	// resolving to this machine forever. Name them; --fix removes them.
+	if orphans := orphanHostsEntries(store); len(orphans) > 0 {
+		add(Finding{Check: "dns-orphans", Status: "warn",
+			Detail: "managed /etc/hosts lines for domains no site serves: " + strings.Join(orphans, ", "),
+			FixCmd: "agent-local doctor --fix", AutoFix: true, FixRoot: true})
+	}
+
 	// A domain can be "in hosts" and still resolve to LocalWP's leftover ::1 /
 	// 127.0.0.1 lines that sit above ours. Then the printed URL grows :10443
 	// and the bare name never hits 127.0.0.2:443.
@@ -440,6 +450,13 @@ func DoctorFix(store *Store, interactive bool) []string {
 			continue
 		}
 		switch {
+		case f.Check == "dns-orphans":
+			orphans := orphanHostsEntries(store)
+			if err := RemoveHosts(interactive, orphans); err != nil {
+				done = append(done, fmt.Sprintf("failed: dns-orphans: %v", err))
+			} else {
+				done = append(done, fmt.Sprintf("removed %d orphaned /etc/hosts name(s): %s", len(orphans), strings.Join(orphans, ", ")))
+			}
 		case strings.HasPrefix(f.Check, "dns"):
 			// AllDomains, not just missing: EnsureHosts also comments leftover
 			// LocalWP ::1 / 127.0.0.1 lines that shadow our alias.

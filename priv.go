@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -366,6 +367,35 @@ func RemoveHosts(interactive bool, domains []string) error {
 		return nil
 	}
 	return writeRootFile("/etc/hosts", strings.Join(keep, "\n"), interactive)
+}
+
+// orphanHostsEntries lists the domains on agent-local-managed /etc/hosts lines
+// that no site or worktree in the store serves. Sorted, deduplicated: the IPv4
+// and IPv6 lines for one name count once.
+func orphanHostsEntries(store *Store) []string {
+	b, err := os.ReadFile("/etc/hosts")
+	if err != nil {
+		return nil
+	}
+	served := map[string]bool{}
+	for _, d := range store.AllDomains() {
+		served[d] = true
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.Contains(line, HostsMarker) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 || served[fields[1]] || seen[fields[1]] {
+			continue
+		}
+		seen[fields[1]] = true
+		out = append(out, fields[1])
+	}
+	sort.Strings(out)
+	return out
 }
 
 // runPrivilegedWrite writes content to path as root by piping it straight

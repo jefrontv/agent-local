@@ -108,6 +108,30 @@ func (e *Engine) RegenerateDropins(site *Site) (fixed []string, left []StaleDrop
 	return fixed, left, err
 }
 
+// afterDomainChange is what a rename needs from this file. WP Rocket keys its
+// page cache per hostname, so the old name's warm cache can keep a site
+// looking fine while every request on the new name hits a fault the cache
+// was hiding — a stale drop-in, say. Clear the old hostname's cache (the new
+// one has none yet) so the two names behave the same, then name any stale
+// drop-in so the user has the diagnosis at the moment they would otherwise
+// blame the rename. Detect-only on purpose: a rename is an operation on a
+// site someone is already working in, and running plugin code there
+// uninvited is a surprise, not a fix. Returns the warnings to surface.
+func afterDomainChange(wpdir, oldDomain string) []string {
+	if oldDomain != "" {
+		os.RemoveAll(filepath.Join(wpdir, "wp-content", "cache", "wp-rocket", oldDomain))
+	}
+	var warns []string
+	for _, d := range staleDropins(wpdir) {
+		hint := "regenerate it from the plugin that wrote it"
+		if d.File == "wp-content/advanced-cache.php" {
+			hint = "agent-local doctor --fix regenerates it"
+		}
+		warns = append(warns, d.File+" still points at "+d.Paths+" from the origin server; pages may come back empty — "+hint)
+	}
+	return warns
+}
+
 // recentFatals counts PHP fatal errors in the tail of a pool's log that are
 // newer than `within`. A plugin that cannot run on the site's PHP (WP Rocket
 // 3.4 on PHP 8, say) dies with a fatal on every request, and with

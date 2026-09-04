@@ -801,6 +801,11 @@ func (e *Engine) SetDomain(slug, domain string) error {
 		return fmt.Errorf("domain %q already in use", domain)
 	}
 	site.Domain = domain
+	// Through PutSite, not a bare field write: the store keeps a Host → site
+	// index that only PutSite rebuilds. Without this the old name stayed
+	// indexed as ours, so DomainFree(old) was false, the old /etc/hosts line
+	// survived every rename, and renaming back was refused as "in use".
+	e.Store.PutSite(site)
 	if err := e.Store.Save(); err != nil {
 		return err
 	}
@@ -829,6 +834,12 @@ func (e *Engine) SetDomain(slug, domain string) error {
 	// like it does not work. Rewrite them the way an import does.
 	if old != "" && old != domain {
 		e.rewriteSiteURLs(site, old, domain)
+		// The rename is also when a stale cache drop-in first shows: the old
+		// name's warm page cache hid it, the new name has none. Clear that
+		// cache and say what is wrong before the user blames the rename.
+		for _, w := range afterDomainChange(site.WPDir, old) {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+		}
 	}
 	return nil
 }
