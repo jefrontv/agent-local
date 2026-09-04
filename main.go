@@ -330,7 +330,7 @@ func cmdAutoupdate(args []string) error {
 	}
 	outTitle(AppName, "autoupdate")
 	if len(pos) == 0 {
-		outRow("autoupdate", state())
+		outRow("state", state())
 		if latest, _ := availableUpdate(); latest != "" {
 			outRow("available", stName.Render(strings.TrimPrefix(latest, "v"))+stDim.Render("  running "+Version))
 		}
@@ -348,7 +348,7 @@ func cmdAutoupdate(args []string) error {
 	if err := store.Save(); err != nil {
 		return err
 	}
-	outRow("autoupdate", state())
+	outRow("state", state())
 	if store.Data.AutoUpdate {
 		self, _ := os.Executable()
 		if managedByHomebrew(self) {
