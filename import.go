@@ -395,6 +395,12 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 		for _, h := range e.siteHostsFromDB(site) {
 			oldDomains[h] = true
 		}
+		// The files can carry their own copy of the origin's address: a
+		// production wp-config pinning WP_HOME beats the database we just
+		// rewrote, so its hosts join the set.
+		for _, p := range wpConfigURLPins(site.WPDir) {
+			oldDomains[hostFromURL(p.URL)] = true
+		}
 		if lwDomain != "" {
 			oldDomains[lwDomain] = true
 		}
@@ -700,12 +706,9 @@ func (e *Engine) ImportSQL(slug, path string, rewriteURLs, snapshot bool) (strin
 	if !rewriteURLs {
 		return msg, nil
 	}
-	olds := map[string]bool{}
-	for _, h := range e.siteHostsFromDB(site) {
-		if h != site.Domain {
-			olds[h] = true
-		}
-	}
+	// Everything the dump or the config still points at, config pins included:
+	// a WP_HOME left at the origin's address would undo the rewrite.
+	olds := e.foreignHosts(site)
 	if err := e.rewriteImportedURLs(site, olds, func(string, string) {}); err != nil {
 		return msg, fmt.Errorf("imported %s but url rewrite failed: %w", site.DBName, err)
 	}
@@ -855,6 +858,68 @@ func (e *Engine) siteHostsFromDB(site *Site) []string {
 		if h := hostFromURL(strings.TrimSpace(l)); h != "" && !seen[h] {
 			seen[h] = true
 			hosts = append(hosts, h)
+		}
+	}
+	return hosts
+}
+
+// storedHostsAll is siteHostsFromDB for every site in two round trips rather
+// than two per site: one to find each database's options table, one UNION to
+// read them all. Doctor asks this of forty sites at once, and forty pairs of
+// client processes was a second of its wall time. Keyed by slug; sites whose
+// database has no options table yet are absent.
+func (e *Engine) storedHostsAll(sites []*Site) map[string][]string {
+	bySchema := map[string]*Site{}
+	var schemas []string
+	for _, s := range sites {
+		if requireSQLIdent("database name", s.DBName) == nil {
+			bySchema[s.DBName] = s
+			schemas = append(schemas, "'"+s.DBName+"'")
+		}
+	}
+	if len(schemas) == 0 {
+		return nil
+	}
+	out, err := e.DB("SELECT table_schema, table_name FROM information_schema.tables WHERE table_name LIKE '%options' " +
+		"AND table_schema IN (" + strings.Join(schemas, ",") + ") ORDER BY table_schema, LENGTH(table_name)")
+	if err != nil {
+		return nil
+	}
+	var selects []string
+	seenSchema := map[string]bool{}
+	for i, l := range strings.Split(strings.TrimSpace(out), "\n") {
+		schema, table, ok := strings.Cut(strings.TrimSpace(l), "\t")
+		if i == 0 || !ok || seenSchema[schema] || !sqlIdentRe.MatchString(table) {
+			continue // header, or a longer options table than the one we want
+		}
+		seenSchema[schema] = true
+		// Every database was dumped from a different server, so their options
+		// tables disagree on collation and a plain UNION refuses the mix.
+		// Cast both columns to one charset; these are hostnames, nothing is lost.
+		selects = append(selects, fmt.Sprintf("SELECT CONVERT('%s' USING utf8mb4) AS s, CONVERT(option_value USING utf8mb4) AS v FROM %s.%s WHERE option_name IN ('siteurl','home')",
+			schema, quoteIdent(schema), quoteIdent(table)))
+	}
+	if len(selects) == 0 {
+		return nil
+	}
+	vals, err := e.DB(strings.Join(selects, " UNION ALL "))
+	if err != nil {
+		return nil
+	}
+	hosts := map[string][]string{}
+	seen := map[string]bool{}
+	for i, l := range strings.Split(strings.TrimSpace(vals), "\n") {
+		schema, val, ok := strings.Cut(strings.TrimSpace(l), "\t")
+		if i == 0 || !ok {
+			continue
+		}
+		site := bySchema[schema]
+		if site == nil {
+			continue
+		}
+		if h := hostFromURL(val); h != "" && !seen[site.Slug+"\x00"+h] {
+			seen[site.Slug+"\x00"+h] = true
+			hosts[site.Slug] = append(hosts[site.Slug], h)
 		}
 	}
 	return hosts
@@ -1109,6 +1174,90 @@ func (e *Engine) rewriteImportedURLs(site *Site, olds map[string]bool, cb func(s
 	return first
 }
 
+// urlPinConsts are the wp-config constants that fix WordPress's own address.
+// One of these naming another host beats whatever the database says: WordPress
+// 301s every request there, and the local URL only looks broken. A production
+// config copied in with the files is how they arrive.
+const urlPinConsts = `WP_HOME|WP_SITEURL|EFRONT_URL_OVERRIDE|DOMAIN_CURRENT_SITE`
+
+// urlPinRe matches one active define of a URL constant. Single-quoted values
+// only, the same shape rewriteWPConfigDomains rewrites, so anything detected
+// here is something --fix can actually repoint.
+var urlPinRe = regexp.MustCompile(`^\s*define\(\s*'(` + urlPinConsts + `)'\s*,\s*'([^']*)'`)
+
+// URLPin is a URL constant as found in wp-config.php.
+type URLPin struct {
+	Name string // WP_HOME
+	URL  string // https://ssp.c1.efront.dev
+}
+
+// wpConfigURLPins lists the URL constants a wp-config.php defines, in file
+// order. Commented-out lines are not pins: they do not run.
+func wpConfigURLPins(wpdir string) []URLPin {
+	b, err := os.ReadFile(filepath.Join(wpdir, "wp-config.php"))
+	if err != nil {
+		return nil
+	}
+	var pins []URLPin
+	for _, line := range strings.Split(string(b), "\n") {
+		if m := urlPinRe.FindStringSubmatch(line); m != nil && m[2] != "" {
+			pins = append(pins, URLPin{Name: m[1], URL: m[2]})
+		}
+	}
+	return pins
+}
+
+// ownsHost reports whether a host is one of the site's own names: its domain
+// or an alias. The port is ignored - the site answers on :10443 as well as
+// bare, and a pin that says so is deliberate.
+func (s *Site) ownsHost(host string) bool {
+	host = strings.ToLower(host)
+	if h, _, ok := strings.Cut(host, ":"); ok {
+		host = h
+	}
+	if host == strings.ToLower(s.Domain) {
+		return true
+	}
+	for _, a := range s.Aliases {
+		if host == strings.ToLower(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// foreignURLPins is the wp-config pins that point somewhere other than the
+// site's own names - each one a reason the site redirects away from itself.
+func foreignURLPins(site *Site) []URLPin {
+	var out []URLPin
+	for _, p := range wpConfigURLPins(site.WPDir) {
+		if h := hostFromURL(p.URL); h != "" && !site.ownsHost(h) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// foreignHosts collects every host WordPress would send a visitor to instead
+// of the site's own domain: pinned in wp-config.php, and - when the database
+// is up to ask - stored as home/siteurl. Keyed host[:port], the form
+// search-replace needs. This is the set an import rewrites; a site that has
+// some left is one whose import stopped short.
+func (e *Engine) foreignHosts(site *Site) map[string]bool {
+	hosts := map[string]bool{}
+	for _, p := range foreignURLPins(site) {
+		hosts[hostFromURL(p.URL)] = true
+	}
+	if e.DBRunning() {
+		for _, h := range e.siteHostsFromDB(site) {
+			if !site.ownsHost(h) {
+				hosts[h] = true
+			}
+		}
+	}
+	return hosts
+}
+
 // rewriteWPConfigDomains rewrites scheme-prefixed URLs, then bare hostnames
 // only inside define() string values. A global ReplaceAll of the hostname used
 // to smash AUTH_KEY salts that happened to contain it.
@@ -1126,7 +1275,7 @@ func rewriteWPConfigDomains(path string, olds map[string]bool, newDomain string)
 		src = strings.ReplaceAll(src, "http://"+old, "http://"+newDomain)
 		// Bare host only in URL-ish constants. AUTH_KEY salts that happen to
 		// contain the hostname must stay intact.
-		re := regexp.MustCompile(`(define\(\s*'(?:WP_HOME|WP_SITEURL|EFRONT_URL_OVERRIDE|DOMAIN_CURRENT_SITE)'\s*,\s*')([^']*)` +
+		re := regexp.MustCompile(`(define\(\s*'(?:` + urlPinConsts + `)'\s*,\s*')([^']*)` +
 			regexp.QuoteMeta(old) + `([^']*'\s*\))`)
 		src = re.ReplaceAllString(src, `${1}${2}`+newDomain+`${3}`)
 	}

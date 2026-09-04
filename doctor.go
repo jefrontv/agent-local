@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -211,7 +212,7 @@ func Doctor(store *Store) *DoctorReport {
 			wg.Add(1)
 			go func(i int, site *Site) {
 				defer wg.Done()
-				code, took, err := httpProbeHostTimed("http://127.0.0.1:"+fmt.Sprint(DefaultHTTPPort)+"/", site.Domain, siteProbeTimeout)
+				code, loc, took, err := httpProbeHostTimed("http://127.0.0.1:"+fmt.Sprint(DefaultHTTPPort)+"/", site.Domain, siteProbeTimeout)
 				switch {
 				case err != nil:
 					// Distinguish "nothing there" from "too slow to wait for": a
@@ -224,6 +225,12 @@ func Doctor(store *Store) *DoctorReport {
 					results[i] = &Finding{Check: "site:" + site.Slug, Status: "warn", Detail: detail}
 				case code >= 500:
 					results[i] = &Finding{Check: "site:" + site.Slug, Status: "warn", Detail: fmt.Sprintf("http %d", code)}
+				case code/100 == 3 && offSite(site, loc):
+					// WordPress answering with a redirect to another machine is the
+					// production-config-copied-in failure seen from the browser.
+					// The url: finding below names which constant, and fixes it.
+					results[i] = &Finding{Check: "site:" + site.Slug, Status: "warn",
+						Detail: fmt.Sprintf("http %d → %s — not one of this site's names", code, loc)}
 				case took > time.Second:
 					results[i] = &Finding{Check: "site:" + site.Slug, Status: "warn",
 						Detail: fmt.Sprintf("http %d but slow: %dms", code, took.Milliseconds())}
@@ -316,6 +323,31 @@ func Doctor(store *Store) *DoctorReport {
 				f.FixHint = "deactivate and reactivate the plugin that wrote it"
 			}
 			add(f)
+		}
+	}
+
+	// A wp-config that pins WP_HOME to another machine's address — the
+	// production config that came in with the files — beats the database:
+	// WordPress 301s every request there, and the local URL only looks broken.
+	// The database can hold the same mistake when an import's search-replace
+	// stopped short. Both are what an import rewrites, so --fix finishes the
+	// job. The database is asked once for every site, and only while it is up.
+	{
+		var stored map[string][]string
+		if e.DBRunning() {
+			stored = e.storedHostsAll(store.Sites())
+		}
+		for _, site := range store.Sites() {
+			var dbHosts []string
+			for _, h := range stored[site.Slug] {
+				if !site.ownsHost(h) {
+					dbHosts = append(dbHosts, h)
+				}
+			}
+			if detail := urlPinDetail(foreignURLPins(site), dbHosts); detail != "" {
+				add(Finding{Check: "url:" + site.Slug, Status: "warn", Detail: detail,
+					FixCmd: "agent-local doctor --fix", AutoFix: true})
+			}
 		}
 	}
 
@@ -495,6 +527,24 @@ func DoctorFix(store *Store, interactive bool) []string {
 			for _, d := range left {
 				done = append(done, fmt.Sprintf("left %s for %s: regenerate it from its plugin", d.File, slug))
 			}
+		case strings.HasPrefix(f.Check, "url:"):
+			slug := strings.TrimPrefix(f.Check, "url:")
+			site := store.Site(slug)
+			if site == nil {
+				continue
+			}
+			e := NewEngine(store)
+			hosts := e.foreignHosts(site)
+			if err := e.rewriteImportedURLs(site, hosts, func(string, string) {}); err != nil {
+				done = append(done, fmt.Sprintf("failed: url %s: %v", slug, err))
+				continue
+			}
+			names := make([]string, 0, len(hosts))
+			for h := range hosts {
+				names = append(names, h)
+			}
+			sort.Strings(names)
+			done = append(done, fmt.Sprintf("repointed %s → %s for %s", strings.Join(names, ", "), site.Domain, slug))
 		case strings.HasPrefix(f.Check, "php:"):
 			v := strings.TrimPrefix(f.Check, "php:")
 			if err := RepairPHP(store, v, nil); err != nil {
@@ -529,6 +579,44 @@ func DoctorFix(store *Store, interactive bool) []string {
 		}
 	}
 	return done
+}
+
+// urlPinDetail words the url: finding from its two causes. "" when there is
+// nothing to say. Pins are named by constant so the user can see the line in
+// their own wp-config; the database is one host per line of options.
+func urlPinDetail(pins []URLPin, dbHosts []string) string {
+	var parts []string
+	if len(pins) > 0 {
+		byURL := map[string][]string{}
+		var order []string
+		for _, p := range pins {
+			if _, seen := byURL[p.URL]; !seen {
+				order = append(order, p.URL)
+			}
+			byURL[p.URL] = append(byURL[p.URL], p.Name)
+		}
+		for _, u := range order {
+			parts = append(parts, "wp-config pins "+strings.Join(byURL[u], ", ")+" to "+u)
+		}
+	}
+	if len(dbHosts) > 0 {
+		parts = append(parts, "database home is "+strings.Join(dbHosts, ", "))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ") + " — every request redirects there"
+}
+
+// offSite reports whether a redirect target leaves the site's own names. A
+// relative Location, or one to the site itself (http → https, trailing slash),
+// is WordPress doing its job; another host is the production URL leaking in.
+func offSite(site *Site, location string) bool {
+	h := hostFromURL(location)
+	if h == "" || !strings.Contains(location, "://") {
+		return false
+	}
+	return !site.ownsHost(h)
 }
 
 // RenderReport prints the report human-readable, in the CLI's register: one

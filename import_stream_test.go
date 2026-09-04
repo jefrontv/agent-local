@@ -143,6 +143,121 @@ func TestImportUsesDocrootFor(t *testing.T) {
 	}
 }
 
+// The sydney-science-park shape: a production wp-config extracted over the
+// docroot, then partially patched. WP_HOME/WP_SITEURL still name the origin,
+// EFRONT_URL_OVERRIDE was repointed, and a commented-out pin does not run.
+const sydneyConfig = `<?php
+define('DB_NAME', 'al_ssp');
+define('AUTH_KEY', 'salt-with-ssp.c1.efront.dev-inside');
+define('EFRONT_URL_OVERRIDE', 'http://ssp.local');
+define('WP_HOME', 'https://ssp.c1.efront.dev');
+define( 'WP_SITEURL', 'https://ssp.c1.efront.dev' );
+// define('WP_HOME', 'https://commented.out');
+define( 'WP_DEBUG', true );
+`
+
+func TestWPConfigURLPinsReadsActiveDefinesOnly(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "wp-config.php"), []byte(sydneyConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := wpConfigURLPins(dir)
+	want := []URLPin{
+		{"EFRONT_URL_OVERRIDE", "http://ssp.local"},
+		{"WP_HOME", "https://ssp.c1.efront.dev"},
+		{"WP_SITEURL", "https://ssp.c1.efront.dev"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("pins = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("pin %d = %v, want %v", i, got[i], want[i])
+		}
+	}
+	if wpConfigURLPins(filepath.Join(dir, "missing")) != nil {
+		t.Error("a docroot without wp-config.php should have no pins")
+	}
+}
+
+func TestForeignURLPinsSparesOwnNames(t *testing.T) {
+	dir := t.TempDir()
+	src := `<?php
+define('WP_HOME', 'https://ssp.local');
+define('WP_SITEURL', 'https://SSP.local:10443');
+define('EFRONT_URL_OVERRIDE', 'http://alias.local');
+define('DOMAIN_CURRENT_SITE', 'ssp.c1.efront.dev');
+`
+	if err := os.WriteFile(filepath.Join(dir, "wp-config.php"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	site := &Site{Domain: "ssp.local", Aliases: []string{"alias.local"}, WPDir: dir}
+	got := foreignURLPins(site)
+	// The domain, the domain with our port, and an alias are all ours; only the
+	// multisite pin names another machine.
+	if len(got) != 1 || got[0].Name != "DOMAIN_CURRENT_SITE" {
+		t.Errorf("foreign pins = %v, want just DOMAIN_CURRENT_SITE", got)
+	}
+}
+
+func TestRewriteWPConfigDomainsRepointsProductionPins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wp-config.php")
+	if err := os.WriteFile(path, []byte(sydneyConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	site := &Site{Domain: "ssp.local", WPDir: dir}
+	olds := map[string]bool{}
+	for _, p := range foreignURLPins(site) {
+		olds[hostFromURL(p.URL)] = true
+	}
+	if err := rewriteWPConfigDomains(path, olds, "ssp.local"); err != nil {
+		t.Fatal(err)
+	}
+	if left := foreignURLPins(site); len(left) != 0 {
+		t.Errorf("pins still foreign after rewrite: %v", left)
+	}
+	body, _ := os.ReadFile(path)
+	if !strings.Contains(string(body), "define('WP_HOME', 'https://ssp.local')") {
+		t.Errorf("WP_HOME scheme not kept:\n%s", body)
+	}
+	if !strings.Contains(string(body), "salt-with-ssp.c1.efront.dev-inside") {
+		t.Errorf("AUTH_KEY was smashed:\n%s", body)
+	}
+}
+
+func TestURLPinDetailNamesConstantsAndHosts(t *testing.T) {
+	pins := []URLPin{{"WP_HOME", "https://ssp.c1.efront.dev"}, {"WP_SITEURL", "https://ssp.c1.efront.dev"}}
+	got := urlPinDetail(pins, nil)
+	want := "wp-config pins WP_HOME, WP_SITEURL to https://ssp.c1.efront.dev — every request redirects there"
+	if got != want {
+		t.Errorf("detail = %q\nwant     %q", got, want)
+	}
+	if got := urlPinDetail(nil, []string{"ssp.c1.efront.dev"}); !strings.HasPrefix(got, "database home is ssp.c1.efront.dev") {
+		t.Errorf("db-only detail = %q", got)
+	}
+	if got := urlPinDetail(nil, nil); got != "" {
+		t.Errorf("nothing wrong should say nothing, got %q", got)
+	}
+}
+
+func TestOffSiteIgnoresOwnAndRelativeRedirects(t *testing.T) {
+	site := &Site{Domain: "ssp.local", Aliases: []string{"alias.local"}}
+	for loc, want := range map[string]bool{
+		"https://ssp.local/":         false,
+		"https://ssp.local:10443/x":  false,
+		"http://alias.local/":        false,
+		"/wp-login.php":              false,
+		"":                           false,
+		"https://ssp.c1.efront.dev/": true,
+		"http://www.ssp.local/":      true,
+	} {
+		if got := offSite(site, loc); got != want {
+			t.Errorf("offSite(%q) = %v, want %v", loc, got, want)
+		}
+	}
+}
+
 type byteAtATime struct {
 	s []byte
 	i int

@@ -901,9 +901,11 @@ Common cases:
   reproduce, `agent-local logs wp-<slug>`.
 - **"Where did the confirmation email go?"** → `agent-local mail <slug>` — every
   email the site sends is captured there, nothing is delivered.
-- **Imported site redirects somewhere else** → its database still holds the old
-  domain; `agent-local db <slug> tables` then re-import, or
-  `agent-local wp <slug> -- search-replace old.host <slug>.test --all-tables`.
+- **Site redirects to its production or staging domain** → `agent-local doctor`
+  names the cause as `url:<slug>`: a `WP_HOME`/`WP_SITEURL` pinned in
+  `wp-config.php` (a production config that came in with the files beats the
+  database), or stored URLs an import's search-replace never reached.
+  `agent-local doctor --fix` repoints both at the site's domain.
 
 ## Releasing
 

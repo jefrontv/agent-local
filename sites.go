@@ -321,6 +321,12 @@ func (e *Engine) AttachSite(o AttachOpts) (*Site, error) {
 	switch {
 	case fileExists(cfg):
 		cb("config", "keeping the existing wp-config.php")
+		// Theirs to keep, but a WP_HOME pointing at the machine it came from
+		// means every request will 301 there. Say so now, while they are
+		// watching, and name the repair.
+		if pins := foreignURLPins(site); len(pins) > 0 {
+			cb("warn", urlPinDetail(pins, nil)+" — agent-local doctor --fix repoints them at "+domain)
+		}
 	case fileExists(filepath.Join(docroot, "wp-load.php")):
 		cb("config", "writing wp-config.php for "+site.DBName)
 		if err := writeWPConfig(site, docroot); err != nil {
@@ -831,9 +837,17 @@ func (e *Engine) SetDomain(slug, domain string) error {
 	}
 	// WordPress stores its own URLs, so a rename that stops here leaves every
 	// request redirecting straight back to the old domain — the new one only looks
-	// like it does not work. Rewrite them the way an import does.
+	// like it does not work. Rewrite them the way an import does: the old name,
+	// and any other host the config or database still points at, because a pin
+	// left over from the machine the files came from redirects just as hard.
+	// Best-effort: a site whose database is unreachable still gets the rename,
+	// and says so.
 	if old != "" && old != domain {
-		e.rewriteSiteURLs(site, old, domain)
+		olds := e.foreignHosts(site)
+		olds[old] = true
+		if err := e.rewriteImportedURLs(site, olds, func(string, string) {}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not rewrite the site's URLs: %v\n", err)
+		}
 		// The rename is also when a stale cache drop-in first shows: the old
 		// name's warm page cache hid it, the new name has none. Clear that
 		// cache and say what is wrong before the user blames the rename.
@@ -842,22 +856,6 @@ func (e *Engine) SetDomain(slug, domain string) error {
 		}
 	}
 	return nil
-}
-
-// rewriteSiteURLs points the site's stored URLs at a new domain. Best-effort:
-// a site whose database is unreachable still gets the rename, and says so.
-func (e *Engine) rewriteSiteURLs(site *Site, old, domain string) {
-	if err := e.EnsureDB(); err != nil {
-		return
-	}
-	for _, scheme := range []string{"https://", "http://"} {
-		if out, err := wpCLI(site, "search-replace", scheme+old, scheme+domain,
-			"--all-tables", "--skip-columns=guid"); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not rewrite %s URLs in the database: %s\n", scheme+old, tail(out, 160))
-		}
-	}
-	// A theme or wp-config constant can pin the old domain just as hard.
-	rewriteWPConfigDomains(filepath.Join(site.WPDir, "wp-config.php"), map[string]bool{old: true}, domain)
 }
 
 // ---------- Worktrees ----------

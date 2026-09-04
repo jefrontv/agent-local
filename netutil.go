@@ -58,11 +58,12 @@ func probeClient() *http.Client {
 // httpProbeHostTimed also reports how long the answer took, and gives up after
 // the deadline. A cold WordPress render can take many seconds; a check asking
 // only "is this serving?" should not wait for it, and how slow it was is itself
-// worth reporting.
-func httpProbeHostTimed(url, host string, timeout time.Duration) (int, time.Duration, error) {
+// worth reporting. Redirects are not followed; where one points is returned,
+// because a site that answers 301 to another machine is not "serving".
+func httpProbeHostTimed(url, host string, timeout time.Duration) (code int, location string, took time.Duration, err error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return 0, 0, err
+		return 0, "", 0, err
 	}
 	req.Host = host
 	client := probeClient()
@@ -73,10 +74,10 @@ func httpProbeHostTimed(url, host string, timeout time.Duration) (int, time.Dura
 	}
 	start := time.Now()
 	resp, err := client.Do(req)
-	took := time.Since(start)
+	took = time.Since(start)
 	if err != nil {
-		return 0, took, err
+		return 0, "", took, err
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode, took, nil
+	return resp.StatusCode, resp.Header.Get("Location"), took, nil
 }
