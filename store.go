@@ -48,8 +48,12 @@ type storeData struct {
 	Front     string               `json:"http_front,omitempty"`    // router (default) | apache
 	Suffix    string               `json:"domain_suffix,omitempty"` // default TLD for new domains
 	SitesDir  string               `json:"sites_dir,omitempty"`     // parent dir for new sites
-	Inv       Inventory            `json:"inventory"`
-	UpdatedAt time.Time            `json:"updated_at"`
+	// AutoUpdate lets the daemon install releases it finds on its daily check.
+	// Off unless asked: a tool agents drive should change under them only
+	// when someone said so.
+	AutoUpdate bool      `json:"auto_update,omitempty"`
+	Inv        Inventory `json:"inventory"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 func fileModTime(p string) time.Time {
@@ -263,6 +267,15 @@ func mergeStore(base, mine, disk []byte, deleted map[string]map[string]bool) ([]
 			if !bytes.Equal(mv, b[k]) {
 				out[k] = mv // this process changed it
 			}
+		}
+	}
+	// A setting this process cleared is absent from mine (omitempty) and so
+	// never reached the loop above: the disk value survived every reset, and
+	// `sites-dir --default` came back on the next load. Present in the
+	// ancestor and gone from ours means we removed it.
+	for k := range b {
+		if _, still := m[k]; !still {
+			delete(out, k)
 		}
 	}
 	return json.MarshalIndent(out, "", "  ")

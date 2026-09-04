@@ -34,8 +34,11 @@ func TestUnreadableDocrootsTellsDeniedFromMissing(t *testing.T) {
 	store.PutSite(&Site{Slug: "fine", Domain: "fine.test", WPDir: home, PHPVersion: "8.4",
 		DBName: "al_fine", DBUser: "al_fine", DBPass: "x"})
 
-	got := unreadableDocroots(store)
+	got, pending := unreadableDocroots(store)
 	if len(got) != 1 || got[0] != "locked" {
 		t.Fatalf("unreadableDocroots = %v, want [locked]: missing and readable docroots must not count", got)
+	}
+	if len(pending) != 0 {
+		t.Errorf("local directories answer at once; pending = %v", pending)
 	}
 }

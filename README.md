@@ -63,14 +63,30 @@ needs them. [Zero prompts](#zero-prompts-recommended-one-time) removes even that
 ```sh
 agent-local update            # download + verify + swap the binary
 agent-local update --check    # just report what is published
-agent-local restart-daemon    # let the new build take over the running daemon
+agent-local autoupdate on     # let the daemon install releases itself (off by default)
 ```
+
+The daemon watches its own binary. However a new build lands — `update`,
+`brew upgrade`, `install.sh` — it finishes any running job, steps down, and
+launchd starts the new one; nobody runs `restart-daemon`. Once a day it asks
+GitHub what is published and remembers the answer, so the dashboard header,
+`doctor`, `version` and the `status` API can say a release is out without any
+of them touching the network. With `autoupdate on` that daily check also
+installs what it finds.
+
+One macOS wrinkle. The system asks before a *new build* may read `~/Documents`,
+`~/Desktop` or `~/Downloads`, and a freshly installed binary counts as new. Sites
+kept in those folders mean a permission dialog after each update; the daemon
+boots anyway and PHP serves, but their static files 403 until you click Allow.
+Sites anywhere else — `~/Sites`, or the default `agent-local sites-dir` — never
+ask.
 
 `update` verifies the download against the release `checksums.txt` before it
 replaces anything, and refuses to touch a Homebrew-managed install — use
-`brew upgrade agent-local` there. Releases are cut by GoReleaser from a tag
-(`.goreleaser.yaml`, `.github/workflows/release.yml`) as one universal binary
-for Apple Silicon and Intel.
+`brew upgrade agent-local` there (the daemon still hands over by itself).
+Releases are cut by GoReleaser from a tag (`.goreleaser.yaml`,
+`.github/workflows/release.yml`) as one universal binary for Apple Silicon and
+Intel.
 
 ## Quick start
 
@@ -838,6 +854,7 @@ agent-local logs NAME [lines]          mysql | apache | daemon | fpm-<slug> | wp
 agent-local daemon [--background]      router + agent API
 agent-local restart-daemon             hand over to a freshly installed binary
 agent-local update [--check]           install the latest release
+agent-local autoupdate [on|off]        let the daemon install releases itself (off by default)
 agent-local mcp [--config]             MCP server over stdio; --config prints the client block
 agent-local connect [--list|--all|--remove|--json|--yes] [harness...]  register (or remove) the MCP server in a client
 agent-local api-token | version

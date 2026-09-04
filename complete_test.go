@@ -191,12 +191,19 @@ func TestSitesDirSetting(t *testing.T) {
 	if err := store.SetSitesDir(f); err == nil {
 		t.Error("SetSitesDir accepted a file")
 	}
-	// Empty restores the default rather than leaving an unusable value behind.
+	// Empty restores the default rather than leaving an unusable value behind -
+	// on disk too. The merge used to skip a setting absent from the saved
+	// document (omitempty), so a reset never outlived the process.
 	if err := store.SetSitesDir(""); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := store.SitesDir(), P().Sites(); got != want {
 		t.Errorf("after reset SitesDir = %q, want %q", got, want)
+	}
+	if again, err := OpenStore(); err != nil {
+		t.Fatal(err)
+	} else if again.Data.SitesDir != "" {
+		t.Errorf("reset did not reach disk: reopened store has sites_dir %q", again.Data.SitesDir)
 	}
 
 	// Delete may wipe a whole directory only inside a tree we manage: our own,

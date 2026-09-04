@@ -121,15 +121,53 @@ func restoreRunning(e *Engine, store *Store) int {
 // is refused permission to list — the signature of a macOS folder-access
 // denial, as opposed to a docroot that is simply gone. A missing docroot is
 // the user's business (they moved it); a denied one is ours.
-func unreadableDocroots(store *Store) []string {
-	var denied []string
-	for _, s := range store.Sites() {
-		if _, err := os.ReadDir(s.WPDir); err != nil && errors.Is(err, fs.ErrPermission) {
-			denied = append(denied, s.Slug)
+//
+// The probes run together and are given a deadline. A read that neither
+// succeeds nor fails is macOS showing the user a consent dialog for that
+// folder — which it does afresh for every new build, since an ad-hoc signature
+// is a new identity each time. Waiting on it kept a daemon silent, portless and
+// "running" for as long as the dialog went unanswered (15 minutes once), with
+// every site dark. So: report what is still pending and let the boot go on.
+// PHP has its own grant and serves; static files under that folder 403 until
+// the user allows it, at which point they simply start working.
+func unreadableDocroots(store *Store) (denied, pending []string) {
+	type result struct {
+		slug string
+		err  error
+	}
+	sites := store.Sites()
+	results := make(chan result, len(sites))
+	for _, s := range sites {
+		go func(s *Site) {
+			_, err := os.ReadDir(s.WPDir)
+			results <- result{s.Slug, err}
+		}(s)
+	}
+	deadline := time.After(docrootProbeDeadline)
+	answered := map[string]bool{}
+	for range sites {
+		select {
+		case r := <-results:
+			answered[r.slug] = true
+			if r.err != nil && errors.Is(r.err, fs.ErrPermission) {
+				denied = append(denied, r.slug)
+			}
+		case <-deadline:
+			for _, s := range sites {
+				if !answered[s.Slug] {
+					pending = append(pending, s.Slug)
+				}
+			}
+			return denied, pending
 		}
 	}
-	return denied
+	return denied, nil
 }
+
+// docrootProbeDeadline is how long a docroot listing may take before it is
+// taken to be waiting on a consent dialog rather than a disk. Local
+// directories answer in microseconds; nothing legitimate needs seconds.
+const docrootProbeDeadline = 3 * time.Second
 
 // RunDaemon is the `daemon` entrypoint.
 func RunDaemon(background bool) error {
@@ -138,6 +176,9 @@ func RunDaemon(background bool) error {
 	// instead of falling through to the OS default (an untidy, log-less kill).
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	// hand is how the binary watcher asks this goroutine to step down: the
+	// file on disk is a newer build, and launchd should be running that one.
+	hand := make(chan string, 1)
 	// A daemon already serving owns the ports. Wait rather than exit: exiting
 	// meant launchd (KeepAlive on failure only) never brought the login job back
 	// when that other instance later died, so a machine could end up with nothing
@@ -145,10 +186,22 @@ func RunDaemon(background bool) error {
 	// instance is always ready to take the role.
 	if !background && portOpen(DefaultAPIPort) {
 		log.Printf("another agent-local daemon holds :%d — standing by to take over", DefaultAPIPort)
+		// A standby has nothing to drain: a new binary means step aside now so
+		// the instance that eventually takes over is the current build. Its own
+		// channel, so a change seen while standing by can never skip the
+		// job-aware handover a serving daemon gets below.
+		standbyHand := make(chan string, 1)
+		go watchBinary(watchedBinaryPath(), binaryWatchEvery, func(v string) { standbyHand <- v })
 		for portOpen(DefaultAPIPort) {
 			select {
 			case <-sig:
 				log.Printf("shutting down while standing by")
+				return nil
+			case v := <-standbyHand:
+				log.Printf("binary on disk is now %s (running %s) — standing by ends here", v, Version)
+				if os.Getenv(launchdMarker) != "" {
+					relaunchViaLaunchd()
+				}
 				return nil
 			case <-time.After(2 * time.Second):
 			}
@@ -175,9 +228,15 @@ func RunDaemon(background bool) error {
 	// while every static file 403s and pools it starts cannot load plugins —
 	// a half-working stack that looks like a bug in each site. Bail here so
 	// the launchd job, which runs with the user's grants, takes over instead.
-	if denied := unreadableDocroots(store); len(denied) > 0 {
+	// A grant still being asked for is different: boot, and say what is waiting.
+	denied, pending := unreadableDocroots(store)
+	if len(denied) > 0 {
 		return fmt.Errorf("this process cannot read %d site docroot(s) (%s): macOS denies it folder access; run `agent-local restart-daemon` from Terminal, or start via launchd",
 			len(denied), strings.Join(denied, ", "))
+	}
+	if len(pending) > 0 {
+		log.Printf("macOS is asking for permission to read the folder holding %d site(s) (%s) — allow it in the dialog; until then their static files 403 while PHP serves",
+			len(pending), strings.Join(pending, ", "))
 	}
 
 	// Residue from deletes that predate pool cleanup: sweep before starting pools,
@@ -255,12 +314,20 @@ func RunDaemon(background bool) error {
 
 	log.Printf("agent-local daemon: http :%d https :%d api :%d", DefaultHTTPPort, DefaultHTTPSPort, DefaultAPIPort)
 
-	if background {
-		// detach: daemon was spawned already detached by EnsureRouterDaemon;
-		// just block until signaled.
+	// From here the binary on disk is watched: a new build installed by any
+	// route - update, brew upgrade, install.sh - takes over without anyone
+	// running restart-daemon. And once a day, GitHub is asked whether there
+	// is one to install.
+	go watchBinary(watchedBinaryPath(), binaryWatchEvery, daemonHandover(jobs, hand))
+	go updateLoop(store)
+
+	handingOver := ""
+	select {
+	case <-sig:
+		log.Printf("shutting down")
+	case handingOver = <-hand:
+		log.Printf("handing over to %s", handingOver)
 	}
-	<-sig
-	log.Printf("shutting down")
 	// Give any in-flight import/deploy job a moment to finish rather than
 	// being cut off mid-write.
 	jobs.DrainRunning(5 * time.Second)
@@ -271,6 +338,9 @@ func RunDaemon(background bool) error {
 	}
 	for _, sh := range shares.All() {
 		sh.shutdown()
+	}
+	if handingOver != "" {
+		relaunchViaLaunchd()
 	}
 	return nil
 }
@@ -626,8 +696,23 @@ type createReq struct {
 
 func (a *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	e := a.engine
+	// version is the build in memory; installed is the binary on disk, which
+	// differs for the seconds between an update and the handover - or for as
+	// long as a job the handover is waiting on keeps running.
+	installed := Version
+	if v := installedVersion.Load(); v != nil {
+		installed = v.(string)
+	}
+	latest, _ := availableUpdate()
+	a.store.ReloadIfChanged()
 	st := map[string]interface{}{
 		"version":   Version,
+		"installed": installed,
+		"update": map[string]interface{}{
+			"latest":    latest,
+			"available": latest != "",
+			"auto":      a.store.Data.AutoUpdate,
+		},
 		"db":        map[string]interface{}{"running": e.DBRunning(), "port": DefaultDBPort},
 		"http":      map[string]interface{}{"port": DefaultHTTPPort, "listening": portOpen(DefaultHTTPPort), "front": FrontKind(a.store)},
 		"runtimes":  a.store.Inventory().Runtimes(),

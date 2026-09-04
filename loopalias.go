@@ -173,7 +173,10 @@ func RemoveLoopAlias(interactive bool) error {
 // installFrontDaemon writes + loads the root LaunchDaemon running
 // `agent-local front-daemon` (binds 127.0.0.2:80/:443, pipes to the daemon).
 func installFrontDaemon(interactive bool) error {
-	self, err := os.Executable()
+	// The installed binary, not whichever build ran this command: a plist
+	// naming a working-tree build (or a versioned Caskroom file brew upgrade
+	// removes) is a root daemon that stops existing.
+	self, err := installedBinaryPath()
 	if err != nil {
 		return err
 	}

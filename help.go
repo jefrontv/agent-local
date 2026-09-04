@@ -81,7 +81,8 @@ var helpGroups = []helpGroup{
 		{"daemon", "[--background]", "run the daemon by hand"},
 		{"restart-daemon", "", "hand over to a freshly installed binary"},
 		{"update", "[--check]", "install the latest release"},
-		{"version", "", "what build this is"},
+		{"autoupdate", "[on|off]", "let the daemon install releases itself (off by default)"},
+		{"version", "", "what build this is, and the latest published"},
 	}},
 }
 
@@ -117,7 +118,7 @@ func renderHelp() string {
 			}
 		}
 	}
-	b.WriteString("\n" + stDim.Render("Every command here is also an MCP tool for the agents you connect —\nexcept mcp, connect, api-token, alias, sudo, autostart, daemon, restart-daemon,\nupdate and version, which only make sense run by hand.") + "\n")
+	b.WriteString("\n" + stDim.Render("Every command here is also an MCP tool for the agents you connect —\nexcept mcp, connect, api-token, alias, sudo, autostart, daemon, restart-daemon,\nupdate, autoupdate and version, which only make sense run by hand.") + "\n")
 	return b.String()
 }
 

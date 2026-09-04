@@ -115,7 +115,10 @@ func RemoveDaemonAutostart() {
 
 // installedBinaryPath is the binary the agent should run. The running executable
 // may be a build in a working tree; prefer the installed copy when it exists so
-// autostart does not depend on a checkout staying put.
+// autostart does not depend on a checkout staying put. A Homebrew binary is
+// named by its `bin` symlink, not the versioned Caskroom file behind it: brew
+// upgrade removes that file, and a plist pointing at it starts nothing after
+// the next reboot.
 func installedBinaryPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err == nil {
@@ -127,6 +130,9 @@ func installedBinaryPath() (string, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return "", err
+	}
+	if link := homebrewLink(self); link != "" {
+		return link, nil
 	}
 	if resolved, err := filepath.EvalSymlinks(self); err == nil {
 		return resolved, nil

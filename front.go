@@ -30,6 +30,15 @@ func RunFrontDaemon(args []string) error {
 	}
 	log.Printf("front-daemon: %s:80 -> :%d, %s:443 -> :%d (yield file %s)",
 		LoopbackAlias, DefaultHTTPPort, LoopbackAlias, DefaultHTTPSPort, frontYieldPath())
+	// A root process nobody thinks about is the one most likely to be left on
+	// an old build. Its plist is KeepAlive, so exiting is all it takes: launchd
+	// brings the new binary up, and :1080/:10443 carry on meanwhile.
+	if self, err := os.Executable(); err == nil {
+		go watchBinary(self, binaryWatchEvery, func(v string) {
+			log.Printf("front-daemon: binary on disk is now %s (running %s) — exiting for launchd to restart", v, Version)
+			os.Exit(3)
+		})
+	}
 	(&frontDaemon{}).supervise()
 	return nil
 }

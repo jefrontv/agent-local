@@ -96,7 +96,9 @@ STAGED="$DEST/.$BIN_NAME.new.$$"
 cp "$BINARY" "$STAGED"
 chmod +x "$STAGED"
 if command -v codesign >/dev/null 2>&1; then
-  codesign -f -s - "$STAGED" >/dev/null 2>&1 || true
+  # Same identifier every build: macOS ties Documents/Desktop consent to it,
+  # so an update does not have to ask again.
+  codesign -f -s - -i local.agent-local "$STAGED" >/dev/null 2>&1 || true
 fi
 mv -f "$STAGED" "$DEST/$BIN_NAME"
 echo "    installed: $DEST/$BIN_NAME ($("$DEST/$BIN_NAME" version 2>/dev/null || echo unknown))"

@@ -119,8 +119,14 @@ func main() {
 			outRow("commit", buildCommit)
 			outRow("built", buildDate)
 		}
+		// From the daemon's daily check - never a network call from here.
+		if latest, _ := availableUpdate(); latest != "" {
+			outRow("latest", stName.Render(strings.TrimPrefix(latest, "v"))+"  "+stDim.Render("install: ")+stKey.Render(AppName+" update"))
+		}
 	case "update", "upgrade":
 		err = cmdUpdate(rest)
+	case "autoupdate":
+		err = cmdAutoupdate(rest)
 	case "restart-daemon":
 		err = cmdRestartDaemon()
 	case "help", "--help", "-h":
@@ -306,6 +312,55 @@ func cmdSuffix(args []string) error {
 	outRow("suffix", store.Suffix())
 	outNote("new sites and previews use it; existing sites keep their domains")
 	outHint("rename", AppName+" domain SLUG name"+store.Suffix())
+	return nil
+}
+
+// cmdAutoupdate shows or sets whether the daemon installs releases itself.
+func cmdAutoupdate(args []string) error {
+	store, err := OpenStore()
+	if err != nil {
+		return err
+	}
+	pos := positional(args)
+	state := func() string {
+		if store.Data.AutoUpdate {
+			return stOK.Render("on") + stDim.Render("  the daemon installs each release it finds")
+		}
+		return stDim.Render("off  releases are reported, never installed unasked")
+	}
+	outTitle(AppName, "autoupdate")
+	if len(pos) == 0 {
+		outRow("autoupdate", state())
+		if latest, _ := availableUpdate(); latest != "" {
+			outRow("available", stName.Render(strings.TrimPrefix(latest, "v"))+stDim.Render("  running "+Version))
+		}
+		outHint("change", AppName+" autoupdate on|off")
+		return nil
+	}
+	switch pos[0] {
+	case "on":
+		store.Data.AutoUpdate = true
+	case "off":
+		store.Data.AutoUpdate = false
+	default:
+		return fmt.Errorf("usage: %s autoupdate [on|off]", AppName)
+	}
+	if err := store.Save(); err != nil {
+		return err
+	}
+	outRow("autoupdate", state())
+	if store.Data.AutoUpdate {
+		self, _ := os.Executable()
+		if managedByHomebrew(self) {
+			outNote("this binary is Homebrew's, so the daemon can only report a release; install with: brew upgrade " + AppName)
+		} else {
+			outNote("the daemon checks GitHub once a day and installs what it finds once no job is running")
+			if n := len(sitesInProtectedFolders(store)); n > 0 {
+				outNote(fmt.Sprintf("%d site(s) live in ~/Documents, ~/Desktop or ~/Downloads: macOS will ask once per new build before the daemon can read them; static files 403 until you allow it", n))
+			}
+			outHint("now", AppName+" update")
+		}
+	}
 	return nil
 }
 

@@ -201,6 +201,10 @@ type model struct {
 type healthSnapshot struct {
 	db, http, https, api bool
 	front                string
+	// update is the newer release the daemon's daily check found, or "". Read
+	// from its cache file, never from the network, on the same tick as the
+	// port probes.
+	update string
 }
 
 type refreshMsg struct{}
@@ -265,12 +269,14 @@ func (m *model) refresh() {
 			*c = 0
 		}
 	}
+	latest, _ := availableUpdate()
 	m.health = healthSnapshot{
-		db:    m.engine.DBRunning(),
-		http:  portOpen(DefaultHTTPPort),
-		https: portOpen(DefaultHTTPSPort),
-		api:   portOpen(DefaultAPIPort),
-		front: FrontKind(m.store),
+		db:     m.engine.DBRunning(),
+		http:   portOpen(DefaultHTTPPort),
+		https:  portOpen(DefaultHTTPSPort),
+		api:    portOpen(DefaultAPIPort),
+		front:  FrontKind(m.store),
+		update: latest,
 	}
 }
 
@@ -308,7 +314,23 @@ func refreshTick() tea.Cmd {
 	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshMsg{} })
 }
 
-func (m model) Init() tea.Cmd { return refreshTick() }
+func (m model) Init() tea.Cmd { return tea.Batch(refreshTick(), staleUpdateCheck()) }
+
+// staleUpdateCheck asks GitHub once, off the UI loop, when no daemon has
+// lately: the dashboard is often the longest-lived process on a machine
+// where the daemon is not. A fresh cache, or a dev build, means no request.
+func staleUpdateCheck() tea.Cmd {
+	if Version == "dev" {
+		return nil
+	}
+	if c := readUpdateCache(); c != nil && time.Since(c.CheckedAt) < updateCacheStale {
+		return nil
+	}
+	return func() tea.Msg {
+		checkForUpdate()
+		return refreshMsg{}
+	}
+}
 
 func (m *model) setMsg(s string, isErr bool) { m.msg = s; m.msgErr = isErr }
 
@@ -692,6 +714,26 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.mode = modeHelp
 		return m, nil
+	case "u":
+		// Offered in the header only while a release is out; pressing it
+		// otherwise says so rather than doing nothing. The daemon hands over on
+		// its own once the binary is swapped; this dashboard stays the old
+		// build until it is reopened.
+		if m.health.update == "" {
+			m.setMsg("no newer release known — "+Version+" is current", false)
+			return m, nil
+		}
+		if self, _ := os.Executable(); managedByHomebrew(self) {
+			m.setMsg("this binary is Homebrew's: brew upgrade "+AppName, false)
+			return m, nil
+		}
+		return m.runAction("updating to "+strings.TrimPrefix(m.health.update, "v"), func(cb func(stage, detail string)) (string, error) {
+			v, err := SelfUpdate(func(stage string) { cb("update", stage) })
+			if err != nil {
+				return "", err
+			}
+			return "installed " + v + " — reopen " + AppName + " to run it", nil
+		})
 	}
 
 	switch m.tab {
@@ -1473,6 +1515,12 @@ func (m model) View() string {
 // the normal state is one word — and the exception names itself.
 func (m model) viewHeader(w int) string {
 	left := stName.Render("AGENT-LOCAL") + stDim.Render("  "+Version)
+	// A release being out sits next to the version it would replace, with the
+	// key that installs it. Quiet otherwise: no "up to date" to read past.
+	if m.health.update != "" {
+		left += stDim.Render("  · ") + lipgloss.NewStyle().Foreground(cAmber).Render(strings.TrimPrefix(m.health.update, "v")+" available") +
+			stDim.Render(" — ") + stKey.Render("u")
+	}
 
 	front := m.health.front
 	if front == "" {

@@ -36,6 +36,27 @@ func Doctor(store *Store) *DoctorReport {
 	// OS
 	add(Finding{Check: "platform", Status: "ok", Detail: runtime.GOOS + "/" + runtime.GOARCH})
 
+	// The build in memory against the one serving and the one published. A
+	// daemon behind its own binary is a moment under launchd (it hands over
+	// by itself) and forever anywhere else; a release being out is the thing
+	// nobody would otherwise find out. The daemon keeps the release cache a
+	// day fresh; only when it is older than that does doctor go and look.
+	if portOpen(DefaultAPIPort) {
+		if data, isErr := apiGet("/status"); !isErr {
+			if m, ok := data.(map[string]interface{}); ok {
+				if f := daemonFinding(Version, fmt.Sprint(m["version"])); f != nil {
+					add(*f)
+				}
+			}
+		}
+	}
+	if latest, _ := availableUpdateFresh(3 * time.Second); latest != "" {
+		self, _ := os.Executable()
+		add(updateFinding(Version, latest, managedByHomebrew(self)))
+	} else if Version != "dev" && readUpdateCache() != nil {
+		add(Finding{Check: "update", Status: "ok", Detail: Version + " is the latest release"})
+	}
+
 	// brew
 	if store.Inventory().Brew == "" {
 		add(Finding{Check: "homebrew", Status: "fail", Detail: "not installed",
@@ -482,6 +503,15 @@ func DoctorFix(store *Store, interactive bool) []string {
 			continue
 		}
 		switch {
+		case f.Check == "update":
+			// The binary is swapped here; the daemon notices and hands over on
+			// its own. Whatever process ran this fix is still the old build
+			// until it is started again.
+			if v, err := SelfUpdate(nil); err != nil {
+				done = append(done, fmt.Sprintf("failed: update: %v", err))
+			} else {
+				done = append(done, "installed "+v+" — the daemon picks it up by itself; start "+AppName+" again to run it here")
+			}
 		case f.Check == "dns-orphans":
 			orphans := orphanHostsEntries(store)
 			if err := RemoveHosts(interactive, orphans); err != nil {

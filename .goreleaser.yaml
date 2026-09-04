@@ -44,7 +44,12 @@ universal_binaries:
       # Ad-hoc signature. Without it macOS kills the binary on some machines
       # (AMFI rejects an unsigned arm64 Mach-O), and `lipo` output is unsigned
       # by construction. Requires a macOS runner — see .github/workflows/release.yml.
-      post: codesign -f -s - "{{ .Path }}"
+      #
+      # The identifier is fixed on purpose. macOS keys folder-access consent
+      # (Documents, Desktop, Downloads) on it: with codesign's default of
+      # "agent-local-<hash>" every release was a new app that had to ask again,
+      # and the daemon sat on the dialog. Same identifier, consent carries over.
+      post: codesign -f -s - -i local.agent-local "{{ .Path }}"
 
 archives:
   - id: default
