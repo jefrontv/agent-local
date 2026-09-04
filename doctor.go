@@ -125,7 +125,7 @@ func Doctor(store *Store) *DoctorReport {
 		add(Finding{Check: "sudo", Status: "warn", Detail: "sudo allowlist predates this release — re-run agent-local sudo once",
 			FixCmd: "agent-local sudo", FixRoot: true})
 	default:
-		add(Finding{Check: "sudo", Status: "ok", Detail: "passwordless root for hosts, alias, front"})
+		add(Finding{Check: "sudo", Status: "ok", Detail: "passwordless root for hosts, alias, front, cert trust"})
 	}
 
 	// per-site + per-worktree hosts entries
