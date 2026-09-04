@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -230,11 +231,27 @@ func RunDaemon(background bool) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+	// Bind synchronously and fail the boot if it does not take. Binding
+	// inside the serve goroutine let a daemon whose API port was still held
+	// by its predecessor log one line and then sit there for its whole life
+	// with no API: launchd saw a healthy process, agents saw connection
+	// refused, and nothing ever restarted it. A failed boot is what launchd
+	// knows how to handle.
+	apiLn, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		return fmt.Errorf("api: %w", err)
+	}
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(apiLn); err != nil && err != http.ErrServerClosed {
 			log.Printf("api: %v", err)
 		}
 	}()
+	// A bound socket is not a serving one. Dial our own API before claiming
+	// to be up; a listener the kernel accepted but nobody can reach means
+	// this process is useless and should exit so launchd tries again.
+	if err := waitPort(DefaultAPIPort, 5*time.Second); err != nil {
+		return fmt.Errorf("api bound but unreachable on :%d — exiting for launchd to retry", DefaultAPIPort)
+	}
 
 	log.Printf("agent-local daemon: http :%d https :%d api :%d", DefaultHTTPPort, DefaultHTTPSPort, DefaultAPIPort)
 
