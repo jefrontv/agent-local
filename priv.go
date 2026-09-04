@@ -58,15 +58,16 @@ func sudoAllowlist() string {
 }
 
 // allowlistCurrent reports whether a `sudo -n -l` listing covers this
-// release's scoped writes. A general NOPASSWD grant covers everything;
-// otherwise the tee entry for /etc/hosts marks the current template. An
-// older allowlist (staged-file cp entries, cert-trust wildcard) fails this
-// even though its own entries still pass.
+// release's scoped operations. A general NOPASSWD grant covers everything;
+// otherwise the template's newest entry — cert trust against the fixed
+// staging path — marks it current. Anything older (staged-file cp entries,
+// the cert-trust wildcard, or the 0.22.x template that dropped cert trust
+// entirely) fails this even though its own entries still pass.
 func allowlistCurrent(listing string) bool {
 	if strings.Contains(listing, "NOPASSWD: ALL") {
 		return true
 	}
-	return strings.Contains(listing, "/usr/bin/tee /etc/hosts")
+	return strings.Contains(listing, "add-trusted-cert") && strings.Contains(listing, trustStagePath)
 }
 
 // quoteForOsascript renders argv for `do shell script`: each arg becomes a

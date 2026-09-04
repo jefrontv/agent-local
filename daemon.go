@@ -845,8 +845,10 @@ func (a *APIServer) handleCertStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCertTrust issues the cert if absent, then trusts it. Non-interactive:
-// the sudoers allowlist installed by `agent-local sudo` covers the keychain
-// write, so a daemon-side call cannot land on an invisible password prompt.
+// a background daemon has nowhere to show a password prompt, so this path
+// works only through the scoped allowlist `agent-local sudo` installs. When
+// that is missing the error says so and names the CLI command, which a GUI
+// integrator can run as a child of its own process to get the dialog.
 func (a *APIServer) handleCertTrust(w http.ResponseWriter, r *http.Request) {
 	domain := r.PathValue("domain")
 	if !ValidDomain(domain) {
@@ -859,7 +861,7 @@ func (a *APIServer) handleCertTrust(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := TrustCert(cert, false); err != nil {
-		fail(w, 500, "trust failed (run `agent-local sudo` once to allow this without a prompt): "+err.Error())
+		fail(w, 500, err.Error())
 		return
 	}
 	ok(w, InspectCert(domain))

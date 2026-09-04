@@ -1521,6 +1521,12 @@ func cmdAlias(args []string) error {
 // cmdSudoSetup installs a scoped sudoers drop-in so all future root
 // operations (hosts writes, pf/alias setup, cert trust) run via `sudo -n`
 // silently — no more osascript dialogs. One authorization installs it.
+//
+// Cert trust is allowed on one fixed, root-owned staging path only. The
+// content reaches that path through `tee` on stdin (the same TOCTOU-free
+// route the hosts file uses), so nothing else can swap the bytes in, and the
+// trust command names the path exactly — not a wildcard. The earlier
+// `add-trusted-cert *` entry let any local process trust any certificate.
 func cmdSudoSetup() error {
 	user := os.Getenv("USER")
 	dst := "/Library/LaunchDaemons/local.agent-local.front.plist"
@@ -1538,7 +1544,9 @@ func cmdSudoSetup() error {
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 inet6 fd00\:a10c\:\:2 prefixlen 128 alias
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 inet6 fd00\:a10c\:\:2 -alias
 %[1]s ALL=(root) NOPASSWD: /sbin/pfctl -d
-`, user, dst)
+%[1]s ALL=(root) NOPASSWD: /usr/bin/tee %[3]s
+%[1]s ALL=(root) NOPASSWD: /usr/bin/security add-trusted-cert -d -r trustRoot -p ssl -k /Library/Keychains/System.keychain %[3]s
+`, user, dst, trustStagePath)
 	tmp := P().Run() + "/sudoers.agent-local"
 	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
 		return err
@@ -1560,7 +1568,7 @@ if /usr/sbin/visudo -cf "$stage"; then mv "$stage" /etc/sudoers.d/agent-local; e
 	}
 	outTitle(AppName, "sudo")
 	outStep("installed /etc/sudoers.d/agent-local; root operations run without a prompt")
-	outNote("exact commands only: hosts, the loopback alias, the front daemon; cert trust always prompts")
+	outNote("exact commands only: hosts, the loopback alias, the front daemon, and trusting our own certs via one fixed path")
 	outHint("remove", "sudo rm /etc/sudoers.d/agent-local")
 	return nil
 }

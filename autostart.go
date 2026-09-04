@@ -49,8 +49,13 @@ func EnsureDaemonAutostart() error {
 	want := daemonPlist(bin)
 	if cur, err := os.ReadFile(path); err == nil && string(cur) == want {
 		// Already correct. Make sure it is actually loaded, in case the plist
-		// survived but the job was unloaded.
-		loadDaemonAgent(path)
+		// survived but the job was unloaded — but only then. Reloading a job
+		// that is already loaded boots out its running process, and this is
+		// called from every CLI and MCP invocation: it was restarting the
+		// daemon on every single tool call.
+		if !daemonAgentLoaded() {
+			loadDaemonAgent(path)
+		}
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -61,6 +66,13 @@ func EnsureDaemonAutostart() error {
 	}
 	loadDaemonAgent(path)
 	return nil
+}
+
+// daemonAgentLoaded reports whether launchd has the agent in this GUI
+// session. `launchctl print` exits 0 for a loaded label and non-zero (113)
+// for an unknown one.
+func daemonAgentLoaded() bool {
+	return runCmdQuiet("launchctl", "print", fmt.Sprintf("gui/%d/%s", os.Getuid(), daemonAgentLabel)) == nil
 }
 
 // loadDaemonAgent (re)loads the agent for this GUI session. Best-effort: a
