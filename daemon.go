@@ -250,9 +250,18 @@ func RunDaemon(background bool) error {
 	// the mu-plugins they left, so no site keeps mapping a dead share host.
 	SweepShares(store)
 
-	// Bring back whatever was running before the machine went down — sites and
-	// their branch previews. Concurrently: each pool boot is about a second, and
-	// eight of them in series is a boot nobody waits for.
+	// Bring back whatever was running before the machine went down — the
+	// database first, then sites and their branch previews. The database is
+	// shared, so nothing per-site owns bringing it up: pools that restored
+	// without it served WordPress's "error establishing a database
+	// connection" on every site until someone happened to run a command that
+	// went through EnsureDB. Only when there is something to serve; a machine
+	// with no sites has no reason to run mysqld.
+	if len(store.Sites()) > 0 {
+		if err := e.EnsureDB(); err != nil {
+			log.Printf("database: %v", err)
+		}
+	}
 	restored := restoreRunning(e, store)
 	if restored > 0 {
 		log.Printf("restored %d pool(s) that were running before shutdown", restored)
