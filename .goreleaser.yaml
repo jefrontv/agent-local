@@ -139,9 +139,6 @@ homebrew_casks:
     commit_author:
       name: goreleaser
       email: noreply@github.com
-    url:
-      # Marks the download host as intentional for this cask.
-      verified: github.com/jefrontv/agent-local/
     hooks:
       post:
         # The binary is ad-hoc signed, not notarized, so a downloaded copy
