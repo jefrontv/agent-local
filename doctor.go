@@ -354,11 +354,20 @@ func Doctor(store *Store) *DoctorReport {
 	// stopped short. Both are what an import rewrites, so --fix finishes the
 	// job. The database is asked once for every site, and only while it is up.
 	{
-		var stored map[string][]string
-		if e.DBRunning() {
-			stored = e.storedHostsAll(store.Sites())
-		}
+		// WordPress only: the pins live in wp-config.php and the hosts in the
+		// options table; another app has neither, and the DB query would
+		// look for a table that is not there.
+		var wpSites []*Site
 		for _, site := range store.Sites() {
+			if site.IsWordPress() {
+				wpSites = append(wpSites, site)
+			}
+		}
+		var stored map[string][]string
+		if e.DBRunning() && len(wpSites) > 0 {
+			stored = e.storedHostsAll(wpSites)
+		}
+		for _, site := range wpSites {
 			var dbHosts []string
 			for _, h := range stored[site.Slug] {
 				if !site.ownsHost(h) {

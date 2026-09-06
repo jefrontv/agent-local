@@ -235,7 +235,7 @@ func mcpTools() []mcpTool {
 			"title":       prop("string", "site title"),
 			"async":       prop("boolean", "return a job id immediately and poll get_job instead of waiting"),
 		}, "name")},
-		{"attach_site", "Serve a directory that already exists as a site, with its own empty database. The caller's files are left alone: an existing wp-config.php is kept, and one is written only when WordPress core is present with no config at all. Use create_site for a fresh install, import_site when a database should be copied too.", schema(map[string]interface{}{
+		{"attach_site", "Serve a directory that already exists as a site, with its own empty database. Works for any PHP app — the kind (wordpress, joomla, laravel, drupal, php, empty) is detected and returned in the site record; WordPress-only tools (wp_cli, wp_info, magic_login, set_wp_debug, wp-config constants) answer 409 for other kinds. The caller's files are left alone: an existing wp-config.php is kept, and one is written only when WordPress core is present with no config at all; other apps get the database credentials to paste into their own config. Use create_site for a fresh WordPress install, import_site when a WordPress database should be copied too.", schema(map[string]interface{}{
 			"dir":         prop("string", "absolute path to the directory to serve; created if missing"),
 			"name":        prop("string", "site name (default: the directory's own name)"),
 			"domain":      prop("string", "local domain (default: slug + configured suffix)"),

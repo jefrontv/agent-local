@@ -220,7 +220,7 @@ func (e *Engine) WPInfo(site *Site) (*wpInfo, error) {
 // agents that need to know what's actually installed and active, not just
 // whether the site answers HTTP requests.
 func (a *APIServer) handleWPInfo(w http.ResponseWriter, r *http.Request) {
-	site := a.requireSite(w, r)
+	site := a.requireWordPress(w, r, "wp_info")
 	if site == nil {
 		return
 	}

@@ -153,10 +153,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.proxyFCGI(w, req, wpdir, sock, host)
 }
 
-// uploadsPrefix is the one path a media fallback applies to. Scoping it here
-// rather than to any missing file keeps genuine 404s visible.
-const uploadsPrefix = "/wp-content/uploads/"
-
 // serveMediaFallback redirects a missing upload to the site's configured origin,
 // which is what the Apache-only ".htaccess" rewrite does on production hosts:
 //
@@ -165,16 +161,22 @@ const uploadsPrefix = "/wp-content/uploads/"
 //
 // It is a redirect, not a proxy: the browser fetches from the origin, so nothing
 // is cached or rewritten locally and the behaviour matches the .htaccess exactly.
+// Scoped to the app's uploads path (per Site.Kind) rather than any missing
+// file, so genuine 404s stay visible.
 func (r *Router) serveMediaFallback(w http.ResponseWriter, req *http.Request, host, wpdir string) bool {
+	site := r.engine.Store.FindSiteByDomain(host)
+	if site == nil {
+		return false
+	}
+	prefix := site.Kind.UploadsPrefix()
+	if prefix == "" {
+		return false
+	}
 	// Normalise first, then decide: "/wp-content/uploads/../../../etc/passwd"
 	// starts with the uploads prefix but is not an upload, and sending a browser
 	// to the origin for it is neither useful nor honest.
 	clean := filepath.Clean("/" + req.URL.Path)
-	if !strings.HasPrefix(clean, uploadsPrefix) {
-		return false
-	}
-	site := r.engine.Store.FindSiteByDomain(host)
-	if site == nil {
+	if !strings.HasPrefix(clean, prefix) {
 		return false
 	}
 	origin := EffectiveMediaFallback(site)

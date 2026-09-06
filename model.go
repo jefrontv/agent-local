@@ -33,12 +33,20 @@ const (
 	StateError   SiteState = "error"
 )
 
-// Site is one managed WordPress install. Worktrees hang off it.
+// Site is one managed PHP site — WordPress by default, and the origin of
+// every WordPress-specific tool here, but the serving layer is generic PHP
+// and a Joomla, Laravel or plain-PHP docroot attaches the same way.
 type Site struct {
-	Name       string    `json:"name"`
-	Slug       string    `json:"slug"`
-	WorkDir    string    `json:"work_dir"`    // git repo root (contains .git + wp/)
-	WPDir      string    `json:"wp_dir"`      // wordpress root (worktree path for branches)
+	Name    string `json:"name"`
+	Slug    string `json:"slug"`
+	WorkDir string `json:"work_dir"` // git repo root (contains .git + wp/)
+	WPDir   string `json:"wp_dir"`   // docroot: the directory served (worktree path for branches)
+	// Kind is the application in the docroot, detected at attach/create and
+	// re-detected on demand: it decides which tools apply (wp_info, login,
+	// wpdebug and checkpoint are WordPress-only) and which uploads prefix the
+	// media fallback watches. Empty means "never detected" and reads as
+	// WordPress, which is what every site predating this field is.
+	Kind       AppKind   `json:"kind,omitempty"`
 	Branch     string    `json:"branch"`      // git branch checked out at WorkDir
 	Repo       string    `json:"repo"`        // clone URL, empty = locally created
 	PHPVersion string    `json:"php_version"` // e.g. "8.2"

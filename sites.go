@@ -109,6 +109,7 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 		HTTPSPort:  DefaultHTTPSPort,
 		CreatedAt:  time.Now(),
 		State:      StateStopped,
+		Kind:       KindWordPress,
 		Installed:  true,
 	}
 
@@ -293,11 +294,13 @@ func (e *Engine) AttachSite(o AttachOpts) (*Site, error) {
 			branch = b
 		}
 	}
+	kind := DetectKind(docroot)
 	site := &Site{
 		Name:       name,
 		Slug:       slug,
 		WorkDir:    dir,
 		WPDir:      docroot,
+		Kind:       kind,
 		Branch:     branch,
 		PHPVersion: o.PHPVer,
 		DBName:     "al_" + slug,
@@ -319,6 +322,11 @@ func (e *Engine) AttachSite(o AttachOpts) (*Site, error) {
 	// wp-config.php is the only thing between them and a working install.
 	cfg := filepath.Join(docroot, "wp-config.php")
 	switch {
+	case kind != KindWordPress && kind != KindEmpty:
+		// Another app: its own config, its own conventions. The credentials
+		// are in the site record; say where they go.
+		cb("config", fmt.Sprintf("%s site — point its database config at %s / %s on 127.0.0.1:%d (agent-local db %s shows the password)",
+			kind.Label(), site.DBName, site.DBUser, DefaultDBPort, slug))
 	case fileExists(cfg):
 		cb("config", "keeping the existing wp-config.php")
 		// Theirs to keep, but a WP_HOME pointing at the machine it came from
@@ -334,7 +342,7 @@ func (e *Engine) AttachSite(o AttachOpts) (*Site, error) {
 			return nil, err
 		}
 	default:
-		cb("config", "no wordpress here yet — database is ready when you are")
+		cb("config", "no app here yet — database is ready when you are")
 	}
 	site.State = StateRunning
 	e.Store.PutSite(site)
@@ -538,14 +546,29 @@ func DirUsable(dir string) bool {
 	return len(ents) == 0
 }
 
+// docrootSubdirs are the nesting conventions a checkout uses for its served
+// directory, most specific first.
+var docrootSubdirs = []string{"wp", filepath.Join("app", "public"), "public", "web", "www", "htdocs", "public_html"}
+
 // DocrootFor finds the directory that should be served for a checkout: the path
-// itself when WordPress is right there, else the usual nesting conventions.
+// itself when an app is right there, else the usual nesting conventions.
+// WordPress is preferred at every level so a repo holding both a wp/ and a
+// public/ keeps resolving the way it always did; then any subdirectory with
+// an index.php (Joomla, Laravel's public/, a plain PHP site) counts.
 func DocrootFor(dir string) string {
 	if fileExists(filepath.Join(dir, "wp-load.php")) {
 		return dir
 	}
-	for _, sub := range []string{"wp", filepath.Join("app", "public"), "public", "web", "www", "htdocs", "public_html"} {
+	for _, sub := range docrootSubdirs {
 		if fileExists(filepath.Join(dir, sub, "wp-load.php")) {
+			return filepath.Join(dir, sub)
+		}
+	}
+	if fileExists(filepath.Join(dir, "index.php")) {
+		return dir
+	}
+	for _, sub := range docrootSubdirs {
+		if fileExists(filepath.Join(dir, sub, "index.php")) {
 			return filepath.Join(dir, sub)
 		}
 	}

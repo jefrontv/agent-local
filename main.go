@@ -450,6 +450,7 @@ func cmdAttach(args []string) error {
 	outBlank()
 	outRow("url", BareURL(site))
 	outRow("docroot", site.WPDir)
+	outRow("app", site.Kind.Label())
 	outRow("php", site.PHPVersion)
 	outRow("db", fmt.Sprintf("%s  %s", site.DBName, dimf(fmt.Sprintf("%s / %s @ 127.0.0.1:%d", site.DBUser, site.DBPass, DefaultDBPort))))
 	outHint("next", AppName+" open "+site.Slug)

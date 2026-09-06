@@ -221,7 +221,7 @@ func (e *Engine) RemoveWPConstant(site *Site, name string) (bool, error) {
 
 // handleWPConstants lists every define() in a site's wp-config.php.
 func (a *APIServer) handleWPConstants(w http.ResponseWriter, r *http.Request) {
-	site := a.requireSite(w, r)
+	site := a.requireWordPress(w, r, "wp-config constants")
 	if site == nil {
 		return
 	}
@@ -243,7 +243,7 @@ type setWPConstReq struct {
 // handleSetWPConstant sets, updates, or removes a single wp-config.php
 // constant.
 func (a *APIServer) handleSetWPConstant(w http.ResponseWriter, r *http.Request) {
-	site := a.requireSite(w, r)
+	site := a.requireWordPress(w, r, "wp-config constants")
 	if site == nil {
 		return
 	}

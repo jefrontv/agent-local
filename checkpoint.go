@@ -62,10 +62,24 @@ func sanitizeCheckpointLabel(label string) string {
 	return s
 }
 
-// checkpointScopeDir resolves which directory a scope covers.
+// checkpointScopeDir resolves which directory a scope covers. An empty scope
+// means "the app's user content": wp-content for WordPress, the whole docroot
+// for anything else, since no other app keeps its mutable tree in one
+// conventional place. Asking for wp-content on a non-WordPress site is an
+// error rather than a snapshot of a directory that is not there.
 func checkpointScopeDir(site *Site, scope string) (string, error) {
+	if scope == "" {
+		if site.IsWordPress() {
+			scope = "wp-content"
+		} else {
+			scope = "all"
+		}
+	}
 	switch scope {
-	case "", "wp-content":
+	case "wp-content":
+		if !site.IsWordPress() {
+			return "", notWordPress(site, "checkpoint scope wp-content (use --scope all)")
+		}
 		return filepath.Join(site.WPDir, "wp-content"), nil
 	case "all":
 		return site.WPDir, nil
@@ -102,8 +116,10 @@ func (e *Engine) Checkpoint(slug, label, scope string) (*CheckpointInfo, error) 
 	if site == nil {
 		return nil, fmt.Errorf("no such site: %s", slug)
 	}
-	if scope == "" {
+	if scope == "" && site.IsWordPress() {
 		scope = "wp-content"
+	} else if scope == "" {
+		scope = "all"
 	}
 	src, err := checkpointScopeDir(site, scope)
 	if err != nil {

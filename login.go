@@ -186,7 +186,7 @@ func (e *Engine) MagicLogin(site *Site, user string) (*LoginLink, error) {
 // handleMagicLogin issues a one-time login link for a site.
 // POST /sites/{slug}/login  body {"user": "admin"}  (user optional)
 func (a *APIServer) handleMagicLogin(w http.ResponseWriter, r *http.Request) {
-	site := a.requireSite(w, r)
+	site := a.requireWordPress(w, r, "magic login")
 	if site == nil {
 		return
 	}

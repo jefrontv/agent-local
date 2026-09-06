@@ -326,6 +326,7 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 		HTTPSPort:  DefaultHTTPSPort,
 		CreatedAt:  time.Now(),
 		State:      StateStopped,
+		Kind:       KindWordPress,
 	}
 
 	// Database stage: serve-only keeps whatever wp-config already points at.

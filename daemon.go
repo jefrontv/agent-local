@@ -496,7 +496,7 @@ func (a *APIServer) routes() *http.ServeMux {
 // ~/.agent-local/logs/wp-<slug>.log, which get_logs can then tail by the
 // returned log_name.
 func (a *APIServer) handleWPDebug(w http.ResponseWriter, r *http.Request) {
-	site := a.requireSite(w, r)
+	site := a.requireWordPress(w, r, "wp-debug")
 	if site == nil {
 		return
 	}
@@ -1050,6 +1050,32 @@ func (a *APIServer) requireSite(w http.ResponseWriter, r *http.Request) *Site {
 	return site
 }
 
+// requireWordPress is requireSite plus the kind check every WordPress-only
+// tool needs: wp-cli, wp-config edits, magic login, WP_DEBUG. A Joomla site
+// gets a 409 that names the kind and the tool, so an agent stops retrying
+// instead of reading a wp-config.php error about a file that will never
+// exist. Sites older than the Kind field are WordPress, and a site attached
+// before its files arrived is re-detected on the spot, so installing
+// WordPress into an "empty" attach needs no re-registration.
+func (a *APIServer) requireWordPress(w http.ResponseWriter, r *http.Request, tool string) *Site {
+	site := a.requireSite(w, r)
+	if site == nil {
+		return nil
+	}
+	if site.Kind == KindEmpty {
+		site.Kind = DetectKind(site.WPDir)
+		if site.Kind != KindEmpty {
+			a.store.PutSite(site)
+			_ = a.store.Save()
+		}
+	}
+	if !site.IsWordPress() {
+		fail(w, 409, notWordPress(site, tool).Error())
+		return nil
+	}
+	return site
+}
+
 // publicSites redacts a whole list.
 func publicSites(sites []*Site) []*Site {
 	out := make([]*Site, 0, len(sites))
@@ -1351,9 +1377,8 @@ type wpcliReq struct {
 }
 
 func (a *APIServer) handleWPCLI(w http.ResponseWriter, r *http.Request) {
-	site := a.store.Site(r.PathValue("slug"))
+	site := a.requireWordPress(w, r, "wp-cli")
 	if site == nil {
-		fail(w, 404, "no such site")
 		return
 	}
 	var req wpcliReq
@@ -1369,9 +1394,8 @@ func (a *APIServer) handleWPCLI(w http.ResponseWriter, r *http.Request) {
 // handleWorktreeWPCLI runs wp-cli inside a preview's docroot: same DB and PHP
 // version as the base site, but the branch's code.
 func (a *APIServer) handleWorktreeWPCLI(w http.ResponseWriter, r *http.Request) {
-	site := a.store.Site(r.PathValue("slug"))
+	site := a.requireWordPress(w, r, "wp-cli")
 	if site == nil {
-		fail(w, 404, "no such site")
 		return
 	}
 	wt, okw := a.store.Data.Worktrees[r.PathValue("id")]
