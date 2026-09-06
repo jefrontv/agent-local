@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0e0e0c">
-<meta name="description" content="WP_DEBUG with the ritual removed, every log in one place, and a doctor that names the exact command that fixes what it finds.">
+<meta name="description" content="One call that says what is wrong with a site, WP_DEBUG with the ritual removed, every log in one place, and a doctor that names the exact command that fixes what it finds.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://al.tools.efront.dev/docs/debugging/">
 <meta property="og:title" content="Debugging &amp; health · agent-local docs">
-<meta property="og:description" content="WP_DEBUG with the ritual removed, every log in one place, and a doctor that names the exact command that fixes what it finds.">
+<meta property="og:description" content="One call that says what is wrong with a site, WP_DEBUG with the ritual removed, every log in one place, and a doctor that names the exact command that fixes what it finds.">
 <link rel="canonical" href="https://al.tools.efront.dev/docs/debugging/">
 <meta property="og:image" content="https://al.tools.efront.dev/assets/og-image.png">
 <meta property="og:image:width" content="1200">
@@ -81,7 +81,7 @@ img:is([sizes=auto i],[sizes^="auto," i]){contain-intrinsic-size:3000px 1500px}
 	<div class="docs__head">
 		<p class="label"><span class="lamp" aria-hidden="true"></span>documentation</p>
 		<h1 class="docs__title">Debugging &amp; health</h1>
-		<p class="docs__intro">WP_DEBUG with the ritual removed, every log in one place, and a doctor that names the exact command that fixes what it finds.</p>
+		<p class="docs__intro">One call that says what is wrong with a site, WP_DEBUG with the ritual removed, every log in one place, and a doctor that names the exact command that fixes what it finds.</p>
 	</div>
 
 	<div class="docs__body">
@@ -110,9 +110,13 @@ img:is([sizes=auto i],[sizes^="auto," i]){contain-intrinsic-size:3000px 1500px}
 					</nav>
 
 		<article class="docs__page">
-			<h2>WP_DEBUG</h2><pre class="docs__pre"><code>agent-local wpdebug SLUG on
+			<h2>When a site &quot;doesn&#039;t work&quot;</h2><pre class="docs__pre"><code>agent-local probe SLUG         # requests /, wp-login, wp-admin, wp-json and an asset through the real stack
+agent-local errors SLUG --since 1h   # deduplicated PHP errors: level, message, file:line, count
+agent-local wpinfo SLUG        # version, URLs vs served domain, plugins, theme, debug state
+agent-local login SLUG         # a one-time URL straight into wp-admin, no password</code></pre><p><code>probe</code> returns each status, redirect target, timing, body size and the PHP errors logged during that request, then gives one verdict: down, fatal, redirecting off-site, blank, slow, or healthy. It is the first thing to run — and the first thing an agent runs, as <code>probe_site</code>.</p><h2>WP_DEBUG</h2><pre class="docs__pre"><code>agent-local wpdebug SLUG on
 # log → ~/.agent-local/logs/wp-SLUG.log, display kept off
-agent-local logs wp-SLUG 40</code></pre><h2>Logs</h2><pre class="docs__pre"><code>agent-local logs mysql | apache | daemon | fpm-SLUG | wp-SLUG [LINES]</code></pre><h2>Doctor</h2><p><code>agent-local doctor</code> checks the whole stack: runtimes, database, HTTP front, the loopback alias, DNS, certificates, orphans. Every finding reports the exact command that repairs it, and <code>doctor --fix</code> applies every fix — safe ones directly, privileged ones through the sudo allowlist.</p><div class="docs__tablewrap"><table><thead><tr><th>Symptom</th><th>Usual cause and fix</th></tr></thead><tbody><tr><td class="docs__k">site white-screens after <code>brew upgrade</code></td><td>Homebrew unlinked the PHP keg under a running pool — <code>doctor --fix</code> relinks and restarts</td></tr><tr><td class="docs__k">imported site redirects somewhere else</td><td>its database still holds the old domain — <code>wp search-replace old.host SLUG.test --all-tables</code></td></tr><tr><td class="docs__k">bare URLs dead, <code>:1080</code> in every printed URL</td><td>the front daemon or its alias is missing — <code>doctor</code> names it, <code>--fix</code> repairs</td></tr><tr><td class="docs__k">LocalWP will not start</td><td>it pre-checks port 80 — <code>agent-local yield 60</code>, then start it</td></tr></tbody></table></div>			<nav class="docs__next" aria-label="More pages">
+agent-local logs wp-SLUG 40
+agent-local wpconst SLUG SCRIPT_DEBUG true   # any wp-config constant; --remove drops one</code></pre><h2>Logs</h2><pre class="docs__pre"><code>agent-local logs mysql | apache | daemon | fpm-SLUG | wp-SLUG [LINES]</code></pre><h2>Doctor</h2><p><code>agent-local doctor</code> checks the whole stack: runtimes, database, HTTP front, the loopback alias, the sudo allowlist, DNS, certificates, orphans, and every site — stale drop-ins, URLs pinned to another host, recent fatals. Every finding reports the exact command that repairs it, and <code>doctor --fix</code> applies every fix — safe ones directly, privileged ones through the sudo allowlist.</p><div class="docs__tablewrap"><table><thead><tr><th>Symptom</th><th>Usual cause and fix</th></tr></thead><tbody><tr><td class="docs__k">setup stops with &quot;needs root&quot;</td><td>the sudo allowlist is missing, or predates this release — <code>agent-local sudo</code> once, one password dialog</td></tr><tr><td class="docs__k">after an update, static files 403 or plugins fail to load</td><td>the daemon was started without macOS folder access — <code>agent-local restart-daemon</code> hands it to launchd, which has it (fixed for good in 0.22.3)</td></tr><tr><td class="docs__k"><code>db down</code> after a reboot</td><td>the database was not restored at boot — fixed in 0.27.1; <code>agent-local restart-daemon</code> on older builds</td></tr><tr><td class="docs__k">site white-screens after <code>brew upgrade</code></td><td>Homebrew unlinked the PHP keg under a running pool — <code>doctor --fix</code> relinks and restarts</td></tr><tr><td class="docs__k">imported site redirects somewhere else</td><td>a <code>WP_HOME</code> pin or stored URL still names the old host — <code>doctor --fix</code> repoints both</td></tr><tr><td class="docs__k">imported site renders blank, nothing in any log</td><td>a drop-in (<code>advanced-cache.php</code>, <code>object-cache.php</code>) embeds the origin server&#039;s path — <code>doctor</code> names the plugin; <code>--fix</code> regenerates WP Rocket&#039;s</td></tr><tr><td class="docs__k">bare URLs dead, <code>:1080</code> in every printed URL</td><td>the front daemon or its alias is missing — <code>doctor</code> names it, <code>--fix</code> repairs</td></tr><tr><td class="docs__k">LocalWP will not start</td><td>it pre-checks port 80 — <code>agent-local yield 60</code>, then start it</td></tr></tbody></table></div><p class="docs__note">Every daemon restart is a hand-off: the new build takes the ports only once the old one has fully exited, and a daemon that cannot bind or answer its own API exits so launchd can try again rather than sitting there looking healthy.</p>			<nav class="docs__next" aria-label="More pages">
 				<p class="label">Keep reading</p>
 				<div class="docs__nextlinks">
 											<a href="https://al.tools.efront.dev/docs/agents/">Agents<span aria-hidden="true"> →</span></a>

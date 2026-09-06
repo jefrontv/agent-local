@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0e0e0c">
-<meta name="description" content="One Go binary that creates, serves and manages WordPress sites on macOS. No Docker, no prerequisites, and a full agent API.">
+<meta name="description" content="One Go binary that creates, serves and manages local PHP sites on macOS — WordPress end to end, any other PHP app served alongside. No Docker, no prerequisites, and a full agent API.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://al.tools.efront.dev/">
 <meta property="og:title" content="agent-local: local WordPress for humans and agents">
-<meta property="og:description" content="One Go binary for macOS. No Docker, no prerequisites, a site serving in under twenty seconds, and 60 MCP tools for the agents working beside you.">
+<meta property="og:description" content="One Go binary for macOS. No Docker, no prerequisites, a site serving in under twenty seconds, and 73 MCP tools for the agents working beside you.">
 <meta property="og:image" content="https://al.tools.efront.dev/assets/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -101,7 +101,7 @@ img:is([sizes=auto i],[sizes^="auto," i]){contain-intrinsic-size:3000px 1500px}
 			<span class="stat__label">to create a serving site</span>
 		</div>
 				<div class="stat">
-			<span class="stat__value" data-count="60">60</span><span class="stat__unit"></span>
+			<span class="stat__value" data-count="73">73</span><span class="stat__unit"></span>
 			<span class="stat__label">tools in the agent API</span>
 		</div>
 				<div class="stat">
@@ -216,7 +216,7 @@ img:is([sizes=auto i],[sizes^="auto," i]){contain-intrinsic-size:3000px 1500px}
 <!-- statement one -->
 <section class="statement">
 	<h2 class="statement__display rv-scale">NO DOCKER.</h2>
-	<p class="statement__copy">Native processes on real files. Container tools pay the macOS filesystem tax on every request; agent-local lists your sites in 28 milliseconds and serves PHP in 4.6. After a reboot, everything returns on its own.</p>
+	<p class="statement__copy">Native processes on real files. Container tools pay the macOS filesystem tax on every request; agent-local lists your sites in 28 milliseconds and serves PHP in 4.6. After a reboot, everything returns on its own — the database first, then every site that was running.</p>
 </section>
 
 <!-- how it works: the anatomy, with a request walking through it -->
@@ -229,7 +229,7 @@ img:is([sizes=auto i],[sizes^="auto," i]){contain-intrinsic-size:3000px 1500px}
 			<ul class="how__lines">
 				<li><b>tui</b>the dashboard: sites, previews, runtimes, doctor</li>
 				<li><b>cli</b>one command per action, scriptable</li>
-				<li><b>mcp</b>60 tools over stdio, plus the HTTP API</li>
+				<li><b>mcp</b>73 tools over stdio, plus the HTTP API</li>
 			</ul>
 		</div>
 		<div class="how__link how__link--in" aria-hidden="true"><span>http</span><i class="how__pkt"></i></div>
@@ -262,13 +262,13 @@ img:is([sizes=auto i],[sizes^="auto," i]){contain-intrinsic-size:3000px 1500px}
 <!-- statement two: agents -->
 <section class="statement" id="agents">
 	<h2 class="statement__display rv-scale">BUILT FOR AGENTS</h2>
-	<p class="statement__copy">Most local tools assume a person is clicking. agent-local exposes the same engine to you and to Claude, Codex, or anything that speaks MCP. Create, import, snapshot, share, read the mail a form just sent. Failed calls name the fix, and nothing prompts for a password.</p>
+	<p class="statement__copy">Most local tools assume a person is clicking. agent-local exposes the same engine to you and to Claude, Codex, or anything that speaks MCP. Create, import, probe, checkpoint, roll back, read the mail a form just sent. Failed calls name the fix, calls run concurrently, and nothing prompts for a password.</p>
 	<div class="statement__term">
 		<div class="term" aria-hidden="true">
 			<div class="term__bar"><span class="term__lights"><i></i><i></i><i></i></span><span class="term__title">claude — ~/Sites/ferncreek</span></div>
 			<div class="term__viewport"><pre id="term-screen">$ claude</pre></div>
 			<div class="term__input"><span class="term__prompt">&gt;</span><span id="term-input"></span><span class="t-cursor"></span></div>
-			<div class="term__status"><span>? for shortcuts</span><span>agent-local · 60 mcp tools</span></div>
+			<div class="term__status"><span>? for shortcuts</span><span>agent-local · 73 mcp tools</span></div>
 		</div>
 	</div>
 	<p class="label label--center">create · import · snapshot · share · mail · previews</p>
@@ -332,8 +332,18 @@ img:is([sizes=auto i],[sizes^="auto," i]){contain-intrinsic-size:3000px 1500px}
 		</div>
 				<div class="index__row">
 			<span class="index__no">10</span>
+			<h3 class="index__title">Checkpoint, then roll back</h3>
+			<p class="index__body">Database and files saved together under one name before a risky update — a copy-on-write clone, seconds regardless of size. Rollback puts both back and is itself undoable.</p>
+		</div>
+				<div class="index__row">
+			<span class="index__no">11</span>
 			<h3 class="index__title">A doctor that fixes</h3>
-			<p class="index__body">Every health check reports the exact command that repairs it, and doctor --fix applies them all.</p>
+			<p class="index__body">One probe says whether a site is down, fatal, redirecting, blank or slow. Every health check reports the exact command that repairs it, and doctor --fix applies them all.</p>
+		</div>
+				<div class="index__row">
+			<span class="index__no">12</span>
+			<h3 class="index__title">Any PHP app</h3>
+			<p class="index__body">Attach a Joomla, Laravel, Drupal or plain-PHP directory and it gets the same domain, certificate, database and dashboard. WordPress keeps the full toolkit; the rest is told so, plainly.</p>
 		</div>
 			</div>
 </section>
@@ -363,7 +373,7 @@ img:is([sizes=auto i],[sizes^="auto," i]){contain-intrinsic-size:3000px 1500px}
 				</tr>
 							<tr>
 					<th scope="row">Agent control</th>
-					<td class="compare__us">60 MCP tools + HTTP API</td>
+					<td class="compare__us">73 MCP tools + HTTP API</td>
 					<td>none</td>
 					<td>none</td>
 					<td>CLI with JSON output</td>
@@ -426,7 +436,7 @@ img:is([sizes=auto i],[sizes^="auto," i]){contain-intrinsic-size:3000px 1500px}
 				</tr>
 							<tr>
 					<th scope="row">Beyond WordPress</th>
-					<td class="compare__us">WordPress only, on purpose</td>
+					<td class="compare__us">any PHP app; WordPress gets the full toolkit</td>
 					<td>WordPress only</td>
 					<td>any LAMP app</td>
 					<td>Drupal, Laravel, TYPO3</td>

@@ -412,9 +412,17 @@ is attached instead: served as it is, with an empty database of its own. The pro
 names the directory that will be served (`app/public`, `wp`, `public`, `web`,
 `htdocs` and the path itself are all understood) before you commit to anything.
 
-Attaching never touches your files. An existing `wp-config.php` is kept as it is;
-one is written only when WordPress core is sitting there with no config at all, and
-deleting the site removes that config again. Both paths exist on every surface:
+Attaching never touches your files, and the directory need not be WordPress. The
+app is detected from what is in the docroot — `wp-load.php` for WordPress,
+`administrator/` + `configuration.php` for Joomla, `artisan` for Laravel,
+`core/lib/Drupal.php` for Drupal, a bare `index.php` for anything else — and
+recorded as the site's `kind`. A WordPress site keeps an existing `wp-config.php`;
+one is written only when core is sitting there with no config at all, and deleting
+the site removes that config again. Any other app is served front-controller
+style and handed its database credentials to paste into its own config. The
+WordPress-only tools (`wp`, `wpdebug`, `wpconst`, `login`, `wpinfo`) answer
+"this is a Joomla site" rather than failing on a missing `wp-config.php`;
+`checkpoint` on such a site saves the whole docroot. Both paths exist on every surface:
 
 ```sh
 agent-local create mysite                        # into the shared sites directory
@@ -768,20 +776,22 @@ looking hung. To exercise it without a client:
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | agent-local mcp
 ```
 
-60 tools — everything the CLI can do, no shell required:
+73 tools — everything the CLI can do to a site, no shell required:
 
 | Area | Tools |
 |---|---|
 | discovery | `status`, `list_sites`, `get_site`, `localwp_sites`, `ddev_projects`, `resolve_path`, `list_runtimes` |
 | lifecycle | `create_site`, `attach_site`, `import_site`, `start_site`, `stop_site`, `restart_site`, `delete_site` |
-| runtime | `switch_php`, `install_runtime`, `doctor`, `doctor_fix`, `get_http_front`, `set_http_front` |
+| diagnose | `probe_site`, `http_request`, `get_errors`, `wp_info`, `get_logs`, `doctor`, `doctor_fix` |
+| fix & undo | `checkpoint`, `list_checkpoints`, `rollback`, `delete_checkpoint`, `db_search`, `search_replace`, `magic_login` |
+| runtime | `switch_php`, `install_runtime`, `get_http_front`, `set_http_front` |
 | domains | `set_domain`, `get_domain_suffix`, `set_domain_suffix`, `add_hosts_entries`, `remove_hosts_entries`, `cert_status`, `cert_trust` |
-| database | `db_creds`, `db_query`, `db_tables`, `db_import`, `db_export`, `db_reset`, `db_snapshot`, `db_snapshots`, `db_restore` |
+| database | `db_creds`, `db_query`, `db_tables`, `db_import`, `db_export`, `db_reset`, `db_snapshot`, `db_snapshots`, `db_restore`, `open_adminer` |
 | files & media | `get_media_fallback`, `set_media_fallback`, `get_sites_dir`, `set_sites_dir`, `yield_ports` |
-| wordpress | `wp_cli`, `worktree_wp_cli`, `get_wp_debug`, `set_wp_debug`, `open_adminer` |
+| wordpress | `wp_cli`, `worktree_wp_cli`, `get_wp_debug`, `set_wp_debug`, `get_wp_constants`, `set_wp_constant` — `409` for a site that is not WordPress, naming its kind |
 | mail | `list_mail`, `get_mail`, `clear_mail` |
 | previews | `list_branches`, `add_worktree`, `list_worktrees`, `start_worktree`, `stop_worktree`, `remove_worktree` |
-| jobs & sharing | `list_jobs`, `get_job`, `share_local_site`, `unshare_local_site`, `get_logs` |
+| jobs & sharing | `list_jobs`, `get_job`, `share_local_site`, `unshare_local_site` |
 
 Design notes that matter when driving this from an agent:
 

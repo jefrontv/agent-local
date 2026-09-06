@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0e0e0c">
-<meta name="description" content="Every command, as agent-local help prints it. Each command is also an MCP tool with the same name.">
+<meta name="description" content="Every command, as agent-local help prints it. Every site-facing command is also an MCP tool with the same name; the machine-level ones (sudo, alias, connect, update, the daemon) are run by hand.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://al.tools.efront.dev/docs/cli/">
 <meta property="og:title" content="CLI reference · agent-local docs">
-<meta property="og:description" content="Every command, as agent-local help prints it. Each command is also an MCP tool with the same name.">
+<meta property="og:description" content="Every command, as agent-local help prints it. Every site-facing command is also an MCP tool with the same name; the machine-level ones (sudo, alias, connect, update, the daemon) are run by hand.">
 <link rel="canonical" href="https://al.tools.efront.dev/docs/cli/">
 <meta property="og:image" content="https://al.tools.efront.dev/assets/og-image.png">
 <meta property="og:image:width" content="1200">
@@ -81,7 +81,7 @@ img:is([sizes=auto i],[sizes^="auto," i]){contain-intrinsic-size:3000px 1500px}
 	<div class="docs__head">
 		<p class="label"><span class="lamp" aria-hidden="true"></span>documentation</p>
 		<h1 class="docs__title">CLI reference</h1>
-		<p class="docs__intro">Every command, as <code>agent-local help</code> prints it. Each command is also an MCP tool with the same name.</p>
+		<p class="docs__intro">Every command, as <code>agent-local help</code> prints it. Every site-facing command is also an MCP tool with the same name; the machine-level ones (<code>sudo</code>, <code>alias</code>, <code>connect</code>, <code>update</code>, the daemon) are run by hand.</p>
 	</div>
 
 	<div class="docs__body">
@@ -125,9 +125,11 @@ domain SLUG NAME                                    change a site&#039;s domain;
 php SLUG VERSION [--tap]                            switch PHP version, installing it if needed
 resolve [PATH]                                      which site owns a path (default: cwd)</code></pre><h2>Database</h2><pre class="docs__pre"><code>db SLUG                                             connection details
 db SLUG &quot;SQL&quot;                                       run a statement
-db SLUG import FILE.sql[.gz] [--keep-urls]          load a dump; URLs rewritten, snapshot saved first
+db SLUG import FILE.sql[.gz] [--keep-urls]          load a dump; URLs rewritten (WordPress), snapshot saved first
 db SLUG export [FILE]                               dump to a file
 db SLUG reset | tables | gui                        empty it, list tables, or open Adminer
+db SLUG search NEEDLE                               where a string still lives: table, column, count
+db SLUG search-replace OLD NEW [--apply]            replace across every table; a dry run unless --apply
 db SLUG snapshot [NAME]                             save a restore point
 db SLUG snapshots                                   list restore points
 db SLUG restore [NAME]                              restore one (default: newest)</code></pre><h2>Develop</h2><pre class="docs__pre"><code>worktree SLUG BRANCH [--remove]                     serve a git branch on its own URL
@@ -135,11 +137,18 @@ worktrees SLUG                                      list branch previews
 branches SLUG                                       branches of the site&#039;s repo
 wp SLUG -- ARGS                                     run wp-cli against the site
 wpdebug SLUG [on|off]                               WP_DEBUG, logged to ~/.agent-local/logs/wp-SLUG.log
+wpconst SLUG [NAME VALUE | NAME --remove]           read, set or remove wp-config constants
 logs NAME [LINES]                                   tail a log: mysql, apache, daemon, fpm-SLUG, wp-SLUG
 mail SLUG [ID] [--open] [--clear]                   emails the site has sent
 media SLUG [URL | --auto | --off]                   send missing uploads to a production origin
 share SLUG [--minutes N] [--off]                    public URL through a Cloudflare tunnel
-cert DOMAIN [--trust]                               TLS state for a domain; --trust issues and trusts it</code></pre><h2>Agents</h2><pre class="docs__pre"><code>connect [--list | --all | --remove] [HARNESS...]    register the MCP server in Claude Code, Codex, Cursor and friends
+cert DOMAIN [--trust]                               TLS state for a domain; --trust issues and trusts it
+probe SLUG [PATH] [--follow]                        request the site like a browser would; PHP errors and a verdict
+errors SLUG [--since 1h]                            PHP errors from the pool and debug logs, deduplicated
+wpinfo SLUG                                         the WordPress install in one JSON document
+checkpoint SLUG [LABEL] [--scope all] [--list]      save a restore point: database + wp-content
+rollback SLUG CHECKPOINT                            put the site back; what was there is kept aside
+login SLUG [USER] [--open]                          one-time URL straight into wp-admin</code></pre><h2>Agents</h2><pre class="docs__pre"><code>connect [--list | --all | --remove] [HARNESS...]    register the MCP server in Claude Code, Codex, Cursor and friends
 mcp                                                 the MCP server itself (stdio); clients launch this
 mcp --config                                        the client config block, for a client connect doesn&#039;t know
 api-token                                           bearer token for the HTTP API

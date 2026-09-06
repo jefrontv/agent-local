@@ -704,7 +704,9 @@ func (e *Engine) ImportSQL(slug, path string, rewriteURLs, snapshot bool) (strin
 		return "", err
 	}
 	msg := fmt.Sprintf("%simported %s into %s (%d tables)", saved, filepath.Base(path), site.DBName, e.tableCount(site))
-	if !rewriteURLs {
+	// The rewrite reads WordPress's options table and wp-config pins; another
+	// app has neither, so its dump is loaded as-is whatever the flag says.
+	if !rewriteURLs || !site.IsWordPress() {
 		return msg, nil
 	}
 	// Everything the dump or the config still points at, config pins included:

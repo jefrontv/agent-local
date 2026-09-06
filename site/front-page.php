@@ -12,13 +12,13 @@ $defaults = array(
 	'stats'          => array(
 		array( 'value' => '3.2', 'unit' => 'ms', 'label' => 'to serve a static file' ),
 		array( 'value' => '18.8', 'unit' => 's', 'label' => 'to create a serving site' ),
-		array( 'value' => '60', 'unit' => '', 'label' => 'tools in the agent API' ),
+		array( 'value' => '73', 'unit' => '', 'label' => 'tools in the agent API' ),
 		array( 'value' => '0', 'unit' => '', 'label' => 'containers required' ),
 	),
 	'statement_one'       => 'NO DOCKER.',
-	'statement_one_copy'  => 'Native processes on real files. Container tools pay the macOS filesystem tax on every request; agent-local lists your sites in 28 milliseconds and serves PHP in 4.6. After a reboot, everything returns on its own.',
+	'statement_one_copy'  => 'Native processes on real files. Container tools pay the macOS filesystem tax on every request; agent-local lists your sites in 28 milliseconds and serves PHP in 4.6. After a reboot, everything returns on its own — the database first, then every site that was running.',
 	'statement_two'       => 'BUILT FOR AGENTS',
-	'statement_two_copy'  => 'Most local tools assume a person is clicking. agent-local exposes the same engine to you and to Claude, Codex, or anything that speaks MCP. Create, import, snapshot, share, read the mail a form just sent. Failed calls name the fix, and nothing prompts for a password.',
+	'statement_two_copy'  => 'Most local tools assume a person is clicking. agent-local exposes the same engine to you and to Claude, Codex, or anything that speaks MCP. Create, import, probe, checkpoint, roll back, read the mail a form just sent. Failed calls name the fix, calls run concurrently, and nothing prompts for a password.',
 	'features'       => array(
 		array( 'title' => 'Captured mail', 'body' => 'Every email a site sends lands in a local inbox: password resets, form notifications, receipts. Agents can read it and assert on it.' ),
 		array( 'title' => 'Automatic snapshots', 'body' => 'The database is saved before every destructive operation. A snapshot is a plain .sql.gz, and the one taken before a delete survives it.' ),
@@ -29,12 +29,14 @@ $defaults = array(
 		array( 'title' => 'Streaming imports', 'body' => 'A 7 GB LocalWP or DDEV site imports in place with no copy step — DDEV projects move out of Docker entirely. Every stored domain is rewritten, serialized data included.' ),
 		array( 'title' => 'Production media fallback', 'body' => 'Missing uploads redirect to your production origin, honouring the .htaccess rule already in the repo.' ),
 		array( 'title' => 'WP_DEBUG without the ritual', 'body' => 'One flag turns debugging on with the log routed to a file and display kept off. Reproduce, then read the log. An agent does the same in two calls.' ),
-		array( 'title' => 'A doctor that fixes', 'body' => 'Every health check reports the exact command that repairs it, and doctor --fix applies them all.' ),
+		array( 'title' => 'Checkpoint, then roll back', 'body' => 'Database and files saved together under one name before a risky update — a copy-on-write clone, seconds regardless of size. Rollback puts both back and is itself undoable.' ),
+		array( 'title' => 'A doctor that fixes', 'body' => 'One probe says whether a site is down, fatal, redirecting, blank or slow. Every health check reports the exact command that repairs it, and doctor --fix applies them all.' ),
+		array( 'title' => 'Any PHP app', 'body' => 'Attach a Joomla, Laravel, Drupal or plain-PHP directory and it gets the same domain, certificate, database and dashboard. WordPress keeps the full toolkit; the rest is told so, plainly.' ),
 	),
 	'compare_rows'   => array(
 		array( 'label' => 'Runs on', 'agentlocal' => 'native processes', 'localwp' => 'Electron + services', 'mamp' => 'bundled Apache/MySQL', 'ddev' => 'Docker containers' ),
 		array( 'label' => 'Prerequisites', 'agentlocal' => 'none, installs what it needs', 'localwp' => 'app download', 'mamp' => 'app download', 'ddev' => 'Docker Desktop / Colima' ),
-		array( 'label' => 'Agent control', 'agentlocal' => '60 MCP tools + HTTP API', 'localwp' => 'none', 'mamp' => 'none', 'ddev' => 'CLI with JSON output' ),
+		array( 'label' => 'Agent control', 'agentlocal' => '73 MCP tools + HTTP API', 'localwp' => 'none', 'mamp' => 'none', 'ddev' => 'CLI with JSON output' ),
 		array( 'label' => 'New WordPress site', 'agentlocal' => '19 seconds', 'localwp' => 'about a minute', 'mamp' => 'manual setup', 'ddev' => 'fast after first pull' ),
 		array( 'label' => 'Memory for one site', 'agentlocal' => '52 MB', 'localwp' => '601 MB', 'mamp' => 'not measured', 'ddev' => '2.5 GB' ),
 		array( 'label' => 'Trusted HTTPS', 'agentlocal' => 'automatic, every domain', 'localwp' => 'a Trust button per site', 'mamp' => 'by hand', 'ddev' => 'mkcert, once' ),
@@ -43,7 +45,7 @@ $defaults = array(
 		array( 'label' => 'Database snapshots', 'agentlocal' => 'automatic', 'localwp' => 'no', 'mamp' => 'no', 'ddev' => 'manual' ),
 		array( 'label' => 'Public share links', 'agentlocal' => 'verified, no account', 'localwp' => 'account required', 'mamp' => 'no', 'ddev' => 'ngrok / cloudflared' ),
 		array( 'label' => 'Coexists on port 80', 'agentlocal' => 'by design', 'localwp' => 'conflicts', 'mamp' => 'conflicts', 'ddev' => 'conflicts' ),
-		array( 'label' => 'Beyond WordPress', 'agentlocal' => 'WordPress only, on purpose', 'localwp' => 'WordPress only', 'mamp' => 'any LAMP app', 'ddev' => 'Drupal, Laravel, TYPO3' ),
+		array( 'label' => 'Beyond WordPress', 'agentlocal' => 'any PHP app; WordPress gets the full toolkit', 'localwp' => 'WordPress only', 'mamp' => 'any LAMP app', 'ddev' => 'Drupal, Laravel, TYPO3' ),
 	),
 	'install_steps'  => array(
 		array( 'label' => 'install', 'command' => 'brew install jefrontv/tap/agent-local' ),
@@ -197,7 +199,7 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 			<ul class="how__lines">
 				<li><b>tui</b>the dashboard: sites, previews, runtimes, doctor</li>
 				<li><b>cli</b>one command per action, scriptable</li>
-				<li><b>mcp</b>60 tools over stdio, plus the HTTP API</li>
+				<li><b>mcp</b>73 tools over stdio, plus the HTTP API</li>
 			</ul>
 		</div>
 		<div class="how__link how__link--in" aria-hidden="true"><span>http</span><i class="how__pkt"></i></div>
@@ -236,7 +238,7 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 			<div class="term__bar"><span class="term__lights"><i></i><i></i><i></i></span><span class="term__title">claude — ~/Sites/ferncreek</span></div>
 			<div class="term__viewport"><pre id="term-screen">$ claude</pre></div>
 			<div class="term__input"><span class="term__prompt">&gt;</span><span id="term-input"></span><span class="t-cursor"></span></div>
-			<div class="term__status"><span>? for shortcuts</span><span>agent-local · 60 mcp tools</span></div>
+			<div class="term__status"><span>? for shortcuts</span><span>agent-local · 73 mcp tools</span></div>
 		</div>
 	</div>
 	<p class="label label--center">create · import · snapshot · share · mail · previews</p>
