@@ -22,7 +22,7 @@ return array(
 				'**An embedded MariaDB** — one instance, one database per site, snapshots as plain `.sql.gz`.',
 				'**A front daemon** — holds `127.0.0.2:80/443`, so sites answer on `https://name.test` with no port suffix and no warning page.',
 				'**A dashboard, a CLI and an agent API** — the TUI is `agent-local` with no arguments; every site-facing command is also an MCP tool.',
-				'**A tools page on every site** — `https://name.test/.agent-local` links to that site\'s database GUI and captured-mail inbox, in your system\'s light or dark appearance. Local only; a share link never exposes it.',
+				'**A tools page on every site** — `https://name.test/.agent-local`: the database GUI, the captured-mail inbox, the error log, what the site served, and one click into wp-admin. In your system\'s light or dark appearance. Local only; a share link never exposes it.',
 			) ),
 			array( 'h', 'Requirements' ),
 			array( 'ul', array(
@@ -179,6 +179,10 @@ return array(
 			array( 'h', 'When a site "doesn\'t work"' ),
 			array( 'pre', "agent-local probe SLUG         # requests /, wp-login, wp-admin, wp-json and an asset through the real stack\nagent-local errors SLUG --since 1h   # deduplicated PHP errors: level, message, file:line, count\nagent-local wpinfo SLUG        # version, URLs vs served domain, plugins, theme, debug state\nagent-local login SLUG         # a one-time URL straight into wp-admin, no password" ),
 			array( 'p', '`probe` returns each status, redirect target, timing, body size and the PHP errors logged during that request, then gives one verdict: down, fatal, redirecting off-site, blank, slow, or healthy. It is the first thing to run — and the first thing an agent runs, as `probe_site`.' ),
+			array( 'h', 'The request log' ),
+			array( 'p', 'Every site\'s tools page carries the two views a browser cannot give you: `https://SLUG.test/.agent-local/errors` — the deduplicated error list over 15m, 1h, 24h or 7d — and `/.agent-local/requests`, what the site actually served. One row per request: method, path, status, how long it took, how big it was, whether it came from disk, PHP, a redirect or the media fallback, and the PHP errors that request logged. The pool log has the errors but not the requests; the browser has the requests but not the errors. Here a blank page is one line with a status, a duration and the fatal behind it.' ),
+			array( 'pre', "clear_requests   # then reproduce the bug\nget_requests     # errors_only: the failing request with its errors attached" ),
+			array( 'note', 'The newest 4096 requests are kept in memory, so a restart starts a fresh log — clear it, reproduce, and what comes back is the bug. Errors are the lines the pool log gained while a request ran, so under simultaneous requests one line can appear on two of them. Only the built-in router records; under the Apache front the page says so.' ),
 			array( 'h', 'WP_DEBUG' ),
 			array( 'pre', "agent-local wpdebug SLUG on\n# log → ~/.agent-local/logs/wp-SLUG.log, display kept off\nagent-local logs wp-SLUG 40\nagent-local wpconst SLUG SCRIPT_DEBUG true   # any wp-config constant; --remove drops one" ),
 			array( 'h', 'Logs' ),
@@ -202,7 +206,7 @@ return array(
 	'agents' => array(
 		'title'  => 'Agents',
 		'kicker' => 'Docs',
-		'intro'  => 'The whole engine is an API. Seventy-three MCP tools over stdio, the same surface over HTTP, no prompts ever — the same calls you type are the calls an agent makes.',
+		'intro'  => 'The whole engine is an API. Seventy-five MCP tools over stdio, the same surface over HTTP, no prompts ever — the same calls you type are the calls an agent makes.',
 		'sections' => array(
 			array( 'h', 'Connect a harness' ),
 			array( 'pre', "agent-local connect                  # Claude Code, Codex, Cursor, Gemini CLI, …\nagent-local connect --list           # what is registered\nagent-local connect --remove codex\nagent-local mcp --config             # the config block, for any other client" ),
@@ -211,7 +215,7 @@ return array(
 			array( 'table', array( 'Area', 'Tools' ), array(
 				array( 'discovery', '`status`, `list_sites`, `get_site`, `localwp_sites`, `ddev_projects`, `resolve_path`, `list_runtimes`' ),
 				array( 'lifecycle', '`create_site`, `attach_site`, `import_site`, `start_site`, `stop_site`, `restart_site`, `delete_site`' ),
-				array( 'diagnose', '`probe_site`, `http_request`, `get_errors`, `wp_info`, `get_logs`, `doctor`, `doctor_fix`' ),
+				array( 'diagnose', '`probe_site`, `http_request`, `get_requests`, `clear_requests`, `get_errors`, `wp_info`, `get_logs`, `doctor`, `doctor_fix`' ),
 				array( 'fix & undo', '`checkpoint`, `list_checkpoints`, `rollback`, `delete_checkpoint`, `db_search`, `search_replace`, `magic_login`' ),
 				array( 'runtime', '`switch_php`, `install_runtime`, `get_http_front`, `set_http_front`' ),
 				array( 'domains', '`set_domain`, `get_domain_suffix`, `set_domain_suffix`, `add_hosts_entries`, `remove_hosts_entries`, `cert_status`, `cert_trust`' ),

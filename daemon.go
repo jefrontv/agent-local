@@ -465,6 +465,7 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("/mail-ui/{id}", a.handleMailUI)
 	mux.HandleFunc("/mail-ui/{id}/{rest...}", a.handleMailUI)
 	mux.HandleFunc("/hub-ui/{id}", a.handleHubUI)
+	mux.HandleFunc("/hub-ui/{id}/{rest...}", a.handleHubUI)
 	mux.HandleFunc("POST /sites/{slug}/share", a.handleShareStart)
 	mux.HandleFunc("GET /sites/{slug}/share", a.handleShareGet)
 	mux.HandleFunc("DELETE /sites/{slug}/share", a.handleShareStop)
@@ -489,6 +490,8 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("POST /sites/{slug}/login", a.handleMagicLogin)
 	mux.HandleFunc("GET /sites/{slug}/wp-config/constants", a.handleWPConstants)
 	mux.HandleFunc("POST /sites/{slug}/wp-config/constant", a.handleSetWPConstant)
+	mux.HandleFunc("GET /sites/{slug}/requests", a.handleRequests)
+	mux.HandleFunc("DELETE /sites/{slug}/requests", a.handleClearRequests)
 	return mux
 }
 
@@ -586,23 +589,37 @@ func (a *APIServer) handleMailUI(w http.ResponseWriter, r *http.Request) {
 	serveMailUI(w, r, id, MailPath, rest, id)
 }
 
-// handleHubUI renders the tooling index for the apache front, whose vhosts
-// ProxyPass the exact /.agent-local path here. Base stays HubPath for the
-// same reason as the inbox: links must work on the browser-facing path.
-// The id is validated like the inbox's — this route skips the token — but
-// unlike mail it never touches disk, it only picks the title.
+// handleHubUI renders the hub and its pages for the apache front, whose
+// vhosts ProxyPass /.agent-local and the pages under it here. Base stays
+// HubPath for the same reason as the inbox: links must work on the
+// browser-facing path. The id is validated like the inbox's — this route
+// skips the token — and resolves to the site whose tooling is being served.
 func (a *APIServer) handleHubUI(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	site, wt := a.store.Site(id), a.store.Data.Worktrees[id]
 	title := id
-	if site := a.store.Site(id); site != nil {
+	switch {
+	case site != nil:
 		title = site.Domain
-	} else if wt := a.store.Data.Worktrees[id]; wt != nil {
+	case wt != nil:
 		title = wt.Domain
-	} else {
+		site = a.store.Site(wt.Site)
+		if site == nil {
+			http.NotFound(w, r)
+			return
+		}
+	default:
 		http.NotFound(w, r)
 		return
 	}
-	serveHubUI(w, HubPath, title)
+	// serveHub dispatches on the browser-facing path, which is what the
+	// proxy preserved below HubPath.
+	rest := r.PathValue("rest")
+	if rest != "" {
+		rest = "/" + rest
+	}
+	r.URL.Path = HubPath + rest
+	serveHub(w, r, a.engine, site, wt, HubPath, title)
 }
 
 type shareReq struct {

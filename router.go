@@ -69,7 +69,9 @@ func (r *Router) ListenAndServe(httpPort, httpsPort int) error {
 }
 
 // ServeHTTP routes by Host header. Static files stream straight from disk;
-// PHP scripts and WordPress permalinks go to the site's php-fpm pool.
+// PHP scripts and WordPress permalinks go to the site's php-fpm pool. Every
+// request that reaches a site is recorded in the request log, which is what
+// the hub's request page and the get_requests tool read.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.engine.Store.ReloadIfChanged()
 	host := req.Host
@@ -99,34 +101,72 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if isAdminerPath(req.URL.Path) || isMailPath(req.URL.Path) || isHubPath(req.URL.Path) {
+	if isAdminerPath(req.URL.Path) || isMailPath(req.URL.Path) || underHub(req.URL.Path) {
 		// A share exposes the site, not its tooling: the database GUI, the
-		// inbox and this index stay local-only.
+		// inbox and the hub pages stay local-only.
 		if shared {
 			http.NotFound(w, req)
 			return
 		}
+		// Adminer and the inbox live under the hub's prefix on longer, more
+		// specific paths, so they are matched first; the hub takes what is
+		// left. None of them are recorded in the request log: they refresh
+		// themselves, and a log full of the log's own requests is useless.
 		if isAdminerPath(req.URL.Path) {
 			r.serveAdminer(w, req, host, wpdir)
 			return
 		}
-		if isHubPath(req.URL.Path) {
-			serveHubUI(w, HubPath, host)
+		if isMailPath(req.URL.Path) {
+			// The inbox is per serving pool, so a preview domain reads the
+			// preview's own test mail rather than muddying the site's.
+			serveMailUI(w, req, fpmID, MailPath, strings.TrimPrefix(req.URL.Path, MailPath), host)
 			return
 		}
-		// The inbox is per serving pool, so a preview domain reads the
-		// preview's own test mail rather than muddying the site's.
-		serveMailUI(w, req, fpmID, MailPath, strings.TrimPrefix(req.URL.Path, MailPath), host)
+		site, wt := r.engine.Store.LookupDomain(host)
+		if site == nil {
+			http.NotFound(w, req)
+			return
+		}
+		serveHub(w, req, r.engine, site, wt, HubPath, host)
 		return
 	}
 
+	sw := &statusWriter{ResponseWriter: w}
+	rec := requestRecord{
+		At: time.Now(), Host: host, Method: req.Method,
+		Path: req.URL.RequestURI(), Shared: shared,
+	}
+	if site, wt := r.engine.Store.LookupDomain(host); site != nil {
+		rec.Site = site.Slug
+		if wt != nil {
+			rec.Worktree = wt.ID
+		}
+	} else if shared {
+		if sh := shares.ForHost(host); sh != nil {
+			rec.Site = sh.Slug
+		}
+	}
+	started := rec.At
+	defer func() {
+		rec.Status, rec.Bytes = sw.code(), sw.bytes
+		rec.Ms = float64(time.Since(started).Microseconds()) / 1000
+		reqlog.add(rec)
+	}()
+	r.serve(sw, req, &rec, host, mediaHost, wpdir, fpmID)
+}
+
+// serve is the request path proper, split out so ServeHTTP owns the
+// recording and each branch below only has to name how it answered.
+func (r *Router) serve(w *statusWriter, req *http.Request, rec *requestRecord, host, mediaHost, wpdir, fpmID string) {
 	// Static fast path: real files that aren't PHP.
 	if req.Method != "POST" && r.serveStatic(w, req, wpdir) {
+		rec.Served = "static"
 		return
 	}
 	// A missing upload goes to the site's media fallback rather than to
 	// WordPress, which would only render a 404 page for an image.
 	if req.Method == "GET" && r.serveMediaFallback(w, req, mediaHost, wpdir) {
+		rec.Served = "media"
 		return
 	}
 	// "/wp-admin" is a directory with its own index.php: add the slash the way
@@ -137,6 +177,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			target += "?" + req.URL.RawQuery
 		}
 		http.Redirect(w, req, target, http.StatusMovedPermanently)
+		rec.Served = "redirect"
 		return
 	}
 
@@ -147,10 +188,18 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// the request pays the ~1s boot, every later one is warm.
 		if err := r.engine.ensurePool(fpmID); err != nil {
 			http.Error(w, "agent-local: site "+host+" could not start: "+err.Error(), http.StatusServiceUnavailable)
+			rec.Served = "error"
 			return
 		}
 	}
+	rec.Served = "php"
+	// The pool log is the only place PHP's own errors land. Reading how far
+	// it had got before the request, and what it gained after, attributes
+	// those lines to this request — the same trick probe uses.
+	poolLog := r.engine.fpmLog(fpmID)
+	from := fileSize(poolLog)
 	r.proxyFCGI(w, req, wpdir, sock, host)
+	rec.PHPErrors = logDelta(poolLog, from)
 }
 
 // serveMediaFallback redirects a missing upload to the site's configured origin,

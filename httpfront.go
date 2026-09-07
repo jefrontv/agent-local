@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -265,10 +266,11 @@ DirectoryIndex index.php index.html
 			// The pool id keys the inbox, so previews keep their own.
 			b.WriteString(fmt.Sprintf("  ProxyPass %s http://127.0.0.1:%d/mail-ui/%s\n  ProxyPassReverse %s http://127.0.0.1:%d/mail-ui/%s\n",
 				MailPath, DefaultAPIPort, id, MailPath, DefaultAPIPort, id))
-			// The tooling index is one exact path, not a subtree: anchor the
-			// regex so the adminer Alias and the inbox ProxyPass above keep
-			// winning their longer, more specific paths.
-			b.WriteString(fmt.Sprintf("  ProxyPassMatch ^/\\.agent-local/?$ http://127.0.0.1:%d/hub-ui/%s\n",
+			// The hub is the index plus the pages this binary renders itself,
+			// not the whole prefix: anchoring the alternatives keeps the
+			// adminer Alias and the inbox ProxyPass above winning their
+			// longer, more specific paths. $1 carries the page through.
+			b.WriteString(fmt.Sprintf("  ProxyPassMatch ^/\\.agent-local(/(?:errors|requests|login))?/?$ http://127.0.0.1:%d/hub-ui/%s$1\n",
 				DefaultAPIPort, id))
 			b.WriteString(fmt.Sprintf(`  <FilesMatch \.php$>
     SetHandler "proxy:unix:%s|fcgi://localhost"
@@ -291,12 +293,19 @@ DirectoryIndex index.php index.html
 	}
 
 	if adminerDir != "" {
-		b.WriteString(fmt.Sprintf(`<Directory "%s">
+		// DirectoryMatch, not Directory: our own lib dir sits under
+		// ~/.agent-local, which the dot-directory deny above matches. Apache
+		// processes every plain <Directory> before any regex section, so a
+		// plain grant here loses to that deny no matter where it appears —
+		// and the database GUI 403s under this front. As a regex section it
+		// is merged after the deny and wins. The path is quoted for the
+		// regex, since a home directory may contain regex metacharacters.
+		b.WriteString(fmt.Sprintf(`<DirectoryMatch "^%s">
   Require all granted
   AllowOverride None
-</Directory>
+</DirectoryMatch>
 
-`, adminerDir))
+`, regexp.QuoteMeta(adminerDir)))
 	}
 
 	e := NewEngine(store)

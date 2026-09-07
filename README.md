@@ -23,7 +23,7 @@ missing — Homebrew, PHP, MariaDB, Apache, wp-cli — the app detects and insta
 - [Install](#install) · [Quick start](#quick-start) · [Zero prompts](#zero-prompts-recommended-one-time)
 - [Create a site](#create-a-site) · [Import an existing site](#import-an-existing-site) · [Domains](#domains)
 - [PHP versions](#php-versions) · [Databases](#databases) · [Snapshots](#snapshots) · [Branch previews](#branch-previews-git-worktrees) · [Working on a site](#working-on-a-site)
-- [Outgoing mail](#outgoing-mail) · [WP_DEBUG](#wp_debug-without-the-ritual) · [Sharing publicly](#sharing-a-site-publicly)
+- [The tools page](#the-tools-page) · [Outgoing mail](#outgoing-mail) · [WP_DEBUG](#wp_debug-without-the-ritual) · [Sharing publicly](#sharing-a-site-publicly)
 - [For agents](#for-agents) · [HTTP fronts](#http-fronts) · [CLI reference](#cli-reference)
 - [Layout & ports](#layout--ports) · [How it works](#how-it-works) · [Troubleshooting](#troubleshooting) · [Releasing](#releasing) · [Uninstall](#uninstall)
 
@@ -285,9 +285,9 @@ The browser inbox lives at `https://<domain>/.agent-local/mail` on every
 site — the same reserved path idea as the database GUI, HTML rendered by the
 router itself (the apache front proxies it), auto-refreshing so a form
 submission shows up as you alt-tab. HTML bodies render in a sandboxed iframe;
-the raw `.eml` is one click away. Like the tools page and the database GUI it
+the raw `.eml` is one click away. Like every page under `/.agent-local` it
 follows the system's light or dark appearance; the `theme` button in the top
-bar pins one, and the pin holds across all three pages.
+bar pins one, and the pin holds across all of them.
 
 For agents this closes a loop: drive the site with a browser, submit the
 form, then `list_mail` / `get_mail` and assert the email that came out —
@@ -730,6 +730,45 @@ should be rewriting the latter. Values type themselves: `true`, `false`, `null`
 and numbers are written bare, everything else quoted; `--raw` writes your text
 verbatim for the odd `WP_HOME . '/x'`.
 
+## The tools page
+
+Every site serves its own tooling at `https://<domain>/.agent-local` — a
+reserved path, rendered by this binary, kept out of the WordPress tree so a
+permalink cannot swallow it. It is local only: a share tunnel answers 404 for
+the whole prefix.
+
+The index opens with what the daemon knows about the site without asking
+anything else — app kind, pool state, PHP, docroot, database, WordPress
+version, WP_DEBUG, checkpoints and snapshots with their newest, media
+fallback, front — then five things:
+
+| | |
+|---|---|
+| **Adminer** | the database GUI, already logged into this site's schema |
+| **Inbox** | every email the site sent |
+| **Errors** | `agent-local errors` in a tab: deduplicated PHP fatals, warnings and notices with counts, over 15m/1h/24h/7d |
+| **Requests** | what the site served, newest first: status, ms, size, how it was served, and the PHP errors each request logged |
+| **Log in** | one click into wp-admin, no password — the same one-time link `agent-local login` mints |
+
+**The request log answers what neither log can alone.** The pool log has the
+errors but not the requests; the browser has the requests but not the errors.
+Each row carries both, so "the page came back blank" becomes a line with a
+status, a duration and the fatal that caused it:
+
+```sh
+agent-local mcp   # clear_requests → reproduce → get_requests errors_only
+```
+
+The newest 4096 requests are kept in memory — a restart starts a fresh log,
+which is the point: clear it, reproduce the bug, and what you get back is the
+bug. Errors are the lines a site's pool log gained while a request was being
+served, so under simultaneous requests the same line can appear on two of
+them. Only the built-in router records; under the apache front the page says
+so and the API returns `recording: false`.
+
+**Log in and clear are writes**, so both are POSTs and both refuse a
+cross-origin request. Nothing else on these pages mutates anything.
+
 ## For agents
 
 ### Connect a coding-agent harness
@@ -778,13 +817,13 @@ looking hung. To exercise it without a client:
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | agent-local mcp
 ```
 
-73 tools — everything the CLI can do to a site, no shell required:
+75 tools — everything the CLI can do to a site, no shell required:
 
 | Area | Tools |
 |---|---|
 | discovery | `status`, `list_sites`, `get_site`, `localwp_sites`, `ddev_projects`, `resolve_path`, `list_runtimes` |
 | lifecycle | `create_site`, `attach_site`, `import_site`, `start_site`, `stop_site`, `restart_site`, `delete_site` |
-| diagnose | `probe_site`, `http_request`, `get_errors`, `wp_info`, `get_logs`, `doctor`, `doctor_fix` |
+| diagnose | `probe_site`, `http_request`, `get_requests`, `clear_requests`, `get_errors`, `wp_info`, `get_logs`, `doctor`, `doctor_fix` |
 | fix & undo | `checkpoint`, `list_checkpoints`, `rollback`, `delete_checkpoint`, `db_search`, `search_replace`, `magic_login` |
 | runtime | `switch_php`, `install_runtime`, `get_http_front`, `set_http_front` |
 | domains | `set_domain`, `get_domain_suffix`, `set_domain_suffix`, `add_hosts_entries`, `remove_hosts_entries`, `cert_status`, `cert_trust` |

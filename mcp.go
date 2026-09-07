@@ -391,6 +391,15 @@ func mcpTools() []mcpTool {
 			"slug":  prop("string", "site slug"),
 			"since": prop("string", "look back this far (default 1h)"),
 			"limit": prop("number", "max distinct errors (default 50)")}, "slug")},
+		{"get_requests", "What the site actually served, newest first: method, path, status, ms, bytes, how it was served (static/php/redirect/media/error) and the PHP errors logged while that request ran. The loop this is for: clear_requests, reproduce (a browser tool or http_request), then get_requests with errors_only — which hands back the failing request with its errors attached. Errors are read from the pool log per request, so under simultaneous requests a line can appear on two of them. Only the built-in router records; under the apache front 'recording' comes back false.", schema(map[string]interface{}{
+			"slug":          prop("string", "site slug"),
+			"since":         prop("string", "look back this far, e.g. 15m, 2h, 7d (default: everything kept)"),
+			"limit":         prop("number", "max requests (default 100)"),
+			"errors_only":   prop("boolean", "only requests that logged a PHP error"),
+			"min_status":    prop("number", "only status >= this, e.g. 400 for what failed"),
+			"path_contains": prop("string", "only paths containing this substring")}, "slug")},
+		{"clear_requests", "Empty a site's request log, so the next thing you reproduce is the only thing in it.", schema(map[string]interface{}{
+			"slug": prop("string", "site slug")}, "slug")},
 		{"checkpoint", "Save a restore point before risky work: a database snapshot plus a copy of wp-content (or the whole docroot with scope=all) — an APFS clone, so seconds and near-zero space. Roll back with rollback. Named checkpoints are never pruned.", schema(map[string]interface{}{
 			"slug":  prop("string", "site slug"),
 			"label": prop("string", "what this is before, e.g. plugin-updates"),
@@ -776,6 +785,21 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 			q += fmt.Sprintf("&limit=%d", int(n))
 		}
 		return apiGet(q)
+	case "get_requests":
+		q := "/sites/" + get("slug") + "/requests?since=" + url.QueryEscape(get("since")) +
+			"&path=" + url.QueryEscape(get("path_contains"))
+		if args["errors_only"] == true {
+			q += "&errors=1"
+		}
+		if n, okn := args["limit"].(float64); okn && n > 0 {
+			q += fmt.Sprintf("&limit=%d", int(n))
+		}
+		if n, okn := args["min_status"].(float64); okn && n > 0 {
+			q += fmt.Sprintf("&status=%d", int(n))
+		}
+		return apiGet(q)
+	case "clear_requests":
+		return apiDelete("/sites/" + get("slug") + "/requests")
 	case "checkpoint":
 		return apiPost("/sites/"+get("slug")+"/checkpoints", map[string]string{"label": get("label"), "scope": get("scope")})
 	case "list_checkpoints":

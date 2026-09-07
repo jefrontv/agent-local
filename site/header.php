@@ -9,7 +9,7 @@
 // intro is plain text once its inline markup is stripped.
 $al_docs   = function_exists( 'al_docs_current' ) ? al_docs_current() : null;
 $al_desc   = 'One Go binary that creates, serves and manages local PHP sites on macOS — WordPress end to end, any other PHP app served alongside. No Docker, no prerequisites, and a full agent API.';
-$al_ogdesc = 'One Go binary for macOS. No Docker, no prerequisites, a site serving in under twenty seconds, and 73 MCP tools for the agents working beside you.';
+$al_ogdesc = 'One Go binary for macOS. No Docker, no prerequisites, a site serving in under twenty seconds, and 75 MCP tools for the agents working beside you.';
 $al_title  = 'agent-local: local WordPress for humans and agents';
 $al_url    = home_url( '/' );
 if ( $al_docs ) {
