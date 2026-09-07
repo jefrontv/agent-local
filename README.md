@@ -285,7 +285,9 @@ The browser inbox lives at `https://<domain>/.agent-local/mail` on every
 site — the same reserved path idea as the database GUI, HTML rendered by the
 router itself (the apache front proxies it), auto-refreshing so a form
 submission shows up as you alt-tab. HTML bodies render in a sandboxed iframe;
-the raw `.eml` is one click away.
+the raw `.eml` is one click away. Like the tools page and the database GUI it
+follows the system's light or dark appearance; the `theme` button in the top
+bar pins one, and the pin holds across all three pages.
 
 For agents this closes a loop: drive the site with a browser, submit the
 form, then `list_mail` / `get_mail` and assert the email that came out —

@@ -1,28 +1,44 @@
 /* agent-local theme for Adminer 6. Not a recolour: the frame is rebuilt so
    the tool reads as part of agent-local. Fixed sidebar, a top bar for the
    breadcrumb and session, padded content, hairline tables. The site's fonts
-   (Archivo for headings, IBM Plex Mono for labels and data) and its palette:
-   charcoal, warm gray ink, one green lamp. Loaded after Adminer's default and
-   dark stylesheets, so equal-specificity rules here win. */
+   (Archivo for headings, IBM Plex Mono for labels and data) and its palette
+   in two weights - charcoal with warm gray ink for a dark OS, warm paper for
+   a light one - one green lamp in each. Every token is light-dark(), so the
+   color-scheme on <html> is the whole switch: the system's by default, or
+   the pin the bar's toggle stores. Loaded after Adminer's default and dark
+   stylesheets, so equal-specificity rules here win; everything dark.css sets
+   is set again here, so a pinned scheme is consistent whether or not the
+   browser loaded it. */
 
 @import url("https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
 
 html {
-	--bg: #0e0e0c;
-	--fg: #e9e6de;
-	--dim: #141412;
-	--lit: #1a1a17;
-	--al-hair: #26251f;
-	--al-mark: #45443e;
-	--al-dim: #8b887c;
-	--al-lamp: #8fce9b;
-	--al-alert: #e08a8a;
+	--bg: light-dark(#f6f5f1, #0e0e0c);
+	--fg: light-dark(#1a1a17, #e9e6de);
+	--dim: light-dark(#edece6, #141412);
+	--lit: light-dark(#e6e4dc, #1a1a17);
+	--al-hair: light-dark(#d9d6cc, #26251f);
+	--al-mark: light-dark(#b3afa3, #45443e);
+	--al-dim: light-dark(#6f6c62, #8b887c);
+	--al-lamp: light-dark(#2e8b46, #8fce9b);
+	--al-alert: light-dark(#b64a4a, #e08a8a);
+	--al-glow: light-dark(rgba(46, 139, 70, 0.3), rgba(143, 206, 155, 0.4));
+	--al-char: light-dark(#8a6a2e, #c9a97a);
+	--al-date: light-dark(#2f6f8f, #8fb8ce);
+	--al-enum: light-dark(#8a4f80, #d1a4c9);
+	--al-invert: 0;
 	--al-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
 	--al-sans: "Archivo", -apple-system, "Helvetica Neue", Arial, sans-serif;
 	--al-side: 296px;
 	--al-top: 52px;
-	color-scheme: dark;
+	color-scheme: light dark;
 }
+html[data-theme=light] { color-scheme: light; }
+html[data-theme=dark] { color-scheme: dark; }
+/* filter takes no light-dark(): the icon glyphs are pale GIFs, inverted onto
+   a pale square in the dark palette and left as they are on the light one. */
+@media (prefers-color-scheme: dark) { html:not([data-theme=light]) { --al-invert: 0.85; } }
+html[data-theme=dark] { --al-invert: 0.85; }
 
 /* ---------------------------------------------------------------- frame */
 body {
@@ -89,7 +105,7 @@ body {
 	color: var(--al-dim);
 	z-index: 3;
 }
-.logout input[type=submit] { padding: 5px 12px; font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; }
+.logout input[type=submit], .logout #theme { padding: 5px 12px; font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; }
 #lang, #menuopen { display: none; }
 
 /* ---------------------------------------------------------------- sidebar */
@@ -116,7 +132,7 @@ body {
 	height: 7px;
 	border-radius: 50%;
 	background: var(--al-lamp);
-	box-shadow: 0 0 9px rgba(143, 206, 155, 0.4);
+	box-shadow: 0 0 9px var(--al-glow);
 }
 #h1 { color: var(--fg); font-style: normal; font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
 #h1:hover { color: var(--al-lamp); }
@@ -176,7 +192,7 @@ h3::before {
 	background: var(--al-lamp);
 	margin-right: 10px;
 	vertical-align: 1px;
-	box-shadow: 0 0 9px rgba(143, 206, 155, 0.4);
+	box-shadow: 0 0 9px var(--al-glow);
 }
 .links { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 14px 0 8px; font: 500 11px var(--al-mono); letter-spacing: 0.12em; text-transform: uppercase; }
 h2 + .links { margin-top: 0; }
@@ -232,8 +248,8 @@ thead th a:hover { color: var(--fg); }
 thead .column { border: 0; background: var(--bg); }
 tbody tr:hover td, tbody tr:hover th { background: var(--lit); }
 .odds tbody tr, .odds tbody tr:nth-child(2n) { background: transparent; }
-.js .checkable .checked td, .js .checkable .checked th { background: #17231a; color: var(--fg); }
-.js .checkable .checked:hover td, .js .checkable .checked:hover th { background: #1b2a1e; }
+.js .checkable .checked td, .js .checkable .checked th { background: light-dark(#e2eee4, #17231a); color: var(--fg); }
+.js .checkable .checked:hover td, .js .checkable .checked:hover th { background: light-dark(#d8e8db, #1b2a1e); }
 .js .checkable .checked a { color: var(--al-lamp); }
 #edit-fields tbody tr:hover td, #edit-fields tbody tr:hover th { background: var(--lit); }
 td.hover, tr:hover td.hover, .js .checkable .checked td.hover { background: var(--bg); }
@@ -268,7 +284,7 @@ input[type=text], input[type=password], input[type=search], input[type=number], 
 }
 select { padding-right: 24px; }
 input:focus, textarea:focus, select:focus { outline: 1px solid var(--al-lamp); outline-offset: 1px; border-color: var(--al-lamp); }
-input[type=submit], input[type=button], button:not(.link) {
+input[type=submit], input[type=button], button:not(.link):not(.icon) {
 	background: var(--bg);
 	color: var(--fg);
 	border: 1px solid var(--al-mark);
@@ -277,7 +293,7 @@ input[type=submit], input[type=button], button:not(.link) {
 	cursor: pointer;
 	font-weight: 500;
 }
-input[type=submit]:hover, input[type=button]:hover, button:not(.link):hover { border-color: var(--al-lamp); color: var(--al-lamp); }
+input[type=submit]:hover, input[type=button]:hover, button:not(.link):not(.icon):hover { border-color: var(--al-lamp); color: var(--al-lamp); }
 input[type=submit]:disabled, input[type=button]:disabled { color: var(--al-mark); border-color: var(--al-hair); cursor: default; }
 input.default { box-shadow: none; border-color: var(--al-lamp); }
 input.required, input.maxlength, textarea.maxlength { box-shadow: none; border-color: var(--al-alert); }
@@ -292,16 +308,16 @@ pre.jush { background: var(--lit); border: 1px solid var(--al-hair); border-radi
 
 /* messages */
 .error, .message { margin: 20px 0 0; padding: 12px 16px; border-radius: 8px; font-family: var(--al-mono); font-size: 12.5px; }
-.error { color: var(--al-alert); background: #1d1414; border: 1px solid #3a2323; }
-.error b { background: #2a1a1a; }
+.error { color: var(--al-alert); background: light-dark(#f6e6e6, #1d1414); border: 1px solid light-dark(#e2c4c4, #3a2323); }
+.error b { background: light-dark(#ecd4d4, #2a1a1a); }
 .error pre code { background: transparent; }
-.message { color: var(--al-lamp); background: #131a14; border: 1px solid #22331f; }
+.message { color: var(--al-lamp); background: light-dark(#e5efe6, #131a14); border: 1px solid light-dark(#bfd8c3, #22331f); }
 .message table { color: var(--fg); background: var(--bg); }
-.char { color: #c9a97a; }
-.date { color: #8fb8ce; }
-.enum { color: #d1a4c9; }
+.char { color: var(--al-char); }
+.date { color: var(--al-date); }
+.enum { color: var(--al-enum); }
 .binary { color: var(--al-alert); }
-.icon { filter: invert(0.85); background-color: var(--al-mark); border-radius: 3px; }
+.icon { filter: invert(var(--al-invert)); background-color: light-dark(var(--al-dim), var(--al-mark)); border-radius: 3px; }
 .icon:hover { background-color: var(--al-lamp); }
 #help { border: 1px solid var(--al-hair); background: var(--lit); border-radius: 6px; padding: 8px 10px; font: 12px var(--al-mono); }
 #schema .table { border-color: var(--al-mark); background: var(--dim); }
@@ -309,21 +325,21 @@ pre.jush { background: var(--lit); border: 1px solid var(--al-hair); border-radi
 
 /* syntax highlighting inside the palette */
 .jush {
-	--text-color: #e9e6de;
-	--bg-color: #1a1a17;
-	--border-color: #26251f;
-	--php-color: #c9a97a;
-	--string-color: #8fce9b;
-	--string-plain-color: #8fce9b;
-	--keyword-color: #8fb8ce;
-	--identifier-color: #e9e6de;
-	--value-color: #d1a4c9;
-	--number-color: #c9a97a;
-	--attribute-color: #8fb8ce;
-	--js-bg-color: #1a1a17;
-	--css-bg-color: #1a1a17;
-	--php-bg-color: #1a1a17;
-	--php-sql-bg-color: #1f1f1b;
+	--text-color: var(--fg);
+	--bg-color: var(--lit);
+	--border-color: var(--al-hair);
+	--php-color: var(--al-char);
+	--string-color: var(--al-lamp);
+	--string-plain-color: var(--al-lamp);
+	--keyword-color: var(--al-date);
+	--identifier-color: var(--fg);
+	--value-color: var(--al-enum);
+	--number-color: var(--al-char);
+	--attribute-color: var(--al-date);
+	--js-bg-color: var(--lit);
+	--css-bg-color: var(--lit);
+	--php-bg-color: var(--lit);
+	--php-sql-bg-color: light-dark(#ddd9cf, #1f1f1b);
 }
 
 /* ---------------------------------------------------------------- narrow */

@@ -15,16 +15,21 @@ import (
 
 // The same frame as the database GUI: a 52px top bar carrying the lamp, the
 // title and the session actions, content padded below it, hairline rows.
-// The site's fonts and palette. Message HTML itself renders in a sandboxed
-// white iframe — that is the recipient's view, and it should look like their
-// inbox, not ours.
+// The site's fonts and palette, in two weights: the charcoal the site wears,
+// and a warm paper for a light OS. Every token is light-dark(), so the
+// color-scheme on <html> — the system's, or the pin themeScript sets — is
+// the only switch. Message HTML itself renders in a sandboxed white iframe —
+// that is the recipient's view, and it should look like their inbox, not ours.
 const mailCSS = `<style>
   @import url("https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
-  :root { color-scheme: dark;
-          --bg: #0e0e0c; --panel: #141412; --lit: #1a1a17; --hair: #26251f; --mark: #45443e;
-          --dim: #8b887c; --fg: #e9e6de; --lamp: #8fce9b;
+  :root { color-scheme: light dark;
+          --bg: light-dark(#f6f5f1, #0e0e0c); --panel: light-dark(#edece6, #141412); --lit: light-dark(#e6e4dc, #1a1a17);
+          --hair: light-dark(#d9d6cc, #26251f); --mark: light-dark(#b3afa3, #45443e);
+          --dim: light-dark(#6f6c62, #8b887c); --fg: light-dark(#1a1a17, #e9e6de); --lamp: light-dark(#2e8b46, #8fce9b);
+          --glow: light-dark(rgba(46,139,70,.3), rgba(143,206,155,.4));
           --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
           --sans: "Archivo", -apple-system, "Helvetica Neue", Arial, sans-serif; }
+  :root[data-theme=light] { color-scheme: light; } :root[data-theme=dark] { color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg); font: 13.5px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
   a { color: inherit; text-decoration: none; } a:hover { color: var(--lamp); }
@@ -33,8 +38,9 @@ const mailCSS = `<style>
   .bar h1 { margin: 0; display: flex; align-items: center; gap: 10px; font: 500 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--fg); }
   .bar h1 .dim { color: var(--dim); }
   .bar .crumb { font: 500 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .bar form { margin-left: auto; }
-  .lamp { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--lamp); box-shadow: 0 0 9px rgba(143,206,155,.4); }
+  .bar .actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
+  .bar form { margin: 0; }
+  .lamp { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--lamp); box-shadow: 0 0 9px var(--glow); }
   main { padding: 84px 40px 64px; max-width: 1100px; }
   .dim { color: var(--dim); }
   .empty { color: var(--dim); margin: 24px 0; max-width: 60ch; line-height: 1.8; }
@@ -109,13 +115,13 @@ func mailUIList(w http.ResponseWriter, id, base, title string) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var b strings.Builder
-	b.WriteString("<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><meta http-equiv=refresh content=5><title>mail — " + html.EscapeString(title) + "</title>" + mailCSS)
+	b.WriteString("<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><meta http-equiv=refresh content=5><title>mail — " + html.EscapeString(title) + "</title>" + themeScript(".bar .actions") + mailCSS)
 	b.WriteString(`<div class=bar><h1><span class=lamp></span><a href="` + base + `">mail</a> <span class=dim>` + html.EscapeString(title) + `</span></h1>`)
-	b.WriteString(`<span class=crumb>` + html.EscapeString(title) + ` » inbox</span>`)
+	b.WriteString(`<span class=crumb>` + html.EscapeString(title) + ` » inbox</span><span class=actions>`)
 	if len(sums) > 0 {
 		b.WriteString(`<form method=post action="` + base + `/clear"><button>clear ` + fmt.Sprint(len(sums)) + `</button></form>`)
 	}
-	b.WriteString(`</div><main>`)
+	b.WriteString(`</span></div><main>`)
 	if len(sums) == 0 {
 		b.WriteString(`<h2>Nothing yet</h2><p class=empty>Every email this site sends — password resets, form
 notifications, WooCommerce receipts — is caught here instead of being lost, the moment the site sends it.</p></main>`)
@@ -149,10 +155,10 @@ func mailUIMessage(w http.ResponseWriter, id, base, title, mid string) {
 	if subject == "" {
 		subject = "(no subject)"
 	}
-	b.WriteString("<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>" + html.EscapeString(subject) + "</title>" + mailCSS)
+	b.WriteString("<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>" + html.EscapeString(subject) + "</title>" + themeScript(".bar .actions") + mailCSS)
 	b.WriteString(`<div class=bar><h1><span class=lamp></span><a href="` + base + `">mail</a> <span class=dim>` + html.EscapeString(title) + `</span></h1>`)
 	b.WriteString(`<span class=crumb>` + html.EscapeString(title) + ` » <a href="` + base + `">inbox</a> » ` + html.EscapeString(subject) + `</span>`)
-	b.WriteString(`<form action="` + base + `"><button>back to inbox</button></form></div><main>`)
+	b.WriteString(`<span class=actions><form action="` + base + `"><button>back to inbox</button></form></span></div><main>`)
 	b.WriteString("<h2>" + html.EscapeString(subject) + "</h2><dl>")
 	for _, row := range [][2]string{
 		{"from", msg.From}, {"to", msg.To},

@@ -45,9 +45,9 @@ const hubCSS = `<style>
 func serveHubUI(w http.ResponseWriter, base, title string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var b strings.Builder
-	b.WriteString("<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>tools — " + html.EscapeString(title) + "</title>" + mailCSS + hubCSS)
+	b.WriteString("<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>tools — " + html.EscapeString(title) + "</title>" + themeScript(".bar .actions") + mailCSS + hubCSS)
 	b.WriteString(`<div class=bar><h1><span class=lamp></span>agent-local <span class=dim>` + html.EscapeString(title) + `</span></h1>`)
-	b.WriteString(`<span class=crumb>` + html.EscapeString(title) + ` » tools</span></div><main>`)
+	b.WriteString(`<span class=crumb>` + html.EscapeString(title) + ` » tools</span><span class=actions></span></div><main>`)
 	b.WriteString(`<h2>Local tools</h2>`)
 	b.WriteString(`<div class=cards>`)
 	card := func(href, kicker, name, desc string) {

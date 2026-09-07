@@ -166,11 +166,19 @@ function adminer_object() {
 		function credentials() { return array(%s, %s, %s); }
 		function database() { return %s; }
 		function login($login, $password) { return true; }
-		// Declared as the dark stylesheet: Adminer lays its own dark base
-		// underneath, and this recolours it to the site's palette.
+		// Declared for both schemes: Adminer then loads its own dark base only
+		// under prefers-color-scheme: dark and says so in <meta color-scheme>.
+		// The theme sets everything that base sets, in light-dark(), so the
+		// page reads the same whether the browser or the bar's pin chose.
 		function css() {
 			$base = preg_replace('~\?.*~', '', $_SERVER['REQUEST_URI']);
-			return array($base . '?theme=' . filemtime(__DIR__ . '/agent-local.css') => 'dark');
+			return array($base . '?theme=' . filemtime(__DIR__ . '/agent-local.css') => '');
+		}
+		// The scheme pin and its toggle, shared with the hub and the inbox.
+		// Adminer's CSP is nonce-based, so the tag has to carry its nonce.
+		function head($dark = null) {
+			echo '<script' . Adminer\nonce() . ' data-mount=".logout">' . %s . '</script>';
+			return true;
 		}
 	}
 	return new AgentLocalAdminer;
@@ -182,6 +190,7 @@ include __DIR__ . '/adminer-%s.php';
 		phpQuote("agent-local · "+site.Slug),
 		phpQuote(host), phpQuote(site.DBUser), phpQuote(site.DBPass),
 		phpQuote(site.DBName),
+		phpQuote(themeJS),
 		adminerVersion,
 	)
 	if err := os.WriteFile(dst, []byte(body), 0o600); err != nil {

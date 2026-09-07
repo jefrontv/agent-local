@@ -22,7 +22,7 @@ return array(
 				'**An embedded MariaDB** — one instance, one database per site, snapshots as plain `.sql.gz`.',
 				'**A front daemon** — holds `127.0.0.2:80/443`, so sites answer on `https://name.test` with no port suffix and no warning page.',
 				'**A dashboard, a CLI and an agent API** — the TUI is `agent-local` with no arguments; every site-facing command is also an MCP tool.',
-				'**A tools page on every site** — `https://name.test/.agent-local` links to that site\'s database GUI and captured-mail inbox. Local only; a share link never exposes it.',
+				'**A tools page on every site** — `https://name.test/.agent-local` links to that site\'s database GUI and captured-mail inbox, in your system\'s light or dark appearance. Local only; a share link never exposes it.',
 			) ),
 			array( 'h', 'Requirements' ),
 			array( 'ul', array(
