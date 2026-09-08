@@ -11,6 +11,9 @@ import (
 )
 
 func main() {
+	// Before anything can look up brew, php or httpd: under launchd this
+	// process inherits a PATH with no Homebrew in it.
+	normalizePATH()
 	args := os.Args[1:]
 	if len(args) == 0 {
 		runTUI()
@@ -1863,6 +1866,11 @@ func cmdFront(args []string) error {
 		outStep(want + " re-applied: config re-rendered, front restarted")
 	} else {
 		outStep("front switched to " + want)
+	}
+	if want == "apache" {
+		if wmsg := TCCWarning(TCCBlockedSites(store)); wmsg != "" {
+			outWarn(wmsg)
+		}
 	}
 	return nil
 }

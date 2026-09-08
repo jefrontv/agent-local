@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,10 +57,39 @@ func EnsureInventory(s *Store) {
 	if inventoryFresh(s.Inventory()) {
 		return
 	}
+	prev := *s.Inventory()
 	DiscoverInventory(s)
+	if scanContradictsDisk(&prev, s.Inventory()) {
+		// The toolchain did not vanish, the scan went blind — a PATH with no
+		// Homebrew in it, which is what launchd hands the daemon. Persisting
+		// this would turn one bad environment into stored state that tells
+		// every site "php not installed" until someone reruns a CLI command.
+		log.Printf("inventory: scan found no toolchain but recorded paths still exist; keeping previous scan — check PATH")
+		*s.Inventory() = prev
+		return
+	}
 	s.Inventory().Refresh = time.Now()
 	// Persist so the cost is paid once, not by whoever runs the next command.
 	_ = s.Save()
+}
+
+// scanContradictsDisk reports whether a fresh scan lost the toolchain while the
+// previously recorded binaries are all still where they were. A real uninstall
+// removes the files, and inventoryFresh already rejects an inventory whose paths
+// are gone, so only an environment fault can produce this combination.
+func scanContradictsDisk(prev, next *Inventory) bool {
+	if len(next.PHPs) > 0 || len(prev.PHPs) == 0 {
+		return false
+	}
+	for _, p := range prev.PHPs {
+		if p.Bin != "" && !fileExists(p.Bin) {
+			return false
+		}
+		if p.FPM != "" && !fileExists(p.FPM) {
+			return false
+		}
+	}
+	return true
 }
 
 // inventoryFresh reports whether the recorded scan can still be believed.
@@ -309,8 +339,24 @@ func verLess(a, b string) bool {
 	return len(ap) < len(bp)
 }
 
+// discoverHTTP finds the httpd to run the apache front with. The Homebrew copy
+// wins over macOS's /usr/sbin/httpd: `agent-local install apache` installs the
+// brew one, renderApacheConf builds a config around its prefix and modules, and
+// Apple's SIP-protected build is not a drop-in for it. Deciding by PATH order
+// instead made the answer depend on which shell happened to run the scan — a
+// login shell found brew's, the launchd daemon found Apple's.
 func discoverHTTP(brew string) HTTPRuntime {
+	var cands []string
+	if prefix := brewPrefix(brew); prefix != "" {
+		cands = append(cands, filepath.Join(prefix, "bin", "httpd"), filepath.Join(prefix, "opt", "httpd", "bin", "httpd"))
+	}
 	if h, err := exec.LookPath("httpd"); err == nil {
+		cands = append(cands, h)
+	}
+	for _, h := range cands {
+		if !fileExists(h) {
+			continue
+		}
 		out, _ := runCmdOut(h, "-v")
 		if m := regexp.MustCompile(`Apache/([\d.]+)`).FindStringSubmatch(out); m != nil {
 			return HTTPRuntime{Kind: "apache", Version: m[1], Bin: h}

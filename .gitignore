@@ -12,6 +12,9 @@
 /logs/
 /run/
 
+# Planning artifacts: working notes for a change, not part of the product
+/goals/
+
 # macOS
 .DS_Store
 site/node_modules/

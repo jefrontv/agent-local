@@ -163,6 +163,53 @@ func spawnDaemon() error {
 	return cmd.Start()
 }
 
+// tccProtectedRoots are the home directories macOS gates behind Full Disk
+// Access. The router serves files as the logged-in user's own daemon and is
+// granted them; httpd started from a shell is not, and a denied stat is not an
+// error it reports — mod_rewrite simply sees "file does not exist", falls
+// through to index.php, and WordPress 404s and canonical-redirects every CSS
+// and JS URL to the home page. The site looks unstyled rather than broken,
+// which is why this costs an hour to diagnose every time.
+var tccProtectedRoots = []string{"Documents", "Desktop", "Downloads"}
+
+// TCCBlockedSites returns the slugs whose docroot sits under a TCC-protected
+// directory. A path check, not a probe: there is no reliable way to ask macOS
+// whether another process will be granted access, and guessing wrong either way
+// is worse than naming the risk.
+func TCCBlockedSites(store *Store) []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, s := range store.Sites() {
+		dir := s.WPDir
+		if dir == "" {
+			dir = s.WorkDir
+		}
+		for _, r := range tccProtectedRoots {
+			guarded := filepath.Join(home, r)
+			if dir == guarded || strings.HasPrefix(dir, guarded+string(filepath.Separator)) {
+				out = append(out, s.Slug)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// TCCWarning describes the apache/TCC hazard for the given sites, or "" when
+// there is none.
+func TCCWarning(slugs []string) string {
+	if len(slugs) == 0 {
+		return ""
+	}
+	home, _ := os.UserHomeDir()
+	return fmt.Sprintf("apache cannot read docroots under %s/{%s} without Full Disk Access; "+
+		"static assets 404 and .htaccess rewrites misfire (%d site(s), e.g. %s)",
+		home, strings.Join(tccProtectedRoots, ","), len(slugs), slugs[0])
+}
+
 // ---------- Apache front ----------
 
 // EnsureApacheFront renders config and starts httpd on the shared ports.

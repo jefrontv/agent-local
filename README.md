@@ -921,6 +921,14 @@ Both fronts serve every site and preview on the same ports; switch any time with
   `.htaccess` files behave) and runs Homebrew's httpd. Needs
   `agent-local install apache`.
 
+  Apache runs without the daemon's file-access grants, so a docroot under
+  `~/Documents`, `~/Desktop` or `~/Downloads` is unreadable to it unless httpd
+  has Full Disk Access. The failure is quiet: a denied `stat` reads to
+  `mod_rewrite` as "file does not exist", every asset URL falls through to
+  `index.php`, and WordPress 404s and redirects it to the home page — the site
+  loads unstyled rather than erroring. `set_http_front apache` and
+  `agent-local doctor` warn when any site is in that position.
+
 ## CLI reference
 
 ```

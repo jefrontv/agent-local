@@ -112,6 +112,13 @@ func Doctor(store *Store) *DoctorReport {
 	} else {
 		add(Finding{Check: "http", Status: "ok", Detail: front + " (no sites yet)"})
 	}
+	if front == "apache" {
+		if w := TCCWarning(TCCBlockedSites(store)); w != "" {
+			add(Finding{Check: "apache-file-access", Status: "warn", Detail: w,
+				FixHint: "grant httpd Full Disk Access, move the docroot, or switch back",
+				FixCmd:  "agent-local front router"})
+		}
+	}
 
 	// bare-URL loopback alias (LocalWP binds wildcard :80). The alias alone is
 	// not the check: a machine can carry 127.0.0.2 with nothing listening on it,

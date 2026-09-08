@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -65,6 +67,60 @@ func TestApacheStartArgsAreNotSingleProcess(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("missing -DFOREGROUND: %v", args)
+	}
+}
+
+// Which httpd runs the apache front decided itself by PATH order, so a login
+// shell picked Homebrew's and the launchd daemon picked Apple's SIP-protected
+// /usr/sbin/httpd — a config built for one prefix handed to the other.
+func TestDiscoverHTTPPrefersBrewOverSystem(t *testing.T) {
+	prefix := t.TempDir()
+	brewBin := filepath.Join(prefix, "bin", "brew")
+	httpdBin := filepath.Join(prefix, "bin", "httpd")
+	if err := os.MkdirAll(filepath.Dir(brewBin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(p, body string) {
+		if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(brewBin, "#!/bin/sh\necho "+prefix+"\n")
+	write(httpdBin, "#!/bin/sh\necho 'Server version: Apache/2.4.62 (Unix)'\n")
+
+	// A different httpd first on PATH — the one that must lose.
+	other := t.TempDir()
+	write(filepath.Join(other, "httpd"), "#!/bin/sh\necho 'Server version: Apache/2.4.1 (Unix)'\n")
+	t.Setenv("PATH", other+":"+filepath.Dir(brewBin))
+
+	got := discoverHTTP(brewBin)
+	if got.Bin != httpdBin {
+		t.Errorf("discoverHTTP = %q, want the brew copy %q", got.Bin, httpdBin)
+	}
+	if got.Version != "2.4.62" {
+		t.Errorf("version = %q, want the brew copy's 2.4.62", got.Version)
+	}
+}
+
+// With no brew at all the PATH copy is still better than no apache front.
+func TestDiscoverHTTPFallsBackToPATH(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "httpd"),
+		[]byte("#!/bin/sh\necho 'Server version: Apache/2.4.1 (Unix)'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	got := discoverHTTP("")
+	if got.Kind != "apache" || got.Version != "2.4.1" {
+		t.Errorf("discoverHTTP = %+v, want the PATH copy", got)
+	}
+}
+
+// No httpd anywhere means the built-in router, not a half-built apache entry.
+func TestDiscoverHTTPWithoutApache(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if got := discoverHTTP(""); got.Kind != "router" || got.Bin != "" {
+		t.Errorf("discoverHTTP = %+v, want the router", got)
 	}
 }
 

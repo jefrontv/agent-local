@@ -1476,6 +1476,11 @@ func (a *APIServer) handleSetFront(w http.ResponseWriter, r *http.Request) {
 	if FrontKind(a.store) == req.Front {
 		msg = "re-applying " + req.Front + " front (config re-rendered, front restarted)"
 	}
+	if req.Front == "apache" {
+		if wmsg := TCCWarning(TCCBlockedSites(a.store)); wmsg != "" {
+			msg += "; warning: " + wmsg
+		}
+	}
 	self, err := os.Executable()
 	if err != nil {
 		fail(w, 500, err.Error())
@@ -1485,8 +1490,14 @@ func (a *APIServer) handleSetFront(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		time.Sleep(300 * time.Millisecond)
 		cmd := exec.Command(self, "front", req.Front)
-		// Detached: send its output to daemon.log so a failed switch is
-		// visible to agents through get_logs instead of vanishing.
+		// Its first act is StopDaemons(), which boots out this daemon's
+		// launchd job — and bootout kills the job's whole session, child
+		// included. Setsid puts the switcher in its own session so it lives
+		// long enough to stop the old front and bring up the new one; without
+		// it the swap dies halfway and leaves neither front serving.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		// Output to daemon.log so a failed switch is visible to agents
+		// through get_logs instead of vanishing.
 		if logf, err := os.OpenFile(P().Log("daemon"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
 			cmd.Stdout, cmd.Stderr = logf, logf
 		}

@@ -114,3 +114,80 @@ func TestEnsureInventoryPersists(t *testing.T) {
 		t.Error("the scan was not written to disk; every command would rescan")
 	}
 }
+
+// The launchd LaunchAgent hands the daemon PATH=/usr/bin:/bin:/usr/sbin:/sbin,
+// so every exec.LookPath in DiscoverInventory misses and the scan comes back
+// with no toolchain at all. Persisting that answered "php 8.5 not installed"
+// for all 49 sites on this machine until someone happened to rerun a CLI
+// command from a shell with a real PATH. A scan that contradicts the disk is
+// not an answer.
+func TestEnsureInventoryKeepsScanWhenPATHGoesBlind(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	bin := t.TempDir()
+	php := filepath.Join(bin, "php")
+	fpm := filepath.Join(bin, "php-fpm")
+	for _, p := range []string{php, fpm} {
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	store, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	*store.Inventory() = Inventory{
+		PHPs: []Runtime{{Version: "8.5", Bin: php, FPM: fpm}},
+		Brew: "/opt/homebrew/bin/brew",
+		// Old enough that the TTL forces the rescan this test is about.
+		Refresh: time.Now().Add(-inventoryTTL - time.Minute),
+	}
+
+	t.Setenv("PATH", "")
+	EnsureInventory(store)
+
+	if got := store.Inventory().Runtimes(); len(got) != 1 || got[0] != "8.5" {
+		t.Fatalf("a blind scan wiped the inventory: %v", got)
+	}
+	if store.Inventory().Brew == "" {
+		t.Error("brew path dropped by a scan that could not see it")
+	}
+
+	// And it must not reach disk: the next process has to be free to rescan
+	// once its PATH is sane again.
+	next, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Inventory().PHPs) != 0 {
+		t.Error("the rejected scan was persisted anyway")
+	}
+}
+
+// A genuine uninstall still has to be recorded, or the store keeps pointing at
+// binaries that are gone.
+func TestScanContradictsDiskOnlyWhenBinariesSurvive(t *testing.T) {
+	dir := t.TempDir()
+	php := filepath.Join(dir, "php")
+	if err := os.WriteFile(php, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	present := &Inventory{PHPs: []Runtime{{Version: "8.5", Bin: php}}}
+	gone := &Inventory{PHPs: []Runtime{{Version: "8.5", Bin: filepath.Join(dir, "gone", "php")}}}
+	blind := &Inventory{}
+
+	if !scanContradictsDisk(present, blind) {
+		t.Error("an empty scan while the recorded php is still on disk is an environment fault")
+	}
+	if scanContradictsDisk(gone, blind) {
+		t.Error("an empty scan after the php really was removed is the truth")
+	}
+	if scanContradictsDisk(present, present) {
+		t.Error("a scan that found something is never a contradiction")
+	}
+	if scanContradictsDisk(blind, blind) {
+		t.Error("with nothing recorded there is nothing to protect")
+	}
+}
