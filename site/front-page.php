@@ -31,7 +31,7 @@ $defaults = array(
 		array( 'title' => 'WP_DEBUG without the ritual', 'body' => 'One flag turns debugging on with the log routed to a file and display kept off. Reproduce, then read the log. An agent does the same in two calls.' ),
 		array( 'title' => 'Checkpoint, then roll back', 'body' => 'Database and files saved together under one name before a risky update — a copy-on-write clone, seconds regardless of size. Rollback puts both back and is itself undoable.' ),
 		array( 'title' => 'A doctor that fixes', 'body' => 'One probe says whether a site is down, fatal, redirecting, blank or slow. Every health check reports the exact command that repairs it, and doctor --fix applies them all.' ),
-		array( 'title' => 'A request log per site', 'body' => 'What the site served, newest first: status, timing, how it was served, and the PHP errors each request logged. Clear it, reproduce the bug, and the failing request is the only thing there.' ),
+		array( 'title' => 'A live request log', 'body' => 'Every request the site serves, as it happens: status, timing, and the PHP errors it logged. Click one for the headers and the file that answered. Pause when you need to read.' ),
 		array( 'title' => 'Any PHP app', 'body' => 'Attach a Joomla, Laravel, Drupal or plain-PHP directory and it gets the same domain, certificate, database and dashboard. WordPress keeps the full toolkit; the rest is told so, plainly.' ),
 	),
 	'compare_rows'   => array(

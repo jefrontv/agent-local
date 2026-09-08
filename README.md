@@ -732,42 +732,60 @@ verbatim for the odd `WP_HOME . '/x'`.
 
 ## The tools page
 
-Every site serves its own tooling at `https://<domain>/.agent-local` — a
-reserved path, rendered by this binary, kept out of the WordPress tree so a
-permalink cannot swallow it. It is local only: a share tunnel answers 404 for
+Every site serves its own tooling at `https://<domain>/.agent-local`. It is a
+reserved path rendered by this binary, kept out of the WordPress tree so a
+permalink cannot swallow it, and local only: a share tunnel answers 404 for
 the whole prefix.
 
-The index opens with what the daemon knows about the site without asking
-anything else — app kind, pool state, PHP, docroot, database, WordPress
-version, WP_DEBUG, checkpoints and snapshots with their newest, media
-fallback, front — then five things:
+The index opens with what the daemon already knows about the site, with
+nothing to ask: app kind, pool state, PHP version, docroot, database,
+WordPress version, WP_DEBUG, checkpoints and snapshots, media fallback,
+active front. Then five tools:
 
 | | |
 |---|---|
 | **Adminer** | the database GUI, already logged into this site's schema |
-| **Inbox** | every email the site sent |
-| **Errors** | `agent-local errors` in a tab: deduplicated PHP fatals, warnings and notices with counts, over 15m/1h/24h/7d |
-| **Requests** | what the site served, newest first: status, ms, size, how it was served, and the PHP errors each request logged |
-| **Log in** | one click into wp-admin, no password — the same one-time link `agent-local login` mints |
+| **Inbox** | email this site sent |
+| **Errors** | PHP errors from the pool log and the WordPress debug log, grouped and counted, over 15m/1h/24h/7d |
+| **Requests** | every request the site served, live |
+| **Log in** | one click into wp-admin, no password |
 
-**The request log answers what neither log can alone.** The pool log has the
-errors but not the requests; the browser has the requests but not the errors.
-Each row carries both, so "the page came back blank" becomes a line with a
-status, a duration and the fatal that caused it:
+### The request log
+
+The pool log holds a site's errors but not its requests. The browser holds
+the requests but not the errors. This page holds both, one row per request:
+method, path, status, how long it took, how big the response was, whether it
+came from disk or PHP or a redirect or the media fallback, and any PHP error
+that request logged.
+
+Rows arrive as the site serves them, so you can leave the page open beside
+the site. **Pause** stops the feed and counts what arrives while it is
+stopped; resuming drains the backlog in order. The pause survives a reload,
+because a log that scrolls while you are reading it is no use.
+
+**Click a request** for the exchange: URL, method, status, timing, the PHP
+file that answered, response headers, request headers, and its errors. That
+last one — which script answered — is the thing a browser cannot tell you and
+the first question when a permalink goes somewhere unexpected. `Cookie`,
+`Set-Cookie` and `Authorization` are never recorded; the panel names what it
+withheld.
+
+For agents the loop is clear, reproduce, read:
 
 ```sh
-agent-local mcp   # clear_requests → reproduce → get_requests errors_only
+clear_requests            # empty the log
+# reproduce with a browser tool, or http_request
+get_requests errors_only  # the failing request, with its errors attached
 ```
 
-The newest 4096 requests are kept in memory — a restart starts a fresh log,
-which is the point: clear it, reproduce the bug, and what you get back is the
-bug. Errors are the lines a site's pool log gained while a request was being
-served, so under simultaneous requests the same line can appear on two of
-them. Only the built-in router records; under the apache front the page says
-so and the API returns `recording: false`.
+The newest 2048 requests are kept in memory, so a restart starts a fresh
+log. Errors are the lines a site's pool log gained while a request was being
+served, so two requests running at once can show the same line. Only the
+built-in router records: under the apache front the page says so and the API
+returns `recording: false`.
 
-**Log in and clear are writes**, so both are POSTs and both refuse a
-cross-origin request. Nothing else on these pages mutates anything.
+Log in and clear are writes, so both are POSTs that refuse a cross-origin
+request. Nothing else on these pages changes anything.
 
 ## For agents
 

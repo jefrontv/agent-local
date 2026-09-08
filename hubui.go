@@ -57,22 +57,26 @@ func hubRest(urlPath string) string {
 // tokens — panel, hairlines, mono kickers, the green lamp on hover. Kept
 // separate so the inbox stylesheet stays untouched.
 const hubCSS = `<style>
-  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 4px; }
-  .card { display: block; background: var(--panel); border: 1px solid var(--hair); border-radius: 12px; padding: 24px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 4px; align-items: stretch; }
+  .card { display: block; height: 100%; background: var(--panel); border: 1px solid var(--hair); border-radius: 12px; padding: 24px; }
   .card:hover { border-color: var(--lamp); }
   .card.off { opacity: .55; } .card.off:hover { border-color: var(--hair); }
   .card .kicker { display: block; margin-bottom: 12px; font: 500 11px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
-  .card strong { display: block; margin-bottom: 8px; font: 700 19px/1.25 var(--sans); font-variation-settings: "wdth" 112; }
+  .card strong { display: block; margin-bottom: 8px; font: 700 19px/1.25 var(--sans); font-variation-settings: "wdth" 112; letter-spacing: normal; text-transform: none; }
   .card:hover strong { color: var(--lamp); }
   .card.off:hover strong { color: var(--fg); }
-  .card .desc { color: var(--dim); font-size: 13px; }
+  .card .desc { color: var(--dim); font-size: 13px; letter-spacing: normal; text-transform: none; }
   .card .go { display: block; margin-top: 16px; font: 500 11px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
   .card:hover .go { color: var(--lamp); }
+  /* The card that submits a form is still a card: the bar's small-button
+     type must not reach it. */
   form.card { padding: 0; border: 0; background: none; }
   form.card button { display: block; width: 100%; height: 100%; text-align: left; background: var(--panel);
-                     border: 1px solid var(--hair); border-radius: 12px; padding: 24px; font: inherit; color: inherit; cursor: pointer; }
-  form.card button:hover { border-color: var(--lamp); color: inherit; }
+                     border: 1px solid var(--hair); border-radius: 12px; padding: 24px; cursor: pointer;
+                     font: 13.5px/1.55 var(--sans); letter-spacing: normal; text-transform: none; color: inherit; }
+  form.card button:hover { border-color: var(--lamp); }
   form.card button:hover strong { color: var(--lamp); }
+  form.card button:hover .go { color: var(--lamp); }
   /* nav and window selectors: the same mono labels, one lit */
   .label a { color: var(--dim); margin: 0 18px 0 0; letter-spacing: .14em; }
   .label a.on { color: var(--lamp); }
@@ -94,9 +98,25 @@ const hubCSS = `<style>
   .errs .x { display: inline-block; margin-top: 3px; font: 500 10.5px var(--mono); letter-spacing: .08em; color: var(--dim); }
   .reqs td.meth { width: 56px; font-size: 11px; letter-spacing: .08em; color: var(--dim); padding-top: 15px; }
   .reqs .phperr { display: block; margin-top: 6px; font: 11.5px/1.5 var(--mono); color: light-dark(#b64a4a, #e08a8a); word-break: break-word; }
-  .reqs a.msg strong { font-family: var(--mono); font-weight: 500; font-size: 12.5px; }
+  /* a request row opens: the path is the control, the panel sits under it */
+  .reqs button.open { display: block; width: 100%; text-align: left; padding: 0; border: 0; background: none;
+                      cursor: pointer; font: 500 12.5px/1.5 var(--mono); color: var(--fg); word-break: break-all; }
+  .reqs button.open:hover { color: var(--lamp); }
+  .reqs tr.open button.open { color: var(--lamp); }
+  .reqs tr.detail td { padding: 0 14px 18px 0; border-top: 0; }
+  .panel { background: var(--panel); border: 1px solid var(--hair); border-radius: 10px; padding: 18px 20px; }
+  .phead { margin: 16px 0 8px; font: 500 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
+  .phead:first-child { margin-top: 0; }
+  .panel .none { margin: 0; font: 11.5px var(--mono); color: var(--mark); }
+  dl.hdrs { display: grid; grid-template-columns: max-content 1fr; gap: 5px 20px; margin: 0; font: 11.5px/1.6 var(--mono); }
+  dl.hdrs dt { font-size: 11px; letter-spacing: .04em; text-transform: none; line-height: 1.6; color: var(--dim); }
+  dl.hdrs dd { margin: 0; word-break: break-all; }
+  pre.perr { margin: 0; padding: 12px 14px; font: 11.5px/1.6 var(--mono); color: light-dark(#b64a4a, #e08a8a);
+             background: var(--lit); border: 1px solid var(--hair); border-radius: 8px; white-space: pre-wrap; }
+  #pause.on { color: var(--lamp); border-color: var(--lamp); }
   @media (max-width: 720px) { .cards { grid-template-columns: 1fr; } .windows { margin: 8px 0 0; width: 100%; }
-    .count { flex-wrap: wrap; } .errs td.src, .reqs td.src { display: none; } }
+    .count { flex-wrap: wrap; } .errs td.src, .reqs td.src { display: none; }
+    dl.hdrs { grid-template-columns: 1fr; gap: 0 0; } dl.hdrs dd { margin-bottom: 8px; } }
 </style>`
 
 // serveHub answers the hub index and every page under it. base is the
@@ -154,25 +174,25 @@ func hubIndex(w http.ResponseWriter, e *Engine, site *Site, wt *Worktree, base, 
 	b.WriteString(`</span></div><main>`)
 	b.WriteString(`<h2>` + html.EscapeString(title) + `</h2>`)
 	b.WriteString(hubSiteCard(e, site, wt))
-	b.WriteString(`<p class=label><span class=lamp></span>tools</p>`)
+	b.WriteString(`<p class=label>tools</p>`)
 	b.WriteString(`<div class=cards>`)
 	card := func(href, kicker, name, desc string) {
 		b.WriteString(`<a class=card href="` + base + href + `"><span class=kicker>` + kicker + `</span><strong>` + name +
 			`</strong><span class=desc>` + desc + `</span><span class=go>open →</span></a>`)
 	}
-	card("/adminer", "database", "Adminer", "Browse and edit this site's tables, straight in the browser.")
-	card("/mail", "mail", "Inbox", "Every email the site sends — resets, receipts, forms — caught here.")
-	card("/errors", "diagnose", "Errors", "PHP fatals, warnings and notices from the logs, deduplicated.")
-	card("/requests", "diagnose", "Requests", "What this site served: status, timing, and the errors each request logged.")
+	card("/adminer", "database", "Adminer", "Browse and edit this site's database.")
+	card("/mail", "mail", "Inbox", "Email this site sent, kept here instead of being delivered.")
+	card("/errors", "diagnose", "Errors", "PHP errors from this site's logs, grouped and counted.")
+	card("/requests", "diagnose", "Requests", "Every request this site served, with timing and errors.")
 	if site.IsWordPress() {
 		// A POST, not a link: it mints a one-time session, and a GET that
 		// logs someone in is something another page could trigger.
 		b.WriteString(`<form class=card method=post action="` + base + `/login"><button><span class=kicker>wordpress</span>` +
-			`<strong>Log in</strong><span class=desc>A one-time link straight into wp-admin. No password needed.</span>` +
+			`<strong>Log in</strong><span class=desc>Open wp-admin as an administrator. No password.</span>` +
 			`<span class=go>open wp-admin →</span></button></form>`)
 	} else {
 		b.WriteString(`<span class="card off"><span class=kicker>wordpress</span><strong>Log in</strong><span class=desc>` +
-			html.EscapeString(site.Kind.Label()) + ` site — wp-admin login only applies to WordPress.</span></span>`)
+			`This is a ` + html.EscapeString(site.Kind.Label()) + ` site. wp-admin is WordPress only.</span></span>`)
 	}
 	b.WriteString(`</div></main>`)
 	fmt.Fprint(w, b.String())

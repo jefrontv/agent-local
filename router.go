@@ -132,10 +132,16 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	sw := &statusWriter{ResponseWriter: w}
+	scheme := "http"
+	if req.TLS != nil {
+		scheme = "https"
+	}
 	rec := requestRecord{
 		At: time.Now(), Host: host, Method: req.Method,
 		Path: req.URL.RequestURI(), Shared: shared,
+		Scheme: scheme, Proto: req.Proto, RemoteAddr: req.RemoteAddr,
 	}
+	rec.ReqHeaders, rec.Redacted = snapHeaders(req.Header)
 	if site, wt := r.engine.Store.LookupDomain(host); site != nil {
 		rec.Site = site.Slug
 		if wt != nil {
@@ -149,6 +155,8 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	started := rec.At
 	defer func() {
 		rec.Status, rec.Bytes = sw.code(), sw.bytes
+		rec.ResHeaders = sw.headers
+		rec.Redacted = append(rec.Redacted, sw.redacted...)
 		rec.Ms = float64(time.Since(started).Microseconds()) / 1000
 		reqlog.add(rec)
 	}()
@@ -193,12 +201,17 @@ func (r *Router) serve(w *statusWriter, req *http.Request, rec *requestRecord, h
 		}
 	}
 	rec.Served = "php"
+	// Which file actually answered is the one thing a browser's network
+	// panel cannot tell you, and the first question when a permalink goes
+	// somewhere unexpected.
+	script, scriptName := resolveScript(wpdir, req.URL.Path)
+	rec.Script = script
 	// The pool log is the only place PHP's own errors land. Reading how far
 	// it had got before the request, and what it gained after, attributes
 	// those lines to this request — the same trick probe uses.
 	poolLog := r.engine.fpmLog(fpmID)
 	from := fileSize(poolLog)
-	r.proxyFCGI(w, req, wpdir, sock, host)
+	r.proxyFCGIScript(w, req, wpdir, sock, host, script, scriptName)
 	rec.PHPErrors = logDelta(poolLog, from)
 }
 

@@ -52,9 +52,9 @@ const mailCSS = `<style>
   td.size { width: 64px; text-align: right; font-size: 11px; color: var(--dim); padding: 16px 0 14px; }
   a.msg { display: block; } a.msg strong { display: block; font: 600 14px/1.4 var(--sans); }
   a.msg .dim { font-size: 12px; } tr:hover a.msg strong { color: var(--lamp); }
-  button { font: 500 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--fg);
+  .bar button { font: 500 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--fg);
            background: none; border: 1px solid var(--mark); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
-  button:hover { color: var(--lamp); border-color: var(--lamp); }
+  .bar button:hover { color: var(--lamp); border-color: var(--lamp); }
   dl { display: grid; grid-template-columns: max-content 1fr; gap: 10px 28px; margin: 0 0 28px; font-family: var(--mono); font-size: 12.5px; }
   dt { color: var(--dim); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; line-height: 1.9; }
   dd { margin: 0; word-break: break-word; }
@@ -123,12 +123,12 @@ func mailUIList(w http.ResponseWriter, id, base, title string) {
 	}
 	b.WriteString(`</span></div><main>`)
 	if len(sums) == 0 {
-		b.WriteString(`<h2>Nothing yet</h2><p class=empty>Every email this site sends — password resets, form
-notifications, WooCommerce receipts — is caught here instead of being lost, the moment the site sends it.</p></main>`)
+		b.WriteString(`<h2>Nothing yet</h2><p class=empty>Email this site sends is caught here instead of
+being handed to a mail server: password resets, form notifications, order receipts.</p></main>`)
 		fmt.Fprint(w, b.String())
 		return
 	}
-	b.WriteString(`<p class=count><span class=lamp></span>` + fmt.Sprint(len(sums)) + ` captured · newest first · refreshes every 5s</p>`)
+	b.WriteString(`<p class=count>` + fmt.Sprint(len(sums)) + ` captured · newest first · refreshes every 5s</p>`)
 	b.WriteString("<table>")
 	for _, s := range sums {
 		subject := s.Subject
@@ -173,11 +173,11 @@ func mailUIMessage(w http.ResponseWriter, id, base, title, mid string) {
 	}
 	b.WriteString(`<dt>raw</dt><dd><a href="` + base + `/msg/` + msg.ID + `/raw">.eml</a></dd></dl>`)
 	if msg.HTML != "" {
-		b.WriteString(`<p class=label><span class=lamp></span>html, as the recipient sees it<a href="` + base + `/msg/` + msg.ID + `/html">open on its own ↗</a></p>`)
+		b.WriteString(`<p class=label>html, as the recipient sees it<a href="` + base + `/msg/` + msg.ID + `/html">open on its own ↗</a></p>`)
 		b.WriteString(`<iframe sandbox src="` + base + `/msg/` + msg.ID + `/html"></iframe>`)
 	}
 	if msg.Text != "" {
-		b.WriteString(`<p class=label><span class=lamp></span>text</p><pre>` + html.EscapeString(msg.Text) + "</pre>")
+		b.WriteString(`<p class=label>text</p><pre>` + html.EscapeString(msg.Text) + "</pre>")
 	}
 	if msg.HTML == "" && msg.Text == "" {
 		b.WriteString("<p class=empty>No readable body — see the raw message.</p>")

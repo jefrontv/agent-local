@@ -27,15 +27,15 @@ func hubErrors(w http.ResponseWriter, req *http.Request, e *Engine, site *Site, 
 	b.WriteString(`</span></div><main>`)
 	b.WriteString(`<h2>Errors</h2>`)
 	b.WriteString(hubNav(base, "/errors"))
-	b.WriteString(`<p class=count><span class="lamp` + lampOff(len(entries) == 0) + `"></span>` +
-		errCountLine(len(entries), scanned, window) + hubWindows(base, "/errors", window) + `</p>`)
+	b.WriteString(`<p class=count>` + errCountLine(len(entries), scanned, window) +
+		hubWindows(base, "/errors", window) + `</p>`)
 
 	if len(entries) == 0 {
 		b.WriteString(`<p class=empty>Nothing in the last ` + html.EscapeString(window) + `. Read from ` +
 			errSources(site) + `.</p>`)
 		if !WPDebugStatus(site).Enabled && site.IsWordPress() {
-			b.WriteString(`<p class=empty>WP_DEBUG is off, so WordPress notices are not being logged: ` +
-				`<code>agent-local wpdebug ` + html.EscapeString(site.Slug) + ` on</code>.</p>`)
+			b.WriteString(`<p class=empty>WP_DEBUG is off, so WordPress is not logging its own notices. ` +
+				`Turn it on with <code>agent-local wpdebug ` + html.EscapeString(site.Slug) + ` on</code>.</p>`)
 		}
 		b.WriteString(`</main>`)
 		fmt.Fprint(w, b.String())
@@ -61,8 +61,8 @@ func hubErrors(w http.ResponseWriter, req *http.Request, e *Engine, site *Site, 
 		b.WriteString(`</td><td class=src>` + html.EscapeString(en.Source) + `</td></tr>`)
 	}
 	b.WriteString(`</table>`)
-	b.WriteString(`<p class=empty>Read from ` + errSources(site) + `. Grouped by level, message and location; ` +
-		`the count is how many times it happened in the window, and the age is the most recent.</p>`)
+	b.WriteString(`<p class=empty>Read from ` + errSources(site) + `. Identical errors share a row: the count is ` +
+		`how many times it happened, the age is the most recent one.</p>`)
 	b.WriteString(`</main>`)
 	fmt.Fprint(w, b.String())
 }
