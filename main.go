@@ -50,6 +50,8 @@ func main() {
 		err = cmdPHP(rest)
 	case "domain":
 		err = cmdDomain(rest)
+	case "move":
+		err = cmdMove(rest)
 	case "worktree":
 		err = cmdWorktree(rest)
 	case "worktrees":
@@ -1176,6 +1178,29 @@ func cmdDomain(args []string) error {
 	outTitle(AppName, "domain", pos[0])
 	outRow("url", BareDomainURL(pos[1]))
 	outNote("hosts entry and certificate follow the new name")
+	return nil
+}
+
+func cmdMove(args []string) error {
+	pos := positional(args)
+	if len(pos) < 2 {
+		return fmt.Errorf("usage: agent-local move SLUG /new/path")
+	}
+	store, e, err := openEnv()
+	if err != nil {
+		return err
+	}
+	if err := e.MoveSite(pos[0], pos[1]); err != nil {
+		return err
+	}
+	site := store.Site(pos[0])
+	outTitle(AppName, "move", pos[0])
+	outRow("dir", shortHome(site.WorkDir))
+	if site.WPDir != site.WorkDir {
+		outRow("docroot", shortHome(site.WPDir))
+	}
+	outRow("state", string(site.State))
+	outRow("url", BareDomainURL(site.Domain))
 	return nil
 }
 

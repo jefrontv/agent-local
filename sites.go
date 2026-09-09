@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -881,6 +883,129 @@ func (e *Engine) SetDomain(slug, domain string) error {
 	return nil
 }
 
+// MoveSite relocates a site's files and repoints the store at them.
+//
+// Almost nothing else has to change: the pool config is rewritten from the
+// store on every start, the vhosts are re-rendered per request cycle, wp-config
+// derives ABSPATH from __DIR__, and the domain is untouched so the database
+// keeps its URLs. What does not survive is a branch preview — it symlinks
+// absolute paths into the base docroot and shared uploads, and its git worktree
+// records an absolute gitdir — so those are refused rather than half-repaired.
+func (e *Engine) MoveSite(slug, dest string) error {
+	site := e.Store.Site(slug)
+	if site == nil {
+		return fmt.Errorf("no such site: %s", slug)
+	}
+	if wts := e.Store.WorktreesFor(slug); len(wts) > 0 {
+		return fmt.Errorf("%s has %d branch preview(s) whose links would break; remove them first: agent-local worktree %s %s --remove",
+			slug, len(wts), slug, wts[0].Branch)
+	}
+	src := site.WorkDir
+	if src == "" {
+		return fmt.Errorf("%s has no directory recorded; nothing to move", slug)
+	}
+	abs, err := ResolveDir(dest)
+	if err != nil {
+		return err
+	}
+	abs = filepath.Clean(abs)
+	// The destination usually does not exist yet, so it needs the ancestor-aware
+	// normalisation: on macOS /var is a symlink to /private/var, and comparing a
+	// resolved source against an unresolved destination made a move into the
+	// site's own subdirectory look like a move to an unrelated tree.
+	nAbs, nSrc := normalizeNewPath(abs), normalizePath(src)
+	if nAbs == nSrc {
+		return fmt.Errorf("%s is already at %s", slug, shortHome(src))
+	}
+	if pathWithin(nAbs, nSrc) {
+		return fmt.Errorf("%s is inside %s; a directory cannot be moved into itself", shortHome(abs), shortHome(src))
+	}
+	// Ownership before emptiness: another site's directory is never empty, and
+	// "already belongs to site X" is the answer the caller can act on.
+	if owner, _, _ := e.SiteForPath(abs); owner != nil && owner.Slug != slug {
+		return fmt.Errorf("%s already belongs to site %s", shortHome(abs), owner.Slug)
+	}
+	// Merging into an existing tree is never what was meant, and the mistake
+	// cannot be undone once the move has run.
+	if !DirUsable(abs) {
+		return fmt.Errorf("%s already exists and is not empty", shortHome(abs))
+	}
+	// An empty directory already sitting there makes os.Rename fail; the caller
+	// wants the tree at that name, so take it back first.
+	if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	// Where the docroot sits relative to the work dir — "." for an attached
+	// checkout that is its own docroot, "wp" for one we created.
+	rel := "."
+	if site.WPDir != "" {
+		if r, err := filepath.Rel(src, site.WPDir); err == nil && !strings.HasPrefix(r, "..") {
+			rel = r
+		} else {
+			return fmt.Errorf("%s docroot %s is not inside %s; move it by hand", slug, shortHome(site.WPDir), shortHome(src))
+		}
+	}
+
+	wasRunning := site.State == StateRunning
+	if wasRunning {
+		if err := e.StopSite(slug); err != nil {
+			return fmt.Errorf("stop before move: %w", err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return err
+	}
+	if err := moveTree(src, abs); err != nil {
+		if wasRunning {
+			_ = e.StartSite(slug)
+		}
+		return err
+	}
+
+	site.WorkDir = abs
+	site.WPDir = filepath.Join(abs, rel)
+	e.Store.PutSite(site)
+	if err := e.Store.Save(); err != nil {
+		// The store is what makes the move real; without it the next command
+		// would look for the site where it no longer is.
+		if rerr := os.Rename(abs, src); rerr != nil {
+			return fmt.Errorf("%w (and the files are now at %s — move them back by hand: %v)", err, abs, rerr)
+		}
+		site.WorkDir, site.WPDir = src, filepath.Join(src, rel)
+		e.Store.PutSite(site)
+		return err
+	}
+	if wasRunning {
+		if err := e.StartSite(slug); err != nil {
+			return fmt.Errorf("moved to %s but could not start: %w", shortHome(abs), err)
+		}
+	}
+	return EnsureHTTPFront(e.Store)
+}
+
+// moveTree renames src to dst, falling back to a copy when the two are on
+// different volumes (an external disk, a second APFS container). The source is
+// removed only once the copy has landed, so a failure mid-copy costs disk
+// space, never the site.
+func moveTree(src, dst string) error {
+	err := os.Rename(src, dst)
+	if err == nil {
+		return nil
+	}
+	var le *os.LinkError
+	if !errors.As(err, &le) || !errors.Is(le.Err, syscall.EXDEV) {
+		return err
+	}
+	if cerr := cloneCopy(src, dst); cerr != nil {
+		os.RemoveAll(dst)
+		return fmt.Errorf("copy to another volume: %w", cerr)
+	}
+	if rerr := os.RemoveAll(src); rerr != nil {
+		return fmt.Errorf("copied to %s but could not remove %s: %w", shortHome(dst), shortHome(src), rerr)
+	}
+	return nil
+}
+
 // ---------- Worktrees ----------
 
 // AddWorktree creates a git worktree for a branch and serves it on its own domain.
@@ -1104,6 +1229,36 @@ func normalizePath(p string) string {
 // already be normalized; a prefix test alone would match /a/bc against /a/b.
 func pathWithin(want, root string) bool {
 	return want == root || strings.HasPrefix(want, root+string(filepath.Separator))
+}
+
+// normalizeNewPath normalizes a path that may not exist yet. normalizePath can
+// only resolve symlinks on something already on disk, so a destination like
+// /var/.../site/inner compares as a different tree from its own parent, whose
+// /var symlink does resolve. Walk up to the first ancestor that exists, resolve
+// that, and put the missing tail back.
+func normalizeNewPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	rest := ""
+	cur := filepath.Clean(p)
+	for {
+		if _, err := os.Lstat(cur); err == nil {
+			// Normalize the part that exists — that is the only part symlinks
+			// can be resolved on — then reattach the tail in the same casing
+			// normalizePath would have produced.
+			if rest == "" {
+				return normalizePath(cur)
+			}
+			return normalizePath(cur) + string(filepath.Separator) + strings.ToLower(rest)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return normalizePath(p)
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
 }
 
 // SitesUnderPath lists sites whose roots sit beneath a directory. Used when a

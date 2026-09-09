@@ -35,6 +35,7 @@ var helpGroups = []helpGroup{
 		{"delete", "SLUG [--yes] [--keep-files] [--keep-db]", "remove a site; a snapshot is saved first"},
 		{"open", "SLUG", "open the site in your browser"},
 		{"domain", "SLUG NAME", "change a site's domain; hosts entry and cert follow"},
+		{"move", "SLUG DIR", "move a site's files to another directory"},
 		{"php", "SLUG VERSION [--tap]", "switch PHP version, installing it if needed"},
 		{"resolve", "[PATH]", "which site owns a path (default: cwd)"},
 	}},

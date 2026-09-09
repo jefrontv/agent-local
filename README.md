@@ -835,12 +835,12 @@ looking hung. To exercise it without a client:
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | agent-local mcp
 ```
 
-75 tools — everything the CLI can do to a site, no shell required:
+76 tools — everything the CLI can do to a site, no shell required:
 
 | Area | Tools |
 |---|---|
 | discovery | `status`, `list_sites`, `get_site`, `localwp_sites`, `ddev_projects`, `resolve_path`, `list_runtimes` |
-| lifecycle | `create_site`, `attach_site`, `import_site`, `start_site`, `stop_site`, `restart_site`, `delete_site` |
+| lifecycle | `create_site`, `attach_site`, `import_site`, `start_site`, `stop_site`, `restart_site`, `move_site`, `delete_site` |
 | diagnose | `probe_site`, `http_request`, `get_requests`, `clear_requests`, `get_errors`, `wp_info`, `get_logs`, `doctor`, `doctor_fix` |
 | fix & undo | `checkpoint`, `list_checkpoints`, `rollback`, `delete_checkpoint`, `db_search`, `search_replace`, `magic_login` |
 | runtime | `switch_php`, `install_runtime`, `get_http_front`, `set_http_front` |
@@ -962,6 +962,7 @@ agent-local share SLUG [--minutes N | --forever] [--off]   public quick-tunnel U
 agent-local jobs | job ID              long-running create/import status
 agent-local php SLUG VERSION [--tap]   switch PHP (live), installing it if needed
 agent-local domain SLUG NAME           change a site's domain
+agent-local move SLUG DIR              move a site's files; store and pools follow
 agent-local suffix [.test]             show/set the default domain suffix
 agent-local sites-dir [PATH]           where new sites are created
 agent-local branches SLUG              git branches of the site's repo

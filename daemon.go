@@ -427,6 +427,7 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /sites/{slug}", a.handleDelete)
 	mux.HandleFunc("POST /sites/{slug}/php", a.handleSwitchPHP)
 	mux.HandleFunc("POST /sites/{slug}/domain", a.handleDomain)
+	mux.HandleFunc("POST /sites/{slug}/move", a.handleMoveSite)
 	mux.HandleFunc("POST /sites/{slug}/db", a.handleDB)
 	mux.HandleFunc("POST /sites/{slug}/db/query", a.handleQuery)
 	mux.HandleFunc("POST /sites/{slug}/wp-cli", a.handleWPCLI)
@@ -1211,6 +1212,35 @@ func (a *APIServer) handleDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w, req.Domain)
+}
+
+type moveReq struct {
+	Dir string `json:"dir"`
+}
+
+// handleMoveSite relocates a site's files. Every rejection MoveSite makes is a
+// caller mistake (bad path, occupied destination, previews in the way), so they
+// come back as 400 with the message intact rather than a bare 500.
+func (a *APIServer) handleMoveSite(w http.ResponseWriter, r *http.Request) {
+	site := a.requireSite(w, r)
+	if site == nil {
+		return
+	}
+	var req moveReq
+	json.NewDecoder(r.Body).Decode(&req)
+	if strings.TrimSpace(req.Dir) == "" {
+		fail(w, 400, "dir required")
+		return
+	}
+	if err := a.engine.MoveSite(site.Slug, req.Dir); err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	moved := a.store.Site(site.Slug)
+	ok(w, map[string]interface{}{
+		"slug": moved.Slug, "work_dir": moved.WorkDir, "wp_dir": moved.WPDir,
+		"state": moved.State, "url": BareDomainURL(moved.Domain),
+	})
 }
 
 // handleDB returns the site's connection details, starting MariaDB if needed.

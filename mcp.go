@@ -286,6 +286,8 @@ func mcpTools() []mcpTool {
 		}, "slug", "version")},
 		{"set_domain", "Change a site's local domain (hosts + cert follow)", schema(map[string]interface{}{
 			"slug": prop("string", "site slug"), "domain": prop("string", "new domain")}, "slug", "domain")},
+		{"move_site", "Move a site's files to another directory: stops it, moves the tree, repoints the store and starts it again. The domain and database are untouched, so no URL rewrite is needed. The destination must not exist or must be an empty directory, and a site with branch previews is refused because their symlinks and git worktrees record the old path — remove the previews first.", schema(map[string]interface{}{
+			"slug": prop("string", "site slug"), "dir": prop("string", "new absolute path for the site's directory")}, "slug", "dir")},
 		{"db_creds", "Get DB connection params for a site (starts db if needed)", schema(map[string]interface{}{"slug": prop("string", "site slug")}, "slug")},
 		{"db_query", "Run SQL as root. Pass slug to make that site's database the default schema; omit it for server-wide SQL (CREATE/DROP DATABASE, cross-db joins). Returns TSV with a header row. Any statement is allowed, including DDL and multi-statement scripts.", schema(map[string]interface{}{
 			"sql":  prop("string", "SQL statement(s), semicolon-separated"),
@@ -622,6 +624,8 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		return apiPost(path, body)
 	case "set_domain":
 		return apiPost("/sites/"+get("slug")+"/domain", map[string]string{"domain": get("domain")})
+	case "move_site":
+		return apiPost("/sites/"+get("slug")+"/move", map[string]string{"dir": get("dir")})
 	case "db_creds":
 		return apiPost("/sites/"+get("slug")+"/db", nil)
 	case "db_query":
