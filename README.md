@@ -259,10 +259,17 @@ In the TUI: `m` on the Sites tab, where `⇥` fills in the `.htaccess` origin.
 file or was set explicitly. Precedence: a value set here, then an explicit `--off`,
 then the site's `.htaccess`.
 
-A `GET` under `/wp-content/uploads/` with no local file gets a 302 to the origin —
+A `GET` under a site's uploads path with no local file gets a 302 to the origin —
 a redirect, not a proxy, so behaviour matches the `.htaccess` exactly and nothing
 is cached locally. Local files always win, and paths outside `uploads/` still 404
 so genuine mistakes stay visible.
+
+The uploads path is the **site's**, not a fixed default. A stock WordPress site
+uses `/wp-content/uploads/`, but a site that moved its content directory — Bedrock
+sets `CONTENT_DIR=/app`, others set `UPLOADS` or `WP_CONTENT_URL` — has its media
+under that path instead, and the fallback follows it (read from the site's
+`wp-config.php` and the Bedrock `config/*.php` it requires). `wp_info` reports the
+authoritative `uploads.baseurl` WordPress itself computed.
 
 ## Outgoing mail
 

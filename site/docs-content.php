@@ -102,7 +102,7 @@ return array(
 			array( 'pre', "agent-local import ddevsite              # move it out of DDEV (default)\nagent-local import ddevsite --keep-ddev  # leave it registered in DDEV" ),
 			array( 'note', '`--keep-ddev` leaves the project in place, but one docroot can point at only one database: its wp-config now points here, so restore the `.bak` (or `ddev snapshot restore`) to serve it from DDEV again.' ),
 			array( 'h', 'Media fallback' ),
-			array( 'p', 'Imports do not copy uploads. Point missing uploads at the production origin and any missing file redirects there: `agent-local media SLUG --auto` adopts the rule already in the site\'s `.htaccess`.' ),
+			array( 'p', 'Imports do not copy uploads. Point missing uploads at the production origin and any missing file redirects there: `agent-local media SLUG --auto` adopts the rule already in the site\'s `.htaccess`. The path watched is the site\'s own uploads URL — a WordPress site that moved its content dir (Bedrock\'s `CONTENT_DIR=/app`, or `UPLOADS`) is covered — not a fixed `/wp-content/uploads/`.' ),
 		),
 	),
 

@@ -230,7 +230,7 @@ func (r *Router) serveMediaFallback(w http.ResponseWriter, req *http.Request, ho
 	if site == nil {
 		return false
 	}
-	prefix := site.Kind.UploadsPrefix()
+	prefix := siteUploadsURLPath(site)
 	if prefix == "" {
 		return false
 	}

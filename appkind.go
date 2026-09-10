@@ -75,9 +75,12 @@ func (k AppKind) Label() string {
 	}
 }
 
-// UploadsPrefix is the URL path under which an app keeps user-uploaded media
-// — what the media fallback watches for local misses. Frameworks without a
-// conventional one get no fallback.
+// UploadsPrefix is the conventional URL path under which an app keeps
+// user-uploaded media. It is the **kind default** only: the router's media
+// fallback calls siteUploadsURLPath, which uses this when the site has no
+// content-dir override, and consults the site's own WordPress config (Bedrock's
+// CONTENT_DIR, or UPLOADS) otherwise. Frameworks without a conventional one get
+// no fallback.
 func (k AppKind) UploadsPrefix() string {
 	switch k {
 	case KindJoomla:

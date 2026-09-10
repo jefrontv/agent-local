@@ -135,6 +135,46 @@ func TestServeMediaFallback(t *testing.T) {
 	}
 }
 
+// A Bedrock site (CONTENT_DIR=/app, no wp-content/) serves uploads under
+// /app/uploads/. The fallback must watch that path, not the conventional
+// /wp-content/uploads/ — a missing /app/uploads file redirects, and a request
+// under the conventional prefix is not treated as this site's media.
+func TestServeMediaFallbackBedrock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "app")
+	web := filepath.Join(root, "web")
+	cfgDir := filepath.Join(root, "config")
+	os.MkdirAll(filepath.Join(web, "app", "uploads", "2026"), 0o755)
+	os.MkdirAll(cfgDir, 0o755)
+	os.WriteFile(filepath.Join(web, "wp-config.php"), []byte(
+		"<?php\nrequire_once dirname(__DIR__) . '/config/application.php';\n"), 0o644)
+	os.WriteFile(filepath.Join(cfgDir, "application.php"), []byte(
+		"<?php\nConfig::define('CONTENT_DIR', '/app');\n"), 0o644)
+
+	store, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := &Site{Slug: "b", Domain: "b.test", WPDir: web, Kind: KindWordPress,
+		MediaFallback: "https://origin.example"}
+	store.PutSite(site)
+	r := NewRouter(NewEngine(store))
+
+	miss := httptest.NewRequest(http.MethodGet, "http://b.test/app/uploads/2026/gone.jpg", nil)
+	rec := httptest.NewRecorder()
+	if !r.serveMediaFallback(rec, miss, "b.test", web) {
+		t.Fatal("a missing /app/uploads file was not redirected")
+	}
+	if loc := rec.Header().Get("Location"); loc != "https://origin.example/app/uploads/2026/gone.jpg" {
+		t.Errorf("Location = %q, want the /app/uploads origin", loc)
+	}
+	if got := r.serveMediaFallback(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "http://b.test/wp-content/uploads/2026/gone.jpg", nil), "b.test", web); got {
+		t.Error("the conventional prefix is not this Bedrock site's media path")
+	}
+}
+
 // The setter is the guard on what the router will hand to a browser.
 func TestSetMediaFallback(t *testing.T) {
 	home := t.TempDir()
