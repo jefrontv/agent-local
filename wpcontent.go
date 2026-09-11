@@ -168,12 +168,32 @@ func contentURLPathCached(wpdir string) string {
 	return p
 }
 
-// siteUploadsURLPath is the URL path the media fallback watches for a site: the
+// uploadsPrefix is the URL path the media fallback watches for a site: the
 // uploads directory under the site's own content dir when one is configured,
 // else the kind's conventional prefix.
-func siteUploadsURLPath(site *Site) string {
+//
+// The kind it consults may be re-detected. Attaching a directory before its
+// files arrive records KindEmpty — that is what the placeholder is for — but
+// nothing on the serving path used to notice when the app was installed into it
+// afterwards. The media fallback is the one caller that reads the kind per
+// request, so it alone kept using the placeholder's empty prefix and silently
+// stopped redirecting missing uploads, while every WordPress-only tool healed
+// itself on the way in.
+func (e *Engine) uploadsPrefix(site *Site) string {
 	if p := contentURLPathCached(site.WPDir); p != "" {
 		return p + "/uploads/"
 	}
-	return site.Kind.UploadsPrefix()
+	kind := site.Kind
+	// Scoped so an ordinary request never enters it: only a kind with no
+	// conventional prefix can be out of date in a way this fixes, and
+	// wp-load.php is the decisive marker DetectKind itself looks for.
+	if kind.UploadsPrefix() == "" && fileExists(filepath.Join(site.WPDir, "wp-load.php")) {
+		if detected := DetectKind(site.WPDir); detected != kind {
+			site.Kind = detected
+			e.Store.PutSite(site)
+			_ = e.Store.Save()
+		}
+		kind = site.Kind
+	}
+	return kind.UploadsPrefix()
 }

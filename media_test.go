@@ -175,6 +175,39 @@ func TestServeMediaFallbackBedrock(t *testing.T) {
 	}
 }
 
+// A site recorded KindEmpty (attached before its files arrived) that now holds
+// WordPress must still redirect its missing uploads. This is the bug that took
+// polar-frontiers' images down: the record said empty, the kind's prefix was
+// empty, and the fallback bailed before reading the configured origin.
+func TestServeMediaFallbackAfterEmptyAttach(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	docroot := filepath.Join(home, "site")
+	os.MkdirAll(docroot, 0o755)
+	os.WriteFile(filepath.Join(docroot, "wp-load.php"), []byte("<?php"), 0o644)
+
+	store, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := &Site{Slug: "late", Domain: "late.test", WPDir: docroot, Kind: KindEmpty,
+		MediaFallback: "https://origin.example"}
+	store.PutSite(site)
+	r := NewRouter(NewEngine(store))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://late.test/wp-content/uploads/2026/02/gone.png", nil)
+	if !r.serveMediaFallback(rec, req, "late.test", docroot) {
+		t.Fatal("a site attached empty and since installed was not redirected")
+	}
+	if loc := rec.Header().Get("Location"); loc != "https://origin.example/wp-content/uploads/2026/02/gone.png" {
+		t.Errorf("Location = %q", loc)
+	}
+	if got := store.Site("late").Kind; got != KindWordPress {
+		t.Errorf("kind not corrected during serving: %q", got)
+	}
+}
+
 // The setter is the guard on what the router will hand to a browser.
 func TestSetMediaFallback(t *testing.T) {
 	home := t.TempDir()
