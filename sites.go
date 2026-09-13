@@ -223,7 +223,7 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 		cb("dns", "added /etc/hosts entry")
 	}
 	if cert, _, created, err := EnsureCert(domain); err == nil && created {
-		_ = TrustCert(cert, false) // best-effort; TUI offers trust action
+		trustCertOrReport(cert, e.HostsInteractive, TrustCert, cb) // best-effort; TUI offers trust action
 	}
 	cb("done", BareURL(site))
 	return site, nil
@@ -358,7 +358,7 @@ func (e *Engine) AttachSite(o AttachOpts) (*Site, error) {
 		cb("dns", "added /etc/hosts entry")
 	}
 	if cert, _, created, err := EnsureCert(domain); err == nil && created {
-		_ = TrustCert(cert, false)
+		trustCertOrReport(cert, e.HostsInteractive, TrustCert, cb)
 	}
 	if err := e.StartSite(slug); err != nil {
 		return site, fmt.Errorf("start: %w", err)
@@ -850,7 +850,9 @@ func (e *Engine) SetDomain(slug, domain string) error {
 		}
 	}
 	if cert, _, created, err := EnsureCert(domain); err == nil && created {
-		_ = TrustCert(cert, false)
+		// The prompt is deliberate for this command: an interactive caller falls
+		// through to the osascript dialog here, so this line blocks until answered.
+		trustCertOrReport(cert, e.HostsInteractive, TrustCert, warnStderr) // no progress callback on this path
 	}
 	if site.State == StateRunning {
 		if err := e.StopSite(slug); err != nil {
@@ -1092,7 +1094,9 @@ func (e *Engine) AddWorktree(slug, branch string) (*Worktree, error) {
 	}
 	_, _ = EnsureHosts(e.HostsInteractive, []string{domain})
 	if cert, _, created, err := EnsureCert(domain); err == nil && created {
-		_ = TrustCert(cert, false)
+		// The prompt is deliberate for this command: an interactive caller falls
+		// through to the osascript dialog here, so this line blocks until answered.
+		trustCertOrReport(cert, e.HostsInteractive, TrustCert, warnStderr) // no progress callback on this path
 	}
 	if err := e.StartWorktree(id); err != nil {
 		return w, err

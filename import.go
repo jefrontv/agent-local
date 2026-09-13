@@ -444,7 +444,7 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 		cb("dns", "added /etc/hosts entry")
 	}
 	if cert, _, created, err := EnsureCert(domain); err == nil && created {
-		_ = TrustCert(cert, false)
+		trustCertOrReport(cert, e.HostsInteractive, TrustCert, cb)
 	}
 
 	// The site is served from here now. Unless asked to keep it, the DDEV

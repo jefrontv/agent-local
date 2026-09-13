@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -68,6 +69,13 @@ func EnsureCert(domain string) (cert, key string, created bool, err error) {
 // reboots; /tmp would let another user pre-create the name.
 const trustStagePath = "/var/db/agent-local-trust.crt"
 
+// trustStageMu serializes the staged tee-then-trust pair. trustStagePath is
+// one fixed file and the daemon trusts certs from concurrent jobs, so without
+// this two calls interleave — each trusting the other's bytes, both told
+// success, one cert still untrusted. Same reasoning as hostsMu for the one
+// temp path /etc/hosts goes through.
+var trustStageMu sync.Mutex
+
 // TrustCert adds our cert to the system keychain as trusted for SSL
 // (macOS only). No-op when the OS already trusts it.
 //
@@ -90,12 +98,18 @@ func TrustCert(certPath string, interactive bool) error {
 	if err != nil {
 		return err
 	}
-	if sudoNStdin(der, "/usr/bin/tee", trustStagePath) == nil &&
-		sudoN("-n", "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
-			"-p", "ssl", "-k", "/Library/Keychains/System.keychain", trustStagePath) == nil {
-		if certTrusted(certPath) {
-			return nil
-		}
+	// Only the staged pair is serialized: the interactive fallback below names
+	// the cert's real path, so it never touches trustStagePath. Scoped, so the
+	// unlock cannot be skipped — a panic in here must not wedge every later call.
+	trusted := func() bool {
+		trustStageMu.Lock()
+		defer trustStageMu.Unlock()
+		return sudoNStdin(der, "/usr/bin/tee", trustStagePath) == nil &&
+			sudoN("-n", "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
+				"-p", "ssl", "-k", "/Library/Keychains/System.keychain", trustStagePath) == nil
+	}()
+	if trusted && certTrusted(certPath) {
+		return nil
 	}
 	if !interactive {
 		return fmt.Errorf("needs root to trust %s (run: agent-local sudo, or: agent-local cert %s --trust)", filepath.Base(certPath), strings.TrimSuffix(filepath.Base(certPath), ".crt"))
@@ -108,6 +122,37 @@ func TrustCert(certPath string, interactive bool) error {
 		return fmt.Errorf("the password prompt was cancelled or the keychain refused; %s is still untrusted", filepath.Base(certPath))
 	}
 	return nil
+}
+
+// certRemedy is the next step for an untrusted cert, appended to a failure
+// that does not already name it — the non-interactive message does, the
+// cancelled-prompt and osascript ones do not.
+const certRemedy = " (run: agent-local sudo to allow this without a prompt)"
+
+// trustCertOrReport trusts a cert we just issued and reports a failure instead
+// of dropping it. A setup path is served either way, so a swallowed error here
+// surfaces as a browser warning the user reads as a broken site. Trust and
+// report are injected so this decision is testable without root; report matches
+// the progress callbacks the setup paths already emit.
+//
+// Reach is bounded by the callers' `created` guard: a cert that already exists
+// but is untrusted is served without ever landing here.
+func trustCertOrReport(certPath string, interactive bool, trust func(string, bool) error, report func(stage, detail string)) {
+	err := trust(certPath, interactive)
+	if err == nil {
+		return
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "agent-local sudo") {
+		msg += certRemedy
+	}
+	report("warn", "cert not trusted: "+msg)
+}
+
+// warnStderr is the reporter for call paths with no progress callback, in the
+// shape the rest of those paths already use.
+func warnStderr(_, detail string) {
+	fmt.Fprintf(os.Stderr, "warning: %s\n", detail)
 }
 
 // certTrusted asks the OS whether it trusts this exact certificate for SSL.
