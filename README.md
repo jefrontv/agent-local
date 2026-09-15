@@ -38,7 +38,13 @@ brew install jefrontv/tap/agent-local
 No Homebrew:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jefrontv/agent-local/main/install.sh | bash
+curl -fsSL https://al.tools.efront.dev/install.sh | bash
+```
+
+Install and set up in one step (installs the binary, then runs the setup below):
+
+```sh
+curl -fsSL https://al.tools.efront.dev/install.sh | bash -s -- --setup
 ```
 
 From a checkout (builds with Go if present, else downloads the latest release):
@@ -50,9 +56,16 @@ git clone git@github.com:jefrontv/agent-local.git && cd agent-local && ./install
 No prerequisites either way. Then:
 
 ```sh
-agent-local doctor        # what's present, what's missing
-agent-local doctor --fix  # install/repair everything fixable
+agent-local setup         # one-time: root, certs, hosts, bare URLs — verified
 ```
+
+`setup` installs the passwordless allowlist (one password dialog), writes the
+`/etc/hosts` entries, trusts the per-domain TLS certs and turns on bare URLs, then
+reports whether the machine is ready. It is idempotent — re-running does nothing
+and asks for nothing.
+
+Prefer to drive it by hand? `agent-local doctor` reports what is present and what
+is missing, and `agent-local doctor --fix` repairs everything fixable.
 
 Root is needed for exactly two things — `/etc/hosts` entries and trusting the
 per-domain TLS cert — and the app asks (macOS password dialog) at the moment it
@@ -978,6 +991,7 @@ agent-local worktrees SLUG
 agent-local wp SLUG -- core version    wp-cli through the site's PHP
 agent-local install brew|php V|mariadb|apache|wp-cli
 agent-local front [router|apache]      show / switch HTTP front
+agent-local setup                      one-time: root, certs, hosts, bare URLs — verified
 agent-local sudo                       passwordless root allowlist (one-time)
 agent-local alias [--off]              bare URLs on 127.0.0.2:80/443 (one-time)
 agent-local yield [secs]               free :80/:443 briefly, then re-bind

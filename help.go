@@ -79,6 +79,7 @@ var helpGroups = []helpGroup{
 		{"job", "ID", "one job's progress"},
 	}},
 	{"Machine", []helpEntry{
+		{"setup", "", "one-time: root allowlist, bare URLs, certs and hosts, verified"},
 		{"doctor", "[--fix]", "health checks; --fix applies every repair"},
 		{"install", "brew | php VERSION | mariadb | apache", "install a dependency (wp-cli too)"},
 		{"front", "[router | apache]", "show or switch the HTTP front"},

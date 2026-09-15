@@ -460,6 +460,11 @@ img:is([sizes=auto i],[sizes^="auto," i]){contain-intrinsic-size:3000px 1500px}
 			<code>brew install jefrontv/tap/agent-local</code>
 			<span class="install__copy" aria-hidden="true">copy</span>
 		</button>
+				<button class="install__step" type="button" data-copy="agent-local setup">
+			<span class="install__k">setup</span>
+			<code>agent-local setup</code>
+			<span class="install__copy" aria-hidden="true">copy</span>
+		</button>
 				<button class="install__step" type="button" data-copy="agent-local create mysite">
 			<span class="install__k">create</span>
 			<code>agent-local create mysite</code>
@@ -471,9 +476,9 @@ img:is([sizes=auto i],[sizes^="auto," i]){contain-intrinsic-size:3000px 1500px}
 			<span class="install__copy" aria-hidden="true">copy</span>
 		</button>
 			</div>
-		<button class="install__alt" type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/jefrontv/agent-local/main/install.sh | bash">
+		<button class="install__alt" type="button" data-copy="curl -fsSL https://al.tools.efront.dev/install.sh | bash -s -- --setup">
 		<span class="install__k">no homebrew</span>
-		<code>curl -fsSL https:/<wbr>/<wbr>raw.githubusercontent.com/<wbr>jefrontv/<wbr>agent-local/<wbr>main/<wbr>install.sh | bash</code>
+		<code>curl -fsSL https:/<wbr>/<wbr>al.tools.efront.dev/<wbr>install.sh | bash -s -- --setup</code>
 	</button>
 		<p class="label label--center">macOS · Apple Silicon and Intel · MIT licensed</p>
 	<span class="sr-only" aria-live="polite" id="copy-live"></span>

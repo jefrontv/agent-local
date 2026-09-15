@@ -88,6 +88,8 @@ func main() {
 		err = cmdYield(rest)
 	case "sudo":
 		err = cmdSudoSetup()
+	case "setup":
+		err = cmdSetup()
 	case "front-daemon":
 		err = RunFrontDaemon(rest)
 	case "media":
@@ -1940,7 +1942,21 @@ func cmdAlias(args []string) error {
 	return nil
 }
 
-// cmdSudoSetup installs a scoped sudoers drop-in so all future root
+// cmdSudoSetup installs the allowlist and reports it. The work is in
+// installSudoAllowlist so `setup` can do the same without printing a second
+// title inside its own output.
+func cmdSudoSetup() error {
+	if err := installSudoAllowlist(); err != nil {
+		return err
+	}
+	outTitle(AppName, "sudo")
+	outStep("installed /etc/sudoers.d/agent-local; root operations run without a prompt")
+	outNote("exact commands only: hosts, the loopback alias, the front daemon, and trusting our own certs via one fixed path")
+	outHint("remove", "sudo rm /etc/sudoers.d/agent-local")
+	return nil
+}
+
+// installSudoAllowlist writes the scoped sudoers drop-in so all future root
 // operations (hosts writes, pf/alias setup, cert trust) run via `sudo -n`
 // silently — no more osascript dialogs. One authorization installs it.
 //
@@ -1949,7 +1965,7 @@ func cmdAlias(args []string) error {
 // route the hosts file uses), so nothing else can swap the bytes in, and the
 // trust command names the path exactly — not a wildcard. The earlier
 // `add-trusted-cert *` entry let any local process trust any certificate.
-func cmdSudoSetup() error {
+func installSudoAllowlist() error {
 	user := os.Getenv("USER")
 	dst := "/Library/LaunchDaemons/local.agent-local.front.plist"
 	content := fmt.Sprintf(`# agent-local: scoped passwordless root. Exact commands only.
@@ -1988,9 +2004,57 @@ if /usr/sbin/visudo -cf "$stage"; then mv "$stage" /etc/sudoers.d/agent-local; e
 	if err := RunPrivileged(true, "sh", "-c", script, "_", tmp); err != nil {
 		return fmt.Errorf("sudoers install failed: %w", err)
 	}
-	outTitle(AppName, "sudo")
-	outStep("installed /etc/sudoers.d/agent-local; root operations run without a prompt")
-	outNote("exact commands only: hosts, the loopback alias, the front daemon, and trusting our own certs via one fixed path")
-	outHint("remove", "sudo rm /etc/sudoers.d/agent-local")
+	return nil
+}
+
+// cmdSetup is the whole first-run story in one command: the root allowlist, then
+// every repair that needs it, then a verdict.
+//
+// It exists because the parts were three commands in a required order that
+// nothing checked. Getting the order wrong, or skipping it, produced a site that
+// did not resolve — so this does them in the order that works, and then says
+// whether the machine is actually ready.
+//
+// Idempotent: re-running does nothing when there is nothing to do, and does not
+// ask for a password it does not need.
+func cmdSetup() error {
+	store, _, err := openEnv()
+	if err != nil {
+		return err
+	}
+	outTitle(AppName, "setup")
+
+	// The allowlist first. It is the only step that must prompt, and installing it
+	// is what makes every repair after it passwordless.
+	if allow := sudoAllowlist(); allow != "" && allowlistCurrent(allow) {
+		outRow("root", "already allowed — no password needed")
+	} else {
+		outStep("asking for your password once; root operations never prompt again")
+		if err := installSudoAllowlist(); err != nil {
+			// Not fatal: DoctorFix below can still prompt per step, and this is
+			// most often a cancelled dialog rather than a broken machine.
+			outWarn("root allowlist not installed: " + err.Error())
+		}
+	}
+
+	// Every repair doctor knows, interactive so that a cancelled allowlist step
+	// still lets the parts needing root ask rather than fail quietly.
+	for _, done := range DoctorFix(store, true) {
+		outStep(done)
+	}
+
+	st := SetupState()
+	if st["ok"] == true {
+		outRow("setup", "complete")
+		outHint("next", AppName+" create mysite")
+		return nil
+	}
+	outRow("setup", "incomplete")
+	if d, _ := st["detail"].(string); d != "" {
+		outWarn(d)
+	}
+	if f, _ := st["fix"].(string); f != "" {
+		outHint("fix", f)
+	}
 	return nil
 }

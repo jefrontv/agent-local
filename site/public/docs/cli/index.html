@@ -122,6 +122,7 @@ start | stop | restart SLUG                         control one site
 delete SLUG [--yes] [--keep-files] [--keep-db]      remove a site; a snapshot is saved first
 open SLUG                                           open the site in your browser
 domain SLUG NAME                                    change a site&#039;s domain; hosts entry and cert follow
+move SLUG DIR                                       move a site&#039;s files to another directory
 php SLUG VERSION [--tap]                            switch PHP version, installing it if needed
 resolve [PATH]                                      which site owns a path (default: cwd)</code></pre><h2>Database</h2><pre class="docs__pre"><code>db SLUG                                             connection details
 db SLUG &quot;SQL&quot;                                       run a statement
@@ -153,7 +154,8 @@ mcp                                                 the MCP server itself (stdio
 mcp --config                                        the client config block, for a client connect doesn&#039;t know
 api-token                                           bearer token for the HTTP API
 jobs                                                recent long-running jobs
-job ID                                              one job&#039;s progress</code></pre><h2>Machine</h2><pre class="docs__pre"><code>doctor [--fix]                                      health checks; --fix applies every repair
+job ID                                              one job&#039;s progress</code></pre><h2>Machine</h2><pre class="docs__pre"><code>setup                                               one-time: root, certs, hosts, bare URLs — verified
+doctor [--fix]                                      health checks; --fix applies every repair
 install brew | php VERSION | mariadb | apache       install a dependency (wp-cli too)
 front [router | apache]                             show or switch the HTTP front
 yield [SECONDS]                                     free :80/:443 briefly so another app can start

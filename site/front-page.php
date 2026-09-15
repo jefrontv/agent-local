@@ -50,10 +50,11 @@ $defaults = array(
 	),
 	'install_steps'  => array(
 		array( 'label' => 'install', 'command' => 'brew install jefrontv/tap/agent-local' ),
+		array( 'label' => 'setup', 'command' => 'agent-local setup' ),
 		array( 'label' => 'create', 'command' => 'agent-local create mysite' ),
 		array( 'label' => 'agents', 'command' => 'agent-local connect' ),
 	),
-	'install_alt'    => 'curl -fsSL https://raw.githubusercontent.com/jefrontv/agent-local/main/install.sh | bash',
+	'install_alt'    => 'curl -fsSL https://al.tools.efront.dev/install.sh | bash -s -- --setup',
 );
 ?>
 

@@ -15,7 +15,7 @@
 //   SOURCE      http://agentlocal.test/
 //   PUBLIC_URL  https://al.tools.efront.dev/
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, copyFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -89,4 +89,12 @@ await writeFile(join(out, "sitemap.xml"),
 
 console.log(`public/index.html  ${Math.round(Buffer.byteLength(html) / 1024)} KB, rendered from ${SOURCE}`);
 console.log(`public/docs/       ${docs} pages`);
+
+// The installer, served from this domain so `curl -fsSL https://al.tools.efront.dev/install.sh`
+// works. Copied rather than kept here: the repo root is the one source, so what
+// the site serves and what `git clone && ./install.sh` runs cannot drift.
+const installer = join(here, "..", "install.sh");
+await copyFile(installer, join(out, "install.sh"));
+console.log(`public/install.sh  copied from the repo root`);
+
 console.log(`commit site/public, push, then deploy from Muster to publish at ${PUBLIC_URL}`);
