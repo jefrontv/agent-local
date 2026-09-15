@@ -136,13 +136,15 @@ echo "==> dependency check:"
 command -v brew >/dev/null 2>&1 && echo "    homebrew: $(brew --version | head -1)" || echo "    homebrew: missing (run: $BIN_NAME install brew)"
 command -v php >/dev/null 2>&1 && echo "    php:      $(php -v | head -1)" || echo "    php:      missing (run: $BIN_NAME install php 8.3)"
 echo "    database: auto-managed MariaDB ($BIN_NAME install mariadb)"
-echo
-echo "Next:"
 if [[ "$RUN_SETUP" == "1" ]]; then
   # Runs the whole first-run sequence: one password prompt, then the allowlist,
-  # hosts entries, certs and the bare-URL alias, verified at the end.
+  # hosts entries, certs and the bare-URL alias, verified at the end. No "Next:"
+  # header — there is no next step, this is it.
+  echo
   "$DEST/$BIN_NAME" setup
 else
+  echo
+  echo "Next:"
   echo "    $BIN_NAME setup           # one-time: root, certs, hosts, bare URLs"
   echo
   echo "    or install and set up in one go:"
