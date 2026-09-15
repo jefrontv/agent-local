@@ -71,6 +71,46 @@ func allowlistCurrent(listing string) bool {
 	return strings.Contains(listing, "add-trusted-cert") && strings.Contains(listing, trustStagePath)
 }
 
+// SetupState reports the two machine-level things a caller should know before it
+// creates anything, so a first site can be set up rather than discovered broken.
+//
+// `root` is the one that matters: without the passwordless allowlist, a non-
+// interactive caller cannot write /etc/hosts or trust a cert, so the site is
+// created and its domain never resolves. `bare_urls` is a degraded-but-working
+// state by comparison — sites are served on their port instead — which is why it
+// is reported separately and does not fail `ok`.
+//
+// Both are derived from what doctor already checks; this is the machine-readable
+// form, for callers that act on it instead of printing it.
+func SetupState() map[string]interface{} {
+	return setupStateFrom(sudoAllowlist(), AliasActive() && dialable(LoopbackAlias, 80))
+}
+
+// setupStateFrom is SetupState's decision, split out so it can be exercised
+// without a machine: the two probes above are the only impure parts.
+func setupStateFrom(allow string, bare bool) map[string]interface{} {
+	root := "ok"
+	switch {
+	case allow == "":
+		root = "missing"
+	case !allowlistCurrent(allow):
+		root = "stale"
+	}
+	st := map[string]interface{}{
+		"root":      root,
+		"bare_urls": bare,
+		"ok":        root == "ok",
+	}
+	if root != "ok" {
+		st["detail"] = "creating a site cannot write its /etc/hosts entry or trust its certificate without asking for a password, so the site would not resolve"
+		st["fix"] = `call doctor_fix with interactive=true, or run: agent-local sudo`
+	} else if !bare {
+		st["detail"] = "bare URLs are off; sites are served on their port"
+		st["fix"] = `call doctor_fix with interactive=true, or run: agent-local alias`
+	}
+	return st
+}
+
 // quoteForOsascript renders argv for `do shell script`: each arg becomes a
 // single-quoted sh word (so $ and spaces survive), then the whole command is
 // escaped for the enclosing AppleScript double-quoted string.
@@ -192,6 +232,33 @@ func EnsureHosts(interactive bool, domains []string) (int, error) {
 		return 0, err
 	}
 	return changed, nil
+}
+
+// hostsRemedy is the next step when /etc/hosts cannot be written, appended to a
+// failure that does not already name it — the non-interactive message does, the
+// cancelled-prompt ones do not.
+const hostsRemedy = " (run: agent-local sudo to allow this without a prompt)"
+
+// ensureHostsOrReport writes a domain's /etc/hosts entry and reports a failure
+// instead of dropping it. The site is served either way, so a discarded error
+// here surfaces as a site that simply does not resolve, with nothing anywhere
+// saying why — which is what a rename and a branch preview used to do.
+//
+// write and report are injected so the decision is testable without root, and
+// report matches the shape the setup paths' progress callbacks already emit.
+func ensureHostsOrReport(interactive bool, domains []string, write func(bool, []string) (int, error), report func(stage, detail string)) {
+	n, err := write(interactive, domains)
+	if err != nil {
+		msg := err.Error()
+		if !strings.Contains(msg, "agent-local sudo") {
+			msg += hostsRemedy
+		}
+		report("warn", "hosts entry failed (need root): "+msg)
+		return
+	}
+	if n > 0 {
+		report("dns", "added /etc/hosts entry")
+	}
 }
 
 // hostLineHasIP reports whether content maps a domain at a specific address.

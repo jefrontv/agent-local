@@ -20,17 +20,24 @@ import (
 
 // CreateOpts configures a new site.
 type CreateOpts struct {
-	Name       string
-	Dir        string // where the site lives; empty → ~/.agent-local/sites/<slug>
-	Domain     string // empty → slug.test
-	PHPVersion string // empty → highest installed
-	WPVersion  string // empty → "latest"
-	Repo       string // optional git clone source instead of fresh download
-	AdminUser  string // default "admin"
-	AdminPass  string // default: random
-	AdminEmail string // default admin@<domain>
-	Title      string
-	Progress   func(stage, detail string)
+	// Interactive opts this setup path into an admin password prompt for its
+	// two root steps (/etc/hosts and cert trust). The engine's HostsInteractive
+	// covers the CLI, where a prompt is expected; this is the per-request
+	// equivalent, so a caller with no terminal — the daemon behind an app — can
+	// still finish setup instead of leaving a site that quietly does not
+	// resolve. Same field on AttachOpts and ImportOpts.
+	Interactive bool
+	Name        string
+	Dir         string // where the site lives; empty → ~/.agent-local/sites/<slug>
+	Domain      string // empty → slug.test
+	PHPVersion  string // empty → highest installed
+	WPVersion   string // empty → "latest"
+	Repo        string // optional git clone source instead of fresh download
+	AdminUser   string // default "admin"
+	AdminPass   string // default: random
+	AdminEmail  string // default admin@<domain>
+	Title       string
+	Progress    func(stage, detail string)
 }
 
 // CreateSite builds a site end-to-end: dirs, db, wordpress, config, install.
@@ -216,14 +223,14 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 		return abort(fmt.Errorf("installer did not report success (see logs/%s)", slug))
 	}
 
+	// A caller with no terminal can still finish setup by asking for the
+	// prompt; without this the daemon's non-interactive default leaves the
+	// domain unresolvable and returns a site that looks created.
+	mayPrompt := e.HostsInteractive || o.Interactive
 	cb("dns", "registering "+domain)
-	if n, err := EnsureHosts(e.HostsInteractive, []string{domain}); err != nil {
-		cb("warn", "hosts entry failed (need root): "+err.Error())
-	} else if n > 0 {
-		cb("dns", "added /etc/hosts entry")
-	}
+	ensureHostsOrReport(mayPrompt, []string{domain}, EnsureHosts, cb)
 	if cert, _, created, err := EnsureCert(domain); err == nil && created {
-		trustCertOrReport(cert, e.HostsInteractive, TrustCert, cb) // best-effort; TUI offers trust action
+		trustCertOrReport(cert, mayPrompt, TrustCert, cb) // best-effort; TUI offers trust action
 	}
 	cb("done", BareURL(site))
 	return site, nil
@@ -233,11 +240,12 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 // is downloaded and no installer runs: the directory is served as it is and gets
 // its own empty database to use.
 type AttachOpts struct {
-	Dir      string // required: the directory to serve
-	Name     string // default: the directory's own name
-	Domain   string // default: <slug><suffix>
-	PHPVer   string // default: highest installed
-	Progress func(stage, detail string)
+	Interactive bool   // see CreateOpts.Interactive
+	Dir         string // required: the directory to serve
+	Name        string // default: the directory's own name
+	Domain      string // default: <slug><suffix>
+	PHPVer      string // default: highest installed
+	Progress    func(stage, detail string)
 }
 
 // AttachSite registers an existing directory as a site. It is the counterpart to
@@ -351,14 +359,11 @@ func (e *Engine) AttachSite(o AttachOpts) (*Site, error) {
 	if err := e.Store.Save(); err != nil {
 		return nil, err
 	}
+	mayPrompt := e.HostsInteractive || o.Interactive
 	cb("dns", "registering "+domain)
-	if n, err := EnsureHosts(e.HostsInteractive, []string{domain}); err != nil {
-		cb("warn", "hosts entry failed (need root): "+err.Error())
-	} else if n > 0 {
-		cb("dns", "added /etc/hosts entry")
-	}
+	ensureHostsOrReport(mayPrompt, []string{domain}, EnsureHosts, cb)
 	if cert, _, created, err := EnsureCert(domain); err == nil && created {
-		trustCertOrReport(cert, e.HostsInteractive, TrustCert, cb)
+		trustCertOrReport(cert, mayPrompt, TrustCert, cb)
 	}
 	if err := e.StartSite(slug); err != nil {
 		return site, fmt.Errorf("start: %w", err)
@@ -840,7 +845,9 @@ func (e *Engine) SetDomain(slug, domain string) error {
 	if err := e.Store.Save(); err != nil {
 		return err
 	}
-	_, _ = EnsureHosts(e.HostsInteractive, []string{domain})
+	// A rename whose hosts entry cannot be written leaves the new name
+	// unresolvable, so say so rather than reporting a clean rename.
+	ensureHostsOrReport(e.HostsInteractive, []string{domain}, EnsureHosts, warnStderr)
 	// The name we just left behind would otherwise keep resolving to us forever,
 	// so /etc/hosts grows a dead entry per rename — and the old address still
 	// answers, which is worse than not resolving at all.
@@ -1092,7 +1099,9 @@ func (e *Engine) AddWorktree(slug, branch string) (*Worktree, error) {
 		e.Store.DelWorktree(id)
 		return undo(err)
 	}
-	_, _ = EnsureHosts(e.HostsInteractive, []string{domain})
+	// A preview whose hosts entry cannot be written is unreachable, so say so
+	// rather than returning a preview that silently never resolves.
+	ensureHostsOrReport(e.HostsInteractive, []string{domain}, EnsureHosts, warnStderr)
 	if cert, _, created, err := EnsureCert(domain); err == nil && created {
 		// The prompt is deliberate for this command: an interactive caller falls
 		// through to the osascript dialog here, so this line blocks until answered.

@@ -190,6 +190,13 @@ func prop(t, desc string) map[string]interface{} {
 	return map[string]interface{}{"type": t, "description": desc}
 }
 
+// rootPromptProp is the flag the setup paths and doctor_fix share: it opts a
+// call into letting the process show the macOS admin password dialog for the
+// root steps (/etc/hosts, cert trust, the bare-URL alias). Off by default — an
+// unattended call must never block on a question nobody is there to answer.
+// Defined once so the four tools cannot describe it differently.
+var rootPromptProp = prop("boolean", "let this call show the macOS admin password dialog for its root steps (default false). Pass true when the machine never ran `agent-local sudo` and a human is present to answer — otherwise the site is created but its domain does not resolve")
+
 // toolTable is the catalogue built once. mcpTools constructs ~60 descriptors
 // with nested schema maps; rebuilding that on every tools/list and every
 // tools/call — the old lookup was a linear scan over a fresh build — was
@@ -234,12 +241,14 @@ func mcpTools() []mcpTool {
 			"admin_pass":  prop("string", "admin password"),
 			"title":       prop("string", "site title"),
 			"async":       prop("boolean", "return a job id immediately and poll get_job instead of waiting"),
+			"interactive": rootPromptProp,
 		}, "name")},
 		{"attach_site", "Serve a directory that already exists as a site, with its own empty database. Works for any PHP app — the kind (wordpress, joomla, laravel, drupal, php, empty) is detected and returned in the site record; WordPress-only tools (wp_cli, wp_info, magic_login, set_wp_debug, wp-config constants) answer 409 for other kinds. The caller's files are left alone: an existing wp-config.php is kept, and one is written only when WordPress core is present with no config at all; other apps get the database credentials to paste into their own config. Use create_site for a fresh WordPress install, import_site when a WordPress database should be copied too.", schema(map[string]interface{}{
 			"dir":         prop("string", "absolute path to the directory to serve; created if missing"),
 			"name":        prop("string", "site name (default: the directory's own name)"),
 			"domain":      prop("string", "local domain (default: slug + configured suffix)"),
 			"php_version": prop("string", "php version e.g. 8.3"),
+			"interactive": rootPromptProp,
 		}, "dir")},
 		{"import_site", "Import a LocalWP site, a DDEV project, or any WordPress directory into agent-local. Copies the database (or loads a .sql dump, or serves with its existing DB), points wp-config at the embedded MariaDB, serves it. A stopped LocalWP site or DDEV project is started first so its database can be read. A DDEV project is then removed from DDEV (its own snapshot kept) unless keep_ddev is true.", schema(map[string]interface{}{
 			"source":      prop("string", "LocalWP site name, DDEV project name, OR absolute path to a WordPress docroot"),
@@ -256,6 +265,7 @@ func mcpTools() []mcpTool {
 			"db_user":     prop("string", "explicit source DB user"),
 			"db_pass":     prop("string", "explicit source DB password"),
 			"db_name":     prop("string", "explicit source DB name"),
+			"interactive": rootPromptProp,
 		}, "source")},
 		{"localwp_sites", "List LocalWP sites available for import", schema(nil)},
 		{"ddev_projects", "List DDEV projects available for import: name, status, type, approot, docroot, PHP version, primary URL. With Docker down, names and roots still come from DDEV's registry and status says so.", schema(nil)},
@@ -337,7 +347,8 @@ func mcpTools() []mcpTool {
 			"async":   prop("boolean", "return a job id immediately and poll get_job instead of waiting"),
 		}, "what")},
 		{"doctor", "Run health checks", schema(nil)},
-		{"doctor_fix", "Auto-fix health issues that don't need a password prompt", schema(nil)},
+		{"doctor_fix", "Apply the auto-fixable health issues. Findings that need root are attempted only when the machine's passwordless allowlist is in place; pass interactive=true to let this process ask for the admin password instead (a macOS dialog), which is how a fix for /etc/hosts, the bare-URL alias or a cert works on a machine that never ran `agent-local sudo`. Returns what it did, and `failed: <check>: <reason>` for anything it could not.", schema(map[string]interface{}{
+			"interactive": rootPromptProp})},
 		{"get_logs", "Tail a log: mysql, apache, daemon, fpm-<slug>, fpm-<worktree-id>, wp-<slug> (WordPress debug log, see set_wp_debug), or <slug>", schema(map[string]interface{}{
 			"name": prop("string", "log name"), "lines": prop("number", "tail this many lines (default 100)")}, "name")},
 		{"get_wp_debug", "A site's WP_DEBUG state and where its debug log goes", schema(map[string]interface{}{
@@ -550,6 +561,7 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		return apiPost("/attach", map[string]interface{}{
 			"dir": get("dir"), "name": get("name"), "domain": get("domain"),
 			"php_version": get("php_version"),
+			"interactive": args["interactive"] == true,
 		})
 	case "import_site":
 		body := map[string]interface{}{
@@ -559,6 +571,7 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 			"keep_ddev": args["keep_ddev"] == true,
 			"db_host":   get("db_host"), "db_user": get("db_user"),
 			"db_pass": get("db_pass"), "db_name": get("db_name"),
+			"interactive": args["interactive"] == true,
 		}
 		if p, ok := args["db_port"].(float64); ok {
 			body["db_port"] = int(p)
@@ -706,7 +719,7 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 	case "doctor":
 		return apiGet("/doctor")
 	case "doctor_fix":
-		return apiPost("/doctor/fix", nil)
+		return apiPost("/doctor/fix", map[string]interface{}{"interactive": args["interactive"] == true})
 	case "get_wp_debug":
 		return apiGet("/sites/" + get("slug") + "/wp-debug")
 	case "set_wp_debug":

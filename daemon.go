@@ -723,16 +723,17 @@ func (a *APIServer) handleAdminer(w http.ResponseWriter, r *http.Request) {
 }
 
 type createReq struct {
-	Dir        string `json:"dir"`
-	Name       string `json:"name"`
-	Domain     string `json:"domain"`
-	PHPVersion string `json:"php_version"`
-	WPVersion  string `json:"wp_version"`
-	Repo       string `json:"repo"`
-	AdminUser  string `json:"admin_user"`
-	AdminPass  string `json:"admin_pass"`
-	AdminEmail string `json:"admin_email"`
-	Title      string `json:"title"`
+	Dir         string `json:"dir"`
+	Name        string `json:"name"`
+	Domain      string `json:"domain"`
+	PHPVersion  string `json:"php_version"`
+	WPVersion   string `json:"wp_version"`
+	Repo        string `json:"repo"`
+	AdminUser   string `json:"admin_user"`
+	AdminPass   string `json:"admin_pass"`
+	AdminEmail  string `json:"admin_email"`
+	Title       string `json:"title"`
+	Interactive bool   `json:"interactive"`
 }
 
 func (a *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -756,6 +757,7 @@ func (a *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		},
 		"db":        map[string]interface{}{"running": e.DBRunning(), "port": DefaultDBPort},
 		"http":      map[string]interface{}{"port": DefaultHTTPPort, "listening": portOpen(DefaultHTTPPort), "front": FrontKind(a.store)},
+		"setup":     SetupState(),
 		"runtimes":  a.store.Inventory().Runtimes(),
 		"sites":     len(a.store.Sites()),
 		"worktrees": len(a.store.Data.Worktrees),
@@ -814,10 +816,11 @@ func (a *APIServer) handleSitesDir(w http.ResponseWriter, r *http.Request) {
 // and their files untouched. The counterpart to /import, which copies a database.
 func (a *APIServer) handleAttach(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Dir        string `json:"dir"`
-		Name       string `json:"name"`
-		Domain     string `json:"domain"`
-		PHPVersion string `json:"php_version"`
+		Dir         string `json:"dir"`
+		Name        string `json:"name"`
+		Domain      string `json:"domain"`
+		PHPVersion  string `json:"php_version"`
+		Interactive bool   `json:"interactive"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, 400, "bad json: "+err.Error())
@@ -829,6 +832,7 @@ func (a *APIServer) handleAttach(w http.ResponseWriter, r *http.Request) {
 	}
 	site, err := a.engine.AttachSite(AttachOpts{
 		Dir: req.Dir, Name: req.Name, Domain: req.Domain, PHPVer: req.PHPVersion,
+		Interactive: req.Interactive,
 	})
 	if err != nil {
 		fail(w, 500, err.Error())
@@ -853,6 +857,7 @@ func (a *APIServer) handleCreate(w http.ResponseWriter, r *http.Request) {
 			WPVersion: req.WPVersion, Repo: req.Repo,
 			AdminUser: req.AdminUser, AdminPass: req.AdminPass, AdminEmail: req.AdminEmail,
 			Title: req.Title, Progress: cb,
+			Interactive: req.Interactive,
 		})
 	})
 }
@@ -1669,8 +1674,25 @@ func (a *APIServer) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	ok(w, Doctor(a.store))
 }
 
+// handleDoctorFix applies the auto-fixable findings. Prompting for the admin
+// password is opt-in: the daemon can show the macOS dialog (it runs in the
+// user's GUI session, so osascript reaches the screen), but doing that unbidden
+// would block an unattended job on a question nobody is there to answer. A
+// caller that wants the prompt asks for it.
+//
+// Without this the endpoint hardcoded non-interactive, so the documented remedy
+// for a root-requiring finding could not fix the thing it exists to fix when it
+// was reached from the app rather than a terminal.
 func (a *APIServer) handleDoctorFix(w http.ResponseWriter, r *http.Request) {
-	ok(w, DoctorFix(a.store, false))
+	var req doctorFixReq
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	ok(w, DoctorFix(a.store, req.Interactive))
+}
+
+type doctorFixReq struct {
+	Interactive bool `json:"interactive"`
 }
 
 // logName is what `logs NAME` accepts: a bare file stem such as apache,
@@ -1737,19 +1759,20 @@ func (a *APIServer) handleHosts(w http.ResponseWriter, r *http.Request) {
 }
 
 type importReq struct {
-	Source     string `json:"source"` // LocalWP site name, DDEV project name, or docroot path
-	Name       string `json:"name"`
-	Domain     string `json:"domain"`
-	PHPVersion string `json:"php_version"`
-	Copy       bool   `json:"copy"`
-	SQLDump    string `json:"sql_dump"`
-	ServeOnly  bool   `json:"serve_only"`
-	KeepDDEV   bool   `json:"keep_ddev"`
-	DBHost     string `json:"db_host"`
-	DBPort     int    `json:"db_port"`
-	DBUser     string `json:"db_user"`
-	DBPass     string `json:"db_pass"`
-	DBName     string `json:"db_name"`
+	Source      string `json:"source"` // LocalWP site name, DDEV project name, or docroot path
+	Name        string `json:"name"`
+	Domain      string `json:"domain"`
+	PHPVersion  string `json:"php_version"`
+	Copy        bool   `json:"copy"`
+	SQLDump     string `json:"sql_dump"`
+	ServeOnly   bool   `json:"serve_only"`
+	KeepDDEV    bool   `json:"keep_ddev"`
+	DBHost      string `json:"db_host"`
+	DBPort      int    `json:"db_port"`
+	DBUser      string `json:"db_user"`
+	DBPass      string `json:"db_pass"`
+	DBName      string `json:"db_name"`
+	Interactive bool   `json:"interactive"`
 }
 
 func (a *APIServer) handleImport(w http.ResponseWriter, r *http.Request) {
@@ -1769,7 +1792,8 @@ func (a *APIServer) handleImport(w http.ResponseWriter, r *http.Request) {
 			ServeOnly: req.ServeOnly, KeepDDEV: req.KeepDDEV,
 			DBHost: req.DBHost, DBPort: req.DBPort,
 			DBUser: req.DBUser, DBPass: req.DBPass, DBName: req.DBName,
-			Progress: cb,
+			Progress:    cb,
+			Interactive: req.Interactive,
 		})
 	})
 }

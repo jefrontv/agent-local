@@ -93,21 +93,22 @@ func ListLocalWPSites() ([]LocalWPSite, error) {
 
 // ImportOpts configures an import.
 type ImportOpts struct {
-	Name      string // agent-local slug/name (default: source name)
-	Source    string // a LocalWP site name, a DDEV project name, or a path to a docroot
-	Domain    string // target domain (default: <slug>.test)
-	PHPVer    string
-	InPlace   bool   // default true
-	Copy      bool   // force copy mode
-	DBHost    string // explicit source DB host (default: detect)
-	DBPort    int    // explicit source DB port
-	DBUser    string // explicit source DB user
-	DBPass    string // explicit source DB password
-	DBName    string // explicit source DB name
-	SQLDump   string // import from a .sql dump file instead of a live server
-	ServeOnly bool   // don't touch any database; serve the dir with its own wp-config
-	KeepDDEV  bool   // leave a DDEV source project registered and running; default moves it out
-	Progress  func(stage, detail string)
+	Interactive bool   // see CreateOpts.Interactive
+	Name        string // agent-local slug/name (default: source name)
+	Source      string // a LocalWP site name, a DDEV project name, or a path to a docroot
+	Domain      string // target domain (default: <slug>.test)
+	PHPVer      string
+	InPlace     bool   // default true
+	Copy        bool   // force copy mode
+	DBHost      string // explicit source DB host (default: detect)
+	DBPort      int    // explicit source DB port
+	DBUser      string // explicit source DB user
+	DBPass      string // explicit source DB password
+	DBName      string // explicit source DB name
+	SQLDump     string // import from a .sql dump file instead of a live server
+	ServeOnly   bool   // don't touch any database; serve the dir with its own wp-config
+	KeepDDEV    bool   // leave a DDEV source project registered and running; default moves it out
+	Progress    func(stage, detail string)
 }
 
 // ImportSite runs the import. It returns the created site.
@@ -437,14 +438,11 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 		}
 	}
 
+	mayPrompt := e.HostsInteractive || o.Interactive
 	cb("dns", "registering "+domain)
-	if n, err := EnsureHosts(e.HostsInteractive, []string{domain}); err != nil {
-		cb("warn", "hosts entry needs root: "+err.Error())
-	} else if n > 0 {
-		cb("dns", "added /etc/hosts entry")
-	}
+	ensureHostsOrReport(mayPrompt, []string{domain}, EnsureHosts, cb)
 	if cert, _, created, err := EnsureCert(domain); err == nil && created {
-		trustCertOrReport(cert, e.HostsInteractive, TrustCert, cb)
+		trustCertOrReport(cert, mayPrompt, TrustCert, cb)
 	}
 
 	// The site is served from here now. Unless asked to keep it, the DDEV
