@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,19 +26,46 @@ const LoopbackAlias6 = "fd00:a10c::2"
 
 const pfConfMarker = "# agent-local bare-URL anchor"
 
-var aliasCache int // 0=unknown 1=up 2=down
+// aliasTTL bounds how often a *negative* answer is re-probed. The alias is
+// durable once up, so a positive sticks for the life of the process; a negative
+// is only ever true for a moment — the root front daemon adds the address at
+// startup — and caching it forever is how a daemon that first asked before
+// `agent-local alias` ever ran went on reporting port-suffixed URLs and writing
+// /etc/hosts entries onto 127.0.0.1 long after the alias was up. Restarting the
+// daemon was the only thing that cleared it.
+const aliasTTL = 5 * time.Second
 
-// AliasActive reports whether lo0 carries 127.0.0.2 (cached per process).
+var (
+	aliasMu sync.Mutex
+	aliasUp bool
+	aliasAt time.Time
+)
+
+// forgetAlias drops the cached answer so the next AliasActive re-probes. Called
+// wherever the alias is deliberately brought up or taken down, so the change is
+// believed immediately rather than after aliasTTL.
+func forgetAlias() {
+	aliasMu.Lock()
+	defer aliasMu.Unlock()
+	aliasUp, aliasAt = false, time.Time{}
+}
+
+// AliasActive reports whether lo0 carries 127.0.0.2. A positive is cached for
+// the process; a negative is re-probed every aliasTTL so a daemon that started
+// too early corrects itself instead of serving the wrong URLs until restarted.
 func AliasActive() bool {
-	if aliasCache == 0 {
-		out, err := runCmdOut("ifconfig", "lo0")
-		if err == nil && strings.Contains(out, "inet "+LoopbackAlias+" ") {
-			aliasCache = 1
-		} else {
-			aliasCache = 2
-		}
+	aliasMu.Lock()
+	defer aliasMu.Unlock()
+	if aliasUp {
+		return true
 	}
-	return aliasCache == 1
+	if !aliasAt.IsZero() && time.Since(aliasAt) < aliasTTL {
+		return false
+	}
+	aliasAt = time.Now()
+	out, err := runCmdOut("ifconfig", "lo0")
+	aliasUp = err == nil && strings.Contains(out, "inet "+LoopbackAlias+" ")
+	return aliasUp
 }
 
 // hostsIP is the address /etc/hosts entries should point at: the alias when
@@ -85,7 +113,7 @@ func watchFront() {
 			continue
 		}
 		lastTry = time.Now()
-		aliasCache = 0
+		forgetAlias()
 		if err := EnsureLoopAlias(false); err != nil {
 			log.Printf("front: %s is up but nothing serves :80/:443 on it, and the front daemon could not be reinstalled silently (%v) — run: %s alias", LoopbackAlias, err, AppName)
 		} else {
@@ -109,7 +137,7 @@ func EnsureLoopAlias(interactive bool) error {
 	if err := RunPrivileged(interactive, "/sbin/ifconfig", "lo0", "inet6", LoopbackAlias6, "prefixlen", "128", "alias"); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not add the %s alias (.local domains will be slow): %v\n", LoopbackAlias6, err)
 	}
-	aliasCache = 0
+	forgetAlias()
 	return installFrontDaemon(interactive)
 }
 
@@ -166,7 +194,7 @@ func RemoveLoopAlias(interactive bool) error {
 	_ = RunPrivileged(interactive, "/bin/launchctl", "unload", dst)
 	_ = RunPrivileged(interactive, "/bin/rm", dst)
 	_ = RunPrivileged(interactive, "/sbin/ifconfig", "lo0", "-alias", LoopbackAlias)
-	aliasCache = 0
+	forgetAlias()
 	return nil
 }
 

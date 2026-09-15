@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // A ".local" name is only slow while its AAAA question has to go to mDNS, so the
@@ -82,8 +83,12 @@ func TestCommentShadowedHostsLeavesOursAndCommentsLocalWP(t *testing.T) {
 		"127.0.0.1 dev-ohm2023.local #Local Site",
 		"127.0.0.1 other.test #Local Site",
 	}
-	oldCache := aliasCache
-	defer func() { aliasCache = oldCache }()
+	oldUp, oldAt := aliasUp, aliasAt
+	defer func() {
+		aliasMu.Lock()
+		aliasUp, aliasAt = oldUp, oldAt
+		aliasMu.Unlock()
+	}()
 	for _, tc := range []struct {
 		name    string
 		aliasUp bool
@@ -97,11 +102,11 @@ func TestCommentShadowedHostsLeavesOursAndCommentsLocalWP(t *testing.T) {
 		{"alias down", false, 2, []int{0, 5}, []int{1, 2, 3, 4, 6, 7}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.aliasUp {
-				aliasCache = 1
-			} else {
-				aliasCache = 2
-			}
+			// Pin the answer instead of probing: a positive is authoritative,
+			// and a negative inside aliasTTL returns without re-probing.
+			aliasMu.Lock()
+			aliasUp, aliasAt = tc.aliasUp, time.Now()
+			aliasMu.Unlock()
 			out, n := commentShadowedHosts(in, []string{"dev-ohm2023.local"})
 			if n != tc.wantN {
 				t.Fatalf("commented %d lines, want %d", n, tc.wantN)
