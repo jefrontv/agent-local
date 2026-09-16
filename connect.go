@@ -618,16 +618,27 @@ func connectPrintList() error {
 	return nil
 }
 
-func connectApplyAll(args []string, remove bool) error {
+// connectTargets is the harnesses an apply touches: those actually installed
+// when registering, those currently configured when removing. Shared so `setup`
+// and `connect --all` can never disagree about who gets written to.
+func connectTargets(remove bool) ([]HarnessStatus, error) {
 	statuses, err := DetectHarnesses()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var targets []HarnessStatus
 	for _, s := range statuses {
 		if remove && (s.Configured || s.Stale) || !remove && s.Installed {
 			targets = append(targets, s)
 		}
+	}
+	return targets, nil
+}
+
+func connectApplyAll(args []string, remove bool) error {
+	targets, err := connectTargets(remove)
+	if err != nil {
+		return err
 	}
 	if len(targets) == 0 {
 		if remove {

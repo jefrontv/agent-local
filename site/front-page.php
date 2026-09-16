@@ -52,7 +52,9 @@ $defaults = array(
 		array( 'label' => 'install', 'command' => 'brew install jefrontv/tap/agent-local' ),
 		array( 'label' => 'setup', 'command' => 'agent-local setup' ),
 		array( 'label' => 'create', 'command' => 'agent-local create mysite' ),
-		array( 'label' => 'agents', 'command' => 'agent-local connect' ),
+		// `setup` now registers the MCP server itself, so this is the check
+		// rather than a step — it lists every harness and what it found.
+		array( 'label' => 'agents', 'command' => 'agent-local connect --list' ),
 	),
 	'install_alt'    => 'curl -fsSL https://al.tools.efront.dev/install.sh | bash -s -- --setup',
 );

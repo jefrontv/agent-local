@@ -56,13 +56,17 @@ git clone git@github.com:jefrontv/agent-local.git && cd agent-local && ./install
 No prerequisites either way. Then:
 
 ```sh
-agent-local setup         # one-time: root, certs, hosts, bare URLs — verified
+agent-local setup         # one-time: root, certs, hosts, bare URLs, agent harnesses
 ```
 
 `setup` installs the passwordless allowlist (one password dialog), writes the
-`/etc/hosts` entries, trusts the per-domain TLS certs and turns on bare URLs, then
-reports whether the machine is ready. It is idempotent — re-running does nothing
-and asks for nothing.
+`/etc/hosts` entries, trusts the per-domain TLS certs, turns on bare URLs, and
+registers the MCP server in every coding-agent harness it finds installed — Claude
+Code, Codex, Cursor and the rest. Then it reports whether the machine is ready.
+
+It is idempotent: re-running does nothing, asks for nothing, and reports
+`already configured` for anything already in place. `--no-harnesses` skips the
+harness step (`agent-local connect --remove --all` undoes it).
 
 Prefer to drive it by hand? `agent-local doctor` reports what is present and what
 is missing, and `agent-local doctor --fix` repairs everything fixable.
@@ -991,7 +995,7 @@ agent-local worktrees SLUG
 agent-local wp SLUG -- core version    wp-cli through the site's PHP
 agent-local install brew|php V|mariadb|apache|wp-cli
 agent-local front [router|apache]      show / switch HTTP front
-agent-local setup                      one-time: root, certs, hosts, bare URLs — verified
+agent-local setup [--no-harnesses]     one-time: root, certs, hosts, bare URLs, harnesses
 agent-local sudo                       passwordless root allowlist (one-time)
 agent-local alias [--off]              bare URLs on 127.0.0.2:80/443 (one-time)
 agent-local yield [secs]               free :80/:443 briefly, then re-bind

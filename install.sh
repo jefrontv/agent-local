@@ -12,7 +12,8 @@
 # or VERSION=v0.2.0, and the destination with INSTALL_DIR=…
 #
 # --setup runs `agent-local setup` after installing: the root allowlist, hosts
-# entries, cert trust and the bare-URL alias, in the order that works, verified.
+# entries, cert trust, the bare-URL alias and the MCP server entry in every
+# coding-agent harness found on the machine, in the order that works, verified.
 # A flag rather than a prompt because under `curl | bash` stdin is this script,
 # so a `read` would consume the rest of it. Setup's own steps are pipe-safe:
 # sudo reads /dev/tty and the authorization dialogs are native GUIs.
@@ -145,7 +146,7 @@ if [[ "$RUN_SETUP" == "1" ]]; then
 else
   echo
   echo "Next:"
-  echo "    $BIN_NAME setup           # one-time: root, certs, hosts, bare URLs"
+  echo "    $BIN_NAME setup           # one-time: root, certs, hosts, bare URLs, harnesses"
   echo
   echo "    or install and set up in one go:"
   echo "    curl -fsSL https://al.tools.efront.dev/install.sh | bash -s -- --setup"

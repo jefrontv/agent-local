@@ -89,7 +89,7 @@ func main() {
 	case "sudo":
 		err = cmdSudoSetup()
 	case "setup":
-		err = cmdSetup()
+		err = cmdSetup(rest)
 	case "front-daemon":
 		err = RunFrontDaemon(rest)
 	case "media":
@@ -2007,6 +2007,39 @@ if /usr/sbin/visudo -cf "$stage"; then mv "$stage" /etc/sudoers.d/agent-local; e
 	return nil
 }
 
+// registerHarnesses writes the MCP server entry into every harness installed on
+// this machine, reporting one line each. Split from the command so `setup` can
+// reuse `connect`'s selection without reprinting connect's whole output.
+func registerHarnesses() {
+	targets, err := connectTargets(false)
+	if err != nil {
+		outWarn("harnesses not configured: " + err.Error())
+		return
+	}
+	if len(targets) == 0 {
+		outRow("harnesses", "none installed — "+AppName+" connect when you have one")
+		return
+	}
+	wrote := false
+	for _, t := range targets {
+		line, err := applyOne(t.Harness, false)
+		if err != nil {
+			outWarn(t.ID + ": " + err.Error())
+			continue
+		}
+		if strings.HasPrefix(line, "wrote") {
+			wrote = true
+		}
+		// Padded here rather than through outRow: the label column there is
+		// sized for short words and wraps "claude-desktop" onto two lines.
+		outStep(fmt.Sprintf("%-14s %s", t.ID, line))
+	}
+	if wrote {
+		outNote("restart any running harness to pick up the change")
+	}
+	outHint("undo", AppName+" connect --remove --all")
+}
+
 // cmdSetup is the whole first-run story in one command: the root allowlist, then
 // every repair that needs it, then a verdict.
 //
@@ -2017,7 +2050,7 @@ if /usr/sbin/visudo -cf "$stage"; then mv "$stage" /etc/sudoers.d/agent-local; e
 //
 // Idempotent: re-running does nothing when there is nothing to do, and does not
 // ask for a password it does not need.
-func cmdSetup() error {
+func cmdSetup(args []string) error {
 	store, _, err := openEnv()
 	if err != nil {
 		return err
@@ -2041,6 +2074,17 @@ func cmdSetup() error {
 	// still lets the parts needing root ask rather than fail quietly.
 	for _, done := range DoctorFix(store, true) {
 		outStep(done)
+	}
+
+	// Registering the MCP server is the step that makes agent-local visible to a
+	// coding agent, and it is the one most easily skipped: nothing breaks without
+	// it, you just never see any of the tools. Same selection `connect --all`
+	// uses, and idempotent — an entry already pointing here reports "already
+	// configured" and writes nothing.
+	if hasFlag(args, "--no-harnesses") {
+		outRow("harnesses", "skipped (--no-harnesses)")
+	} else {
+		registerHarnesses()
 	}
 
 	st := SetupState()
