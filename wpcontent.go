@@ -168,32 +168,40 @@ func contentURLPathCached(wpdir string) string {
 	return p
 }
 
-// uploadsPrefix is the URL path the media fallback watches for a site: the
-// uploads directory under the site's own content dir when one is configured,
-// else the kind's conventional prefix.
+// effectiveUploadsPrefix is the URL path the media fallback watches for a site,
+// with the kind that produced it: the uploads directory under the site's own
+// content dir when one is configured, else the kind's conventional prefix. An
+// empty prefix means no request can reach the fallback, whatever origin is
+// pinned — which is why callers that report on media ask for the kind too.
 //
-// The kind it consults may be re-detected. Attaching a directory before its
-// files arrive records KindEmpty — that is what the placeholder is for — but
-// nothing on the serving path used to notice when the app was installed into it
-// afterwards. The media fallback is the one caller that reads the kind per
-// request, so it alone kept using the placeholder's empty prefix and silently
-// stopped redirecting missing uploads, while every WordPress-only tool healed
-// itself on the way in.
-func (e *Engine) uploadsPrefix(site *Site) string {
+// The kind is re-detected in memory when the record is a placeholder the
+// docroot has outgrown. Nothing is written here, so read-only callers such as
+// doctor can use it; Engine.uploadsPrefix persists the correction.
+func effectiveUploadsPrefix(site *Site) (string, AppKind) {
 	if p := contentURLPathCached(site.WPDir); p != "" {
-		return p + "/uploads/"
+		return p + "/uploads/", site.Kind
 	}
 	kind := site.Kind
 	// Scoped so an ordinary request never enters it: only a kind with no
 	// conventional prefix can be out of date in a way this fixes, and
 	// wp-load.php is the decisive marker DetectKind itself looks for.
 	if kind.UploadsPrefix() == "" && fileExists(filepath.Join(site.WPDir, "wp-load.php")) {
-		if detected := DetectKind(site.WPDir); detected != kind {
-			site.Kind = detected
-			e.Store.PutSite(site)
-			_ = e.Store.Save()
-		}
-		kind = site.Kind
+		kind = DetectKind(site.WPDir)
 	}
-	return kind.UploadsPrefix()
+	return kind.UploadsPrefix(), kind
+}
+
+// uploadsPrefix is effectiveUploadsPrefix with the corrected kind written back.
+// The serving path is the backstop for a record the API routes did not heal
+// first: attaching a directory before its files arrive records KindEmpty, and a
+// record left that way watches no path, so every missing upload 404s instead of
+// redirecting to the origin.
+func (e *Engine) uploadsPrefix(site *Site) string {
+	prefix, kind := effectiveUploadsPrefix(site)
+	if kind != site.Kind {
+		site.Kind = kind
+		e.Store.PutSite(site)
+		_ = e.Store.Save()
+	}
+	return prefix
 }

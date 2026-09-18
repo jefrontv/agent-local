@@ -768,9 +768,8 @@ func (a *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 // handleMedia reads or sets a site's media fallback: where missing uploads go.
 func (a *APIServer) handleMedia(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
-	site := a.store.Site(slug)
+	site := a.requireSite(w, r)
 	if site == nil {
-		fail(w, 404, "no such site")
 		return
 	}
 	if r.Method == http.MethodPost {
@@ -787,10 +786,21 @@ func (a *APIServer) handleMedia(w http.ResponseWriter, r *http.Request) {
 		}
 		site = a.store.Site(slug)
 	}
+	// An origin is only half the answer: the router matches a request against
+	// the app's uploads path before it looks at the origin, so a kind with no
+	// such path swallows every redirect. Say whether the fallback can fire.
+	prefix := a.engine.uploadsPrefix(site)
+	kind := site.Kind
+	if kind == "" {
+		kind = KindWordPress
+	}
 	ok(w, map[string]interface{}{
 		"slug": slug, "media_fallback": EffectiveMediaFallback(site),
 		"pinned": site.MediaFallback, "off": site.MediaOff,
 		"htaccess_implies": a.engine.MediaFallbackHint(slug),
+		"effective":        EffectiveMediaFallback(site) != "" && prefix != "",
+		"uploads_prefix":   prefix,
+		"kind":             kind,
 	})
 }
 
@@ -873,9 +883,8 @@ func (a *APIServer) handleList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *APIServer) handleGet(w http.ResponseWriter, r *http.Request) {
-	site := a.store.Site(r.PathValue("slug"))
+	site := a.requireSite(w, r)
 	if site == nil {
-		fail(w, 404, "no such site")
 		return
 	}
 	record := publicSite(site)
@@ -1064,13 +1073,35 @@ func publicSite(site *Site) *Site {
 // requireSite resolves the {slug} path value or answers 404. "You asked for a
 // site that does not exist" is a fact about the request, not a daemon fault:
 // a 500 there made integrators retry and report agent-local as broken.
+//
+// It also heals a placeholder kind, because only the WordPress-only routes used
+// to. A directory attached before its files arrived stayed "empty" for every
+// other caller, so an import skipped the URL rewrite and the media fallback
+// watched no path at all, on a site that had been WordPress for hours.
 func (a *APIServer) requireSite(w http.ResponseWriter, r *http.Request) *Site {
 	site := a.store.Site(r.PathValue("slug"))
 	if site == nil {
 		fail(w, 404, "no such site: "+r.PathValue("slug"))
 		return nil
 	}
+	healKind(a.store, site)
 	return site
+}
+
+// healKind replaces a placeholder kind with whatever the docroot now holds.
+// "empty" is the only placeholder, so every other site costs nothing, and the
+// store is written only when the answer actually changed.
+func healKind(store *Store, site *Site) {
+	if site.Kind != KindEmpty {
+		return
+	}
+	detected := DetectKind(site.WPDir)
+	if detected == KindEmpty {
+		return
+	}
+	site.Kind = detected
+	store.PutSite(site)
+	_ = store.Save()
 }
 
 // requireWordPress is requireSite plus the kind check every WordPress-only
@@ -1084,13 +1115,6 @@ func (a *APIServer) requireWordPress(w http.ResponseWriter, r *http.Request, too
 	site := a.requireSite(w, r)
 	if site == nil {
 		return nil
-	}
-	if site.Kind == KindEmpty {
-		site.Kind = DetectKind(site.WPDir)
-		if site.Kind != KindEmpty {
-			a.store.PutSite(site)
-			_ = a.store.Save()
-		}
 	}
 	if !site.IsWordPress() {
 		fail(w, 409, notWordPress(site, tool).Error())

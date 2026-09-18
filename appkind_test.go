@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -199,5 +201,121 @@ func TestCheckpointScopeByKind(t *testing.T) {
 	}
 	if d, err := checkpointScopeDir(j, "all"); err != nil || d != "/x/j" {
 		t.Errorf("joomla all scope = %q, %v", d, err)
+	}
+}
+
+// Muster attaches a directory before it copies the site into it, so the record
+// starts as an empty attach. Only the WordPress-only routes used to re-detect,
+// which left the media fallback watching nothing and the import URL rewrite
+// skipped on a site that had been WordPress since the copy finished. Every
+// route that resolves a slug heals it now.
+func TestGetSiteHealsAnEmptyAttach(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	docroot := filepath.Join(home, "late")
+	if err := os.MkdirAll(docroot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store.PutSite(&Site{Slug: "late", Domain: "late.test", WPDir: docroot, Kind: KindEmpty,
+		PHPVersion: "8.4", DBName: "al_late", DBUser: "al_late", DBPass: "x"})
+	mux := (&APIServer{store: store, engine: NewEngine(store)}).routes()
+
+	get := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sites/late", nil))
+		return rec
+	}
+	// Still an empty directory: the placeholder is the truth, so it stays.
+	if rec := get(); rec.Code != 200 {
+		t.Fatalf("GET = %d %s", rec.Code, rec.Body.String())
+	}
+	if k := store.Site("late").Kind; k != KindEmpty {
+		t.Errorf("empty docroot re-detected as %q, want empty", k)
+	}
+
+	mkTree(t, docroot, "wp-load.php", "index.php")
+	rec := get()
+	if rec.Code != 200 {
+		t.Fatalf("GET after install = %d %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Data struct {
+			Site struct {
+				Kind AppKind `json:"kind"`
+			} `json:"site"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Data.Site.Kind != KindWordPress {
+		t.Errorf("response kind = %q, want wordpress", got.Data.Site.Kind)
+	}
+	if k := store.Site("late").Kind; k != KindWordPress {
+		t.Errorf("stored kind = %q, want wordpress (the heal must persist)", k)
+	}
+}
+
+// ImportSQL gates its URL rewrite on IsWordPress, and handleDBImport resolves
+// the slug through requireSite. A dump loaded into a formerly-empty attach used
+// to keep every production URL because the gate read the stale kind.
+func TestHealKindOpensTheImportURLRewrite(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	docroot := filepath.Join(home, "wp")
+	mkTree(t, docroot, "wp-load.php", "index.php")
+	site := &Site{Slug: "s", Domain: "s.test", WPDir: docroot, Kind: KindEmpty}
+	store.PutSite(site)
+
+	if site.IsWordPress() {
+		t.Fatal("an empty attach must not look like WordPress before the heal")
+	}
+	healKind(store, site)
+	if !site.IsWordPress() {
+		t.Error("import would still skip the url rewrite after the heal")
+	}
+	if k := store.Site("s").Kind; k != KindWordPress {
+		t.Errorf("stored kind = %q, want wordpress", k)
+	}
+}
+
+// Healing writes, so it must not write when there is nothing to correct.
+func TestHealKindLeavesASettledRecordAlone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	docroot := filepath.Join(home, "j")
+	mkTree(t, docroot, "index.php", "configuration.php", "administrator/index.php")
+	site := &Site{Slug: "j", WPDir: docroot, Kind: KindJoomla}
+	store.PutSite(site)
+	if err := store.Save(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(P().Store())
+	if err != nil {
+		t.Fatal(err)
+	}
+	healKind(store, site)
+	after, err := os.ReadFile(P().Store())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if site.Kind != KindJoomla {
+		t.Errorf("kind changed to %q", site.Kind)
+	}
+	// Save stamps updated_at, so an identical file means nothing was written.
+	if !bytes.Equal(before, after) {
+		t.Error("a settled record should not rewrite sites.json")
 	}
 }
