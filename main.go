@@ -266,6 +266,11 @@ func cmdMedia(args []string) error {
 		default:
 			outRow("fallback", eff+"  "+dimf("from this site's .htaccess"))
 		}
+		// The router matches the app's uploads path before it looks at the
+		// origin, so a pin with no path to match is not yet doing anything.
+		if EffectiveMediaFallback(site) != "" && e.uploadsPrefix(site) == "" {
+			outNote("this is a " + site.Kind.Label() + " docroot with no uploads path, so nothing redirects yet")
+		}
 		return nil
 	}
 	got, err := e.SetMediaFallback(slug, set)

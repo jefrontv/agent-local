@@ -321,19 +321,8 @@ func Doctor(store *Store) *DoctorReport {
 	// Apache directive. Sites carrying one and no media fallback would silently
 	// 404 every image the local database references but the disk does not have.
 	for _, site := range store.Sites() {
-		rule := htaccessUploadsRule(site.WPDir)
-		switch {
-		case site.MediaOff && rule != "":
-			add(Finding{Check: "media:" + site.Slug, Status: "warn",
-				Detail:  "turned off, so the .htaccess rule pointing at " + rule + " is ignored",
-				FixHint: "agent-local media " + site.Slug + " --auto"})
-		case EffectiveMediaFallback(site) != "":
-			where := "from .htaccess"
-			if site.MediaFallback != "" {
-				where = "set here"
-			}
-			add(Finding{Check: "media:" + site.Slug, Status: "ok",
-				Detail: "missing uploads → " + EffectiveMediaFallback(site) + " (" + where + ")"})
+		if f := mediaFinding(site); f != nil {
+			add(*f)
 		}
 	}
 
@@ -489,6 +478,36 @@ func localwpFinding(sites int, ours, rival bool) *Finding {
 	default:
 		return nil
 	}
+}
+
+// mediaFinding reports where a site's missing uploads go, or why they go
+// nowhere. A pinned origin was reported as ok on its own, but the router checks
+// the request against the app's uploads path first: a site still recorded as an
+// empty attach has no such path, so every upload 404s while doctor said the
+// fallback was fine.
+func mediaFinding(site *Site) *Finding {
+	rule := htaccessUploadsRule(site.WPDir)
+	origin := EffectiveMediaFallback(site)
+	if site.MediaOff && rule != "" {
+		return &Finding{Check: "media:" + site.Slug, Status: "warn",
+			Detail:  "turned off, so the .htaccess rule pointing at " + rule + " is ignored",
+			FixHint: "agent-local media " + site.Slug + " --auto"}
+	}
+	if origin == "" {
+		return nil
+	}
+	if prefix, kind := effectiveUploadsPrefix(site); prefix == "" {
+		return &Finding{Check: "media:" + site.Slug, Status: "warn",
+			Detail: "missing uploads → " + origin + ", but this site is a " + kind.Label() +
+				" docroot with no uploads path, so nothing redirects",
+			FixHint: "put the app's files in " + site.WPDir + ", then agent-local media " + site.Slug}
+	}
+	where := "from .htaccess"
+	if site.MediaFallback != "" {
+		where = "set here"
+	}
+	return &Finding{Check: "media:" + site.Slug, Status: "ok",
+		Detail: "missing uploads → " + origin + " (" + where + ")"}
 }
 
 // brokenPHPFindings reports kegs that are installed but will not run. One of

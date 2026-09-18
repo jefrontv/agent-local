@@ -247,10 +247,14 @@ After an import that patched its own constants but not `WP_HOME`/`WP_SITEURL`,
 repoints both the database and the wp-config pins in one call; `probe` afterwards
 should say `healthy`.
 
-`GET  /sites/{slug}/media  -> {"media_fallback":"…","htaccess_implies":"…"}
+`GET  /sites/{slug}/media  -> {"media_fallback":"…","htaccess_implies":"…",
+                               "effective":true,"uploads_prefix":"/wp-content/uploads/","kind":"wordpress"}
 POST /sites/{slug}/media {"url":"https://origin"|"auto"|""}
    → where a missing /wp-content/uploads/ file 302s to. The router cannot read
      .htaccess, so this replaces the Apache uploads rewrite. MCP: get/set_media_fallback.
+     "effective" is false when nothing can redirect however the origin is pinned: the
+     router matches "uploads_prefix" before it reads the origin, and "kind" is what
+     decides that path ("empty" is a directory attached before its files arrived).
 
 GET  /sites-dir  -> {"dir":"…","default":"…"}
 POST /sites-dir {"dir":"~/Sites"}

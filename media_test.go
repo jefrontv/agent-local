@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -330,5 +332,112 @@ func TestSetMediaFallbackStates(t *testing.T) {
 	}
 	if store.Site("s").MediaOff {
 		t.Error("auto should clear the off flag")
+	}
+}
+
+// A pinned origin is only half the answer. The router matches the request
+// against the app's uploads path first, so a site still recorded as an empty
+// attach swallows every redirect — and doctor used to call that ok, which is
+// how graypuksand.local 404'd its whole media library with a clean report.
+func TestMediaFindingWarnsWhenNothingCanRedirect(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	empty := filepath.Join(home, "empty")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wp := filepath.Join(home, "wp")
+	if err := os.MkdirAll(wp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wp, "wp-load.php"), []byte("<?php"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := &Site{Slug: "stale", WPDir: empty, Kind: KindEmpty, MediaFallback: "https://origin.example"}
+	f := mediaFinding(stale)
+	if f == nil || f.Status != "warn" {
+		t.Fatalf("empty attach with a pinned origin = %+v, want a warning", f)
+	}
+	if !strings.Contains(f.Detail, "empty") || !strings.Contains(f.Detail, "https://origin.example") {
+		t.Errorf("warning should name the kind and the origin: %q", f.Detail)
+	}
+
+	healthy := &Site{Slug: "healthy", WPDir: wp, Kind: KindWordPress, MediaFallback: "https://origin.example"}
+	if f := mediaFinding(healthy); f == nil || f.Status != "ok" {
+		t.Errorf("wordpress site with a pinned origin = %+v, want ok", f)
+	}
+	// No origin anywhere is not a finding either way.
+	if f := mediaFinding(&Site{Slug: "none", WPDir: wp}); f != nil {
+		t.Errorf("a site with no fallback should say nothing, got %+v", f)
+	}
+}
+
+// The media endpoint is what Muster reads after its upload-rewrite step, so it
+// has to say whether the fallback can fire, not just what is pinned. The
+// pre-existing fields keep their names and meanings.
+func TestMediaEndpointReportsWhetherTheFallbackFires(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(home, "empty")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wp := filepath.Join(home, "wp")
+	if err := os.MkdirAll(wp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wp, "wp-load.php"), []byte("<?php"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store.PutSite(&Site{Slug: "stale", Domain: "stale.test", WPDir: empty, Kind: KindEmpty,
+		MediaFallback: "https://origin.example"})
+	store.PutSite(&Site{Slug: "healthy", Domain: "healthy.test", WPDir: wp, Kind: KindWordPress,
+		MediaFallback: "https://origin.example"})
+	mux := (&APIServer{store: store, engine: NewEngine(store)}).routes()
+
+	read := func(slug string) map[string]interface{} {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sites/"+slug+"/media", nil))
+		if rec.Code != 200 {
+			t.Fatalf("GET media %s = %d %s", slug, rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Data map[string]interface{} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp.Data
+	}
+
+	stale := read("stale")
+	if stale["effective"] != false {
+		t.Errorf("effective = %v, want false", stale["effective"])
+	}
+	if stale["kind"] != string(KindEmpty) {
+		t.Errorf("kind = %v, want empty", stale["kind"])
+	}
+	if stale["uploads_prefix"] != "" {
+		t.Errorf("uploads_prefix = %v, want empty", stale["uploads_prefix"])
+	}
+	if stale["media_fallback"] != "https://origin.example" {
+		t.Errorf("media_fallback changed shape: %v", stale["media_fallback"])
+	}
+
+	healthy := read("healthy")
+	if healthy["effective"] != true {
+		t.Errorf("effective = %v, want true", healthy["effective"])
+	}
+	if healthy["kind"] != string(KindWordPress) {
+		t.Errorf("kind = %v, want wordpress", healthy["kind"])
+	}
+	if healthy["uploads_prefix"] != "/wp-content/uploads/" {
+		t.Errorf("uploads_prefix = %v", healthy["uploads_prefix"])
 	}
 }
