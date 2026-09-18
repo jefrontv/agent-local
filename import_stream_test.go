@@ -66,6 +66,7 @@ func TestHostFromURLKeepsPort(t *testing.T) {
 		"http://x.com/":           "x.com",
 		"https://user:pw@x.com/a": "x.com",
 		"x.com":                   "x.com",
+		"https://x.com/go?n=a@b":  "x.com",
 	}
 	for in, want := range cases {
 		if got := hostFromURL(in); got != want {
@@ -270,4 +271,97 @@ func (r *byteAtATime) Read(p []byte) (int, error) {
 	p[0] = r.s[r.i]
 	r.i++
 	return 1, nil
+}
+
+// www.graypuksand.com.au is not graypuksand.com.au. Substituting the old host
+// wherever it sat inside a pin's value produced https://www.graypuksand.local,
+// and a map holding both hosts picked a winner by iteration order, so the same
+// import only failed some of the time. Run this with -count=20.
+func TestRewriteWPConfigDomainsMatchesWholeHostsOnly(t *testing.T) {
+	const bare = `<?php
+define('WP_HOME', 'https://www.graypuksand.com.au');
+define('AUTH_KEY', 'salt-www.graypuksand.com.au-inside');
+`
+	cases := []struct {
+		name    string
+		src     string
+		olds    []string
+		want    []string
+		notWant []string
+	}{
+		{name: "a shorter host does not match the www one",
+			src:  bare,
+			olds: []string{"graypuksand.com.au"},
+			want: []string{"define('WP_HOME', 'https://www.graypuksand.com.au')"}},
+		{name: "the www host itself rewrites",
+			src:     bare,
+			olds:    []string{"www.graypuksand.com.au"},
+			want:    []string{"define('WP_HOME', 'https://graypuksand.local')"},
+			notWant: []string{"www.graypuksand.local", "graypuksand.com.au')"}},
+		{name: "both hosts present rewrites each to itself, every run",
+			src: `<?php
+define('WP_HOME', 'https://www.graypuksand.com.au');
+define('WP_SITEURL', 'https://graypuksand.com.au');
+`,
+			olds:    []string{"graypuksand.com.au", "www.graypuksand.com.au"},
+			want:    []string{"define('WP_HOME', 'https://graypuksand.local')", "define('WP_SITEURL', 'https://graypuksand.local')"},
+			notWant: []string{"www.graypuksand.local"}},
+		{name: "a port and path survive the rewrite",
+			src:  "<?php\ndefine('WP_HOME', 'https://stage.graypuksand.com.au:8443/wp');\n",
+			olds: []string{"stage.graypuksand.com.au", "stage.graypuksand.com.au:8443"},
+			want: []string{"define('WP_HOME', 'https://graypuksand.local:8443/wp')"}},
+		{name: "a mixed-case host still matches",
+			src:     "<?php\ndefine('WP_HOME', 'https://WWW.GrayPuksand.com.au/');\n",
+			olds:    []string{"www.graypuksand.com.au"},
+			want:    []string{"define('WP_HOME', 'https://graypuksand.local/')"},
+			notWant: []string{"GrayPuksand"}},
+		{name: "a scheme-less pin rewrites on an exact host",
+			src:     "<?php\ndefine('DOMAIN_CURRENT_SITE', 'www.graypuksand.com.au');\n",
+			olds:    []string{"www.graypuksand.com.au"},
+			want:    []string{"define('DOMAIN_CURRENT_SITE', 'graypuksand.local')"},
+			notWant: []string{"www.graypuksand.local"}},
+		{name: "an @ in the path is not userinfo",
+			src:     "<?php\ndefine('WP_HOME', 'www.graypuksand.com.au/go?next=a@b');\n",
+			olds:    []string{"www.graypuksand.com.au"},
+			want:    []string{"define('WP_HOME', 'graypuksand.local/go?next=a@b')"},
+			notWant: []string{"next=a@graypuksand.local"}},
+		{name: "real userinfo and a port both survive",
+			src:  "<?php\ndefine('WP_HOME', 'https://user:pw@stage.graypuksand.com.au:8443/wp');\n",
+			olds: []string{"stage.graypuksand.com.au:8443"},
+			want: []string{"define('WP_HOME', 'https://user:pw@graypuksand.local:8443/wp')"}},
+		{name: "a scheme-less pin ignores a shorter host",
+			src:  "<?php\ndefine('DOMAIN_CURRENT_SITE', 'www.graypuksand.com.au');\n",
+			olds: []string{"graypuksand.com.au"},
+			want: []string{"define('DOMAIN_CURRENT_SITE', 'www.graypuksand.com.au')"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "wp-config.php")
+			if err := os.WriteFile(path, []byte(c.src), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			olds := map[string]bool{}
+			for _, o := range c.olds {
+				olds[o] = true
+			}
+			if err := rewriteWPConfigDomains(path, olds, "graypuksand.local"); err != nil {
+				t.Fatal(err)
+			}
+			b, _ := os.ReadFile(path)
+			body := string(b)
+			for _, w := range c.want {
+				if !strings.Contains(body, w) {
+					t.Errorf("missing %q:\n%s", w, body)
+				}
+			}
+			for _, n := range c.notWant {
+				if strings.Contains(body, n) {
+					t.Errorf("unwanted %q survived:\n%s", n, body)
+				}
+			}
+			if strings.Contains(c.src, "AUTH_KEY") && !strings.Contains(body, "salt-www.graypuksand.com.au-inside") {
+				t.Errorf("AUTH_KEY was smashed:\n%s", body)
+			}
+		})
+	}
 }

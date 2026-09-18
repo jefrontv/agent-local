@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1139,11 +1140,11 @@ func hostFromURL(u string) string {
 	if i := strings.Index(s, "://"); i >= 0 {
 		s = s[i+3:]
 	}
+	// Authority first, then userinfo inside it: a query like ?next=a@b is not
+	// credentials, and stripping through it returned "b" as the host.
+	s = s[:authorityEnd(s)]
 	if i := strings.LastIndex(s, "@"); i >= 0 {
 		s = s[i+1:]
-	}
-	if i := strings.IndexAny(s, "/?#"); i >= 0 {
-		s = s[:i]
 	}
 	return s
 }
@@ -1261,28 +1262,86 @@ func (e *Engine) foreignHosts(site *Site) map[string]bool {
 	return hosts
 }
 
-// rewriteWPConfigDomains rewrites scheme-prefixed URLs, then bare hostnames
-// only inside define() string values. A global ReplaceAll of the hostname used
-// to smash AUTH_KEY salts that happened to contain it.
+// rewriteWPConfigDomains repoints a wp-config at the local domain: scheme-
+// prefixed URLs anywhere in the file, then the URL pins whose host is exactly
+// the old one.
+//
+// Exactly, because graypuksand.com.au and www.graypuksand.com.au are different
+// hosts. Substituting the old host wherever it appeared inside a pin's value
+// turned define('WP_HOME', 'https://www.graypuksand.com.au') into
+// https://www.graypuksand.local, and which of the two won depended on map
+// iteration order, so the same import failed only sometimes. Hosts are taken in
+// sorted order for the same reason.
 func rewriteWPConfigDomains(path string, olds map[string]bool, newDomain string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
 	src := string(b)
+	hosts := make([]string, 0, len(olds))
 	for old := range olds {
-		if old == "" || old == newDomain {
+		if old == "" || strings.EqualFold(old, newDomain) {
 			continue
 		}
+		hosts = append(hosts, old)
+	}
+	sort.Strings(hosts)
+	for _, old := range hosts {
 		src = strings.ReplaceAll(src, "https://"+old, "https://"+newDomain)
 		src = strings.ReplaceAll(src, "http://"+old, "http://"+newDomain)
-		// Bare host only in URL-ish constants. AUTH_KEY salts that happen to
-		// contain the hostname must stay intact.
-		re := regexp.MustCompile(`(define\(\s*'(?:` + urlPinConsts + `)'\s*,\s*')([^']*)` +
-			regexp.QuoteMeta(old) + `([^']*'\s*\))`)
-		src = re.ReplaceAllString(src, `${1}${2}`+newDomain+`${3}`)
+		src = repointURLPins(src, old, newDomain)
 	}
 	return os.WriteFile(path, []byte(src), 0o644)
+}
+
+// repointURLPins rewrites the host of every URL pin naming old: the pins with
+// no scheme, and any the case-sensitive replace above could not see. Only the
+// host segment moves, so scheme, port, path and the quotes around the value
+// survive, and an AUTH_KEY salt that merely contains the hostname is not a pin
+// and is never touched.
+func repointURLPins(src, old, newDomain string) string {
+	lines := strings.Split(src, "\n")
+	for i, line := range lines {
+		m := urlPinRe.FindStringSubmatch(line)
+		if m == nil || m[2] == "" || !strings.EqualFold(hostFromURL(m[2]), old) {
+			continue
+		}
+		lines[i] = strings.Replace(line, m[2], replaceURLHost(m[2], newDomain), 1)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// replaceURLHost swaps the host in a pin value, keeping everything around it.
+// A pin is not always a parseable URL — a bare host is a valid
+// DOMAIN_CURRENT_SITE — so this walks the string rather than url.Parse.
+func replaceURLHost(value, newHost string) string {
+	off := 0
+	if i := strings.Index(value, "://"); i >= 0 {
+		off = i + 3
+	}
+	rest := value[off:]
+	auth := authorityEnd(rest)
+	// Userinfo only counts inside the authority: an @ in a path or query is
+	// ordinary text, and reading it as credentials moved the host span.
+	if i := strings.LastIndex(rest[:auth], "@"); i >= 0 {
+		off += i + 1
+		rest = value[off:]
+		auth -= i + 1
+	}
+	end := auth
+	if i := strings.Index(rest[:auth], ":"); i >= 0 {
+		end = i
+	}
+	return value[:off] + newHost + rest[end:]
+}
+
+// authorityEnd is where a URL's authority stops: the first /?# after the
+// scheme, or the whole string when there is neither.
+func authorityEnd(rest string) int {
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		return i
+	}
+	return len(rest)
 }
 
 // matchInstalledPHP returns the closest installed PHP to want, or "".
