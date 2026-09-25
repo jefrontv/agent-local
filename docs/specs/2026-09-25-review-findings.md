@@ -1,8 +1,8 @@
 # agent-local review: flaws, fixes and Muster impact
 
-**Date:** 25 Sep 2026. **Tree:** `main` at `419a927` (v0.34.1 + 5 commits), clean against `origin/main`.
+**Date:** 25 Sep 2026. **Tree:** `main` at `419a927` (tag v0.34.1), clean against `origin/main`.
 **Baseline:** `go vet` clean, 353 tests pass, `go test -race` finds no races, coverage 34.4%.
-**Muster checked against:** `muster-ui` `main`, fast-forwarded 232 commits to `origin/muster` on 25 Sep 2026.
+**Muster checked against:** `muster-ui` branch `muster` at `42fa294` (current with `origin/muster`), 25 Sep 2026.
 
 Every finding below was read in code. Items marked *verified* were also reproduced in a scratch copy or against the live site list. Items marked *unverified* are plausible but unproven.
 
@@ -208,6 +208,8 @@ Rules live in HTTP handlers, and the CLI and TUI call `Engine` directly. `healKi
 | F46 | low | `main.go:185` | `positional()` has a hard-coded list of value flags missing `--scope`, `--since`, `--minutes`, `--dir`, `--site`. | Per-command `flag.FlagSet`. |
 | F47 | low | `mcp.go:552-846` | MCP pastes `slug`, `id`, `name`, `domain` into URL paths unescaped. | `url.PathEscape` every segment. |
 
+| F48 | med | `daemon.go:1355-1357`, `import.go` `ImportSQL` | A db-import job reports one `loading <path>` step and then nothing until the load ends, so a client cannot tell a long load from a hung one (Muster M-4 is blocked on this). | Emit a step every 10 s with bytes read and total, from a counting reader on the dump stream. | M-4 item 1 |
+
 Lower-priority items, kept for completeness: passwords on the command line via `--password=` (use `MYSQL_PWD` in the child env); no fsync before the store rename; `RemovePFWiring` runs `pfctl -d` system-wide; no timeouts on `wpCLI`, `downloadWP` and git clone; git gets no `--` before the repo argument; `errlog.go:145` stops at the first line over 1 MB; checkpoint pre-rollback trees live inside the checkpoint dir; auto-snapshot pruning can delete a deleted site's `auto-delete` save point after slug reuse; `SiteDirSize` uses `P().Sites()/slug`; `handleDBTables` interpolates `DBName`; chunked FastCGI bodies send `CONTENT_LENGTH=0`; `logDelta` does an unbounded `ReadAll`; `ValidDomain` is also bypassed by aliases; `hostsMu` is per process, so CLI and daemon can lose each other's `/etc/hosts` edits; `RunPrivileged` calls relative `security` and `sh`; the sudoers user comes from `$USER`; `setup` and `doctor --fix` self-update with auto-update off; `pgrep -f "Local.app/Contents"` matches any command line; connect's `atomicWrite` replaces a symlinked config with a file.
 
 ---
@@ -238,7 +240,7 @@ Each release is a tag; patch bumps for fixes, minor for surface changes (existin
 1. **v0.34.2, data safety, no surface change:** F1, F2 (delete and drop), F3, F4, F5, F6, F13, F14, F16, F20 (worktree part), F32, F39, plus tests. Ship first; F1 affects about 35 sites on this machine. **Implemented on branch `fix/data-safety`, uncommitted.** Not covered by a test: F13 (needs real dump processes). F20's `.bak` restore under `--keep-files` was dropped on purpose: keeping the files is the documented re-adopt flow, which needs the wp-config to keep pointing at agent-local; the `DeleteOpts` comment now says so.
 2. **v0.35.0, privilege hardening:** F7, F8, F10, F11, F12, F26, F29, F30, F31, F33. Needs `agent-local sudo` re-run, which rewrites the allowlist. Acceptance includes invariants 9, 10 and 12.
 3. **v0.36.0, certs and data model:** F2 follow-up (reset and restore guard), F9 (local CA), F19 (`work_dir` migration), F21, F27.
-4. **v0.37.0, API consistency:** F15, F17, F18, F25, F35, F36, F37, F34 (version stamping), F38.
+4. **v0.37.0, API consistency:** F15, F17, F18, F25, F35, F36, F37, F34 (version stamping), F38, F48.
 5. **v0.37.x, TUI/CLI and docs:** F22-F24, F28, F40-F47, section 8 rewrite.
 
 Muster work is independent of steps 1 and 2. M-1 must land before or with step 3. M-2 depends on step 4.
