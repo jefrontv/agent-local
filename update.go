@@ -599,6 +599,12 @@ func verifyChecksum(archivePath, assetName, sumsURL string) error {
 	if want == "" {
 		return fmt.Errorf("checksums.txt has no entry for %s", assetName)
 	}
+	// A sha256 is 64 hex characters. Anything else is a malformed checksums.txt,
+	// and slicing it for the message below used to panic inside the daemon's
+	// update loop, taking every site down.
+	if len(want) != 64 {
+		return fmt.Errorf("checksums.txt entry for %s is not a sha256 (%d characters)", assetName, len(want))
+	}
 	if !strings.EqualFold(want, got) {
 		return fmt.Errorf("checksum mismatch for %s: got %s, published %s", assetName, got[:12], want[:12])
 	}

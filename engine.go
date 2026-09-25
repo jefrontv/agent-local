@@ -236,6 +236,12 @@ func dropClientNoise(s string) string {
 // CREATE USER IF NOT EXISTS keeps a stale password, so ALTER USER follows
 // to force the current creds even after a previous failed attempt.
 func (e *Engine) CreateSiteDB(site *Site) error {
+	if err := requireSQLIdent("database name", site.DBName); err != nil {
+		return err
+	}
+	if err := requireSQLIdent("database user", site.DBUser); err != nil {
+		return err
+	}
 	if err := e.EnsureDB(); err != nil {
 		return err
 	}
@@ -255,8 +261,43 @@ func (e *Engine) CreateSiteDB(site *Site) error {
 	return err
 }
 
-// DropSiteDB removes the database + users.
+// ownsDB reports whether a site's schema and user are ones agent-local
+// provisioned. Every provisioning path names both al_<slug>; a serve-only
+// import instead records whatever its wp-config.php names, which can be
+// another site's schema or 'root' itself, and none of that is ours to drop.
+func ownsDB(site *Site) bool {
+	own := "al_" + site.Slug
+	return site.DBName == own && site.DBUser == own
+}
+
+// schemaExists reports whether a database of that name is already on our
+// server, so a caller can tell a schema it is about to create from one it is
+// about to adopt (CREATE DATABASE IF NOT EXISTS does not say which).
+func (e *Engine) schemaExists(name string) (bool, error) {
+	if err := requireSQLIdent("database name", name); err != nil {
+		return false, err
+	}
+	if err := e.EnsureDB(); err != nil {
+		return false, err
+	}
+	out, err := e.DB(fmt.Sprintf(
+		"SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='%s'", name))
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	return len(lines) >= 2 && strings.TrimSpace(lines[1]) != "0", nil
+}
+
+// DropSiteDB removes the database + users. It refuses a schema agent-local did
+// not provision (see ownsDB) rather than trusting names read from a wp-config.
 func (e *Engine) DropSiteDB(site *Site) error {
+	if !ownsDB(site) {
+		return fmt.Errorf("database %s / user %s were not created by agent-local; left in place", site.DBName, site.DBUser)
+	}
+	if err := requireSQLIdent("database name", site.DBName); err != nil {
+		return err
+	}
 	sql := fmt.Sprintf("DROP DATABASE IF EXISTS `%s`;"+
 		"DROP USER IF EXISTS '%s'@'127.0.0.1';"+
 		"DROP USER IF EXISTS '%s'@'localhost';",
@@ -444,12 +485,12 @@ func (e *Engine) fpmAliveBatch(ids []string) map[string]bool {
 // result by site slug or worktree id.
 func (e *Engine) AliveAll() map[string]bool {
 	sites := e.Store.Sites()
-	ids := make([]string, 0, len(sites)+len(e.Store.Data.Worktrees))
+	ids := make([]string, 0, len(sites)+e.Store.WorktreeCount())
 	for _, s := range sites {
 		ids = append(ids, s.Slug)
 	}
-	for id := range e.Store.Data.Worktrees {
-		ids = append(ids, id)
+	for _, w := range e.Store.Worktrees() {
+		ids = append(ids, w.ID)
 	}
 	return e.fpmAliveBatch(ids)
 }
@@ -464,7 +505,7 @@ func (e *Engine) ensurePool(id string) error {
 	if e.Store.Site(id) != nil {
 		return e.StartSite(id)
 	}
-	if _, ok := e.Store.Data.Worktrees[id]; ok {
+	if e.Store.Worktree(id) != nil {
 		return e.StartWorktree(id)
 	}
 	return fmt.Errorf("unknown pool %s", id)
@@ -497,8 +538,8 @@ func (e *Engine) SweepOrphanPools() int {
 	for _, s := range e.Store.Sites() {
 		live[s.Slug] = true
 	}
-	for id := range e.Store.Data.Worktrees {
-		live[id] = true
+	for _, w := range e.Store.Worktrees() {
+		live[w.ID] = true
 	}
 	entries, err := os.ReadDir(P().Conf())
 	if err != nil {

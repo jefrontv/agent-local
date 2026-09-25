@@ -19,6 +19,12 @@ const daemonAgentLabel = "local.agent-local.daemon"
 // itself and leave the agent alone.
 const launchdMarker = "AGENT_LOCAL_LAUNCHD"
 
+// autostartDisabled keeps EnsureDaemonAutostart away from launchd. Tests set
+// it: the LaunchAgent label is global to the login session, so a daemon booted
+// under a temporary $HOME would still boot out the developer's real agent and
+// register one pointing at the test binary.
+var autostartDisabled bool
+
 // daemonAgentPath is where the per-user agent lives. LaunchAgents need no root,
 // which is why this is separate from the privileged front daemon.
 func daemonAgentPath() string {
@@ -35,7 +41,7 @@ func daemonAgentPath() string {
 func EnsureDaemonAutostart() error {
 	// Never when we are the job: reloading the agent boots out the label, which
 	// is this very process — the daemon killed itself moments after taking over.
-	if os.Getenv(launchdMarker) != "" {
+	if os.Getenv(launchdMarker) != "" || autostartDisabled {
 		return nil
 	}
 	path := daemonAgentPath()

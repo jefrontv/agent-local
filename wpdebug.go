@@ -104,13 +104,18 @@ func (e *Engine) SetWPDebug(slug string, on bool) (WPDebugState, error) {
 }
 
 // writeWPConfig replaces a wp-config.php with new content. A fresh backup of
-// the previous bytes is written every time — this toggle is meant to be
-// flipped back and forth, so a stale first-write-only backup would stop
-// matching whatever is actually running — and the new content lands via a
-// tmp file + rename, so a crash mid-write never leaves wp-config.php
+// the previous bytes is written every time to wp-config.php.agent-local.prev —
+// this toggle is meant to be flipped back and forth, so a stale first-write-only
+// backup would stop matching whatever is actually running — and the new content
+// lands via a tmp file + rename, so a crash mid-write never leaves wp-config.php
 // truncated.
+//
+// The rolling backup must not be .agent-local.bak: that file is the config as
+// it was before agent-local adopted the folder, written once by the import and
+// restored by delete. Overwriting it here made delete "restore" agent-local's
+// own config and lose the user's original credentials.
 func writeWPConfigSrc(path string, oldBytes, newBytes []byte) error {
-	bak := path + ".agent-local.bak"
+	bak := path + ".agent-local.prev"
 	if err := os.WriteFile(bak, oldBytes, 0o644); err != nil {
 		return fmt.Errorf("back up wp-config.php: %w", err)
 	}
@@ -130,21 +135,80 @@ func writeWPConfigSrc(path string, oldBytes, newBytes []byte) error {
 // "true", "false", "'a string'". readWPConfigConst only sees quoted strings,
 // and the debug constants are usually booleans.
 func readWPConstRaw(src, name string) string {
-	re := regexp.MustCompile(`define\(\s*['"]` + name + `['"]\s*,\s*([^)]+?)\s*\)`)
-	if m := re.FindStringSubmatch(src); m != nil {
-		return strings.TrimSpace(m[1])
+	if start, end, ok := defineValueSpan(src, name); ok {
+		return src[start:end]
 	}
 	return ""
 }
+
+// defineValueSpan locates the value expression of define('NAME', <value>) and
+// returns its byte span, surrounding whitespace excluded. It scans the PHP
+// rather than matching a regexp: a value can hold quotes, nested calls and
+// parentheses inside strings, and `[^)]+?` stopped at the first `)`, so
+// define('WP_DEBUG', getenv('X') === '1') was rewritten into a parse error.
+// A define on a line commented out with //, # or * is skipped.
+func defineValueSpan(src, name string) (int, int, bool) {
+	head := regexp.MustCompile(`define\(\s*['"]` + regexp.QuoteMeta(name) + `['"]\s*,`)
+	for _, loc := range head.FindAllStringIndex(src, -1) {
+		lineStart := strings.LastIndexByte(src[:loc[0]], '\n') + 1
+		prefix := strings.TrimSpace(src[lineStart:loc[0]])
+		if strings.HasPrefix(prefix, "//") || strings.HasPrefix(prefix, "#") || strings.HasPrefix(prefix, "*") {
+			continue
+		}
+		depth := 0
+		var quote byte
+		for j := loc[1]; j < len(src); j++ {
+			c := src[j]
+			if quote != 0 {
+				switch c {
+				case '\\':
+					j++
+				case quote:
+					quote = 0
+				}
+				continue
+			}
+			switch c {
+			case '\'', '"':
+				quote = c
+			case '(', '[':
+				depth++
+			case ']':
+				depth--
+			case ')', ',':
+				if depth > 0 {
+					if c == ')' {
+						depth--
+					}
+					continue
+				}
+				// The closing paren, or the optional third argument.
+				start, end := loc[1], j
+				for start < end && isPHPSpace(src[start]) {
+					start++
+				}
+				for end > start && isPHPSpace(src[end-1]) {
+					end--
+				}
+				return start, end, end > start
+			}
+		}
+		return 0, 0, false
+	}
+	return 0, 0, false
+}
+
+func isPHPSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
 
 // setWPConstRaw replaces define('NAME', …) with a raw PHP expression, or —
 // unlike setWPConst — inserts the define when it is absent, where WordPress
 // convention expects extras: above the "stop editing" marker, else above the
 // wp-settings.php require, else at the end.
 func setWPConstRaw(src, name, expr string) string {
-	re := regexp.MustCompile(`(?m)(define\(\s*['"]` + name + `['"]\s*,\s*)[^)]+?(\s*\))`)
-	if re.MatchString(src) {
-		return re.ReplaceAllString(src, "${1}"+expr+"${2}")
+	// Spliced, not ReplaceAllString: expr is PHP, and a replacement template
+	// expanded its $name — 'http://' . $_SERVER['HTTP_HOST'] lost $_SERVER.
+	if start, end, ok := defineValueSpan(src, name); ok {
+		return src[:start] + expr + src[end:]
 	}
 	line := fmt.Sprintf("define( '%s', %s );\n", name, expr)
 	for _, anchor := range []*regexp.Regexp{

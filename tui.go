@@ -434,7 +434,7 @@ func (m model) rowsFor(t tab) int {
 // The tab used to show only the site highlighted on another tab, which meant the
 // list changed under you and nothing on screen said why.
 func (m model) allWorktrees() []*Worktree {
-	out := make([]*Worktree, 0, len(m.store.Data.Worktrees))
+	out := make([]*Worktree, 0, m.store.WorktreeCount())
 	for _, s := range m.sites {
 		out = append(out, m.store.WorktreesFor(s.Slug)...)
 	}

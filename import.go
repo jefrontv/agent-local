@@ -334,14 +334,25 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 	// Database stage: serve-only keeps whatever wp-config already points at.
 	if !o.ServeOnly {
 		cb("database", "provisioning "+site.DBName)
+		// A schema kept by `delete --keep-db` is adopted here, not created,
+		// and a failure below must not drop what may be the only copy.
+		dbExisted, err := e.schemaExists(site.DBName)
+		if err != nil {
+			return nil, fmt.Errorf("provision db: %w", err)
+		}
 		if err := e.CreateSiteDB(site); err != nil {
 			return nil, fmt.Errorf("provision db: %w", err)
+		}
+		dropIfNew := func() {
+			if !dbExisted {
+				e.DropSiteDB(site)
+			}
 		}
 		switch {
 		case o.SQLDump != "":
 			cb("database", "loading "+o.SQLDump)
 			if err := e.loadSQLFile(site, o.SQLDump); err != nil {
-				e.DropSiteDB(site)
+				dropIfNew()
 				return nil, fmt.Errorf("load sql: %w", err)
 			}
 		case e.ownDatabase(srcHost, srcPort, srcSocket) && srcDBName == site.DBName:
@@ -362,13 +373,13 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 			}
 			cb("database", fmt.Sprintf("dumping %s from %s", srcDBName, from))
 			if err := e.copyDatabase(site, srcDBName, srcSocket, srcHost, srcPort, user, pass, cb); err != nil {
-				e.DropSiteDB(site)
+				dropIfNew()
 				return nil, fmt.Errorf("copy database %s from %s as %s: %w", srcDBName, from, user, err)
 			}
 		}
 		cb("config", "rewriting wp-config.php")
 		if err := rewriteWPConfigDB(filepath.Join(targetWPDir, "wp-config.php"), site, e.tablePrefixFromDB(site)); err != nil {
-			e.DropSiteDB(site)
+			dropIfNew()
 			return nil, err
 		}
 	} else {
@@ -536,6 +547,12 @@ func (e *Engine) copyDatabase(site *Site, srcDB, srcSocket, srcHost string, srcP
 		defer loadIn.Close()
 		return streamFixCollations(loadIn, dumpOut)
 	}()
+	if streamErr != nil {
+		// The loader stopped reading (a SQL error ends it), so nothing drains
+		// the dump any more: it blocks on a full pipe and dump.Wait never
+		// returns — the import hung forever with its job still "running".
+		dump.Process.Kill()
+	}
 
 	dumpWait := dump.Wait()
 	loadWait := load.Wait()
@@ -545,10 +562,11 @@ func (e *Engine) copyDatabase(site *Site, srcDB, srcSocket, srcHost string, srcP
 		// already exited and closed its stdin. The load's own error is the
 		// one worth surfacing, not the write failure it caused.
 		return fmt.Errorf("load: %w (%s)", loadWait, tail(loadErr.String(), 300))
+	case streamErr != nil:
+		// Before the dump's own status: that is only the kill above.
+		return fmt.Errorf("stream: %w", streamErr)
 	case dumpWait != nil:
 		return fmt.Errorf("dump: %w (%s)", dumpWait, tail(dumpErr.String(), 300))
-	case streamErr != nil:
-		return fmt.Errorf("stream: %w", streamErr)
 	}
 	return nil
 }
@@ -786,22 +804,34 @@ func requireSQLIdent(kind, name string) error {
 	return nil
 }
 
-// tableCount counts tables in a site's database.
+// tableCount counts tables in a site's database, 0 when it cannot tell. For
+// messages only: anything that decides on the count uses countTables.
 func (e *Engine) tableCount(site *Site) int {
-	if requireSQLIdent("database name", site.DBName) != nil {
-		return 0
+	n, _ := e.countTables(site)
+	return n
+}
+
+// countTables counts tables in a site's database. A failed count is an error,
+// not zero: autoSnapshot reads zero as "empty, nothing to save", and a query
+// that failed must not be what switches the safety net off.
+func (e *Engine) countTables(site *Site) (int, error) {
+	if err := requireSQLIdent("database name", site.DBName); err != nil {
+		return 0, err
 	}
 	out, err := e.DB(fmt.Sprintf(
 		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='%s'", site.DBName))
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("count tables in %s: %w", site.DBName, err)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) < 2 {
-		return 0
+		return 0, fmt.Errorf("count tables in %s: no result", site.DBName)
 	}
-	n, _ := strconv.Atoi(strings.TrimSpace(lines[1]))
-	return n
+	n, err := strconv.Atoi(strings.TrimSpace(lines[1]))
+	if err != nil {
+		return 0, fmt.Errorf("count tables in %s: %q is not a number", site.DBName, lines[1])
+	}
+	return n, nil
 }
 
 // tablePrefixFromDB reads the $table_prefix a copied database was written
@@ -1126,11 +1156,13 @@ func (e *Engine) ownDatabase(host string, port int, socket string) bool {
 // setWPConst rewrites define('NAME', '…') in place, or adds it near the top
 // of the file when the constant is not defined at all.
 func setWPConst(src, name, val string) string {
-	re := regexp.MustCompile(`(?m)(define\(\s*['"]` + name + `['"]\s*,\s*)['"][^'"]*['"]`)
-	if re.MatchString(src) {
-		return re.ReplaceAllString(src, `${1}'`+val+`'`)
+	// The whole value expression is replaced, quoted or not (getenv('DB_NAME')
+	// included), and spliced rather than run through a regexp replacement
+	// template, which expanded any $ in the value. val is always escaped.
+	if start, end, ok := defineValueSpan(src, name); ok {
+		return src[:start] + wpConstQuote(val) + src[end:]
 	}
-	return insertAfterPHPOpen(src, fmt.Sprintf("define( '%s', '%s' );\n", name, strings.ReplaceAll(val, "'", `\'`)))
+	return insertAfterPHPOpen(src, fmt.Sprintf("define( '%s', %s );\n", name, wpConstQuote(val)))
 }
 
 // hostFromURL extracts the host[:port] from a URL-ish string. The port stays:

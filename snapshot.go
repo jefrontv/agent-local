@@ -268,7 +268,11 @@ func (e *Engine) autoSnapshot(slug, reason string) (string, error) {
 	if err := e.EnsureDB(); err != nil {
 		return "", err
 	}
-	if e.tableCount(site) == 0 {
+	n, err := e.countTables(site)
+	if err != nil {
+		return "", err
+	}
+	if n == 0 {
 		return "", nil
 	}
 	snap, err := e.SnapshotDB(slug, autoSnapshotPrefix+reason)

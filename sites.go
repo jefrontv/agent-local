@@ -123,6 +123,12 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 	}
 
 	cb("database", "provisioning "+site.DBName)
+	// A schema left behind by `delete --keep-db` is adopted, not created, and
+	// must survive a failure below: it may be the only copy of that data.
+	dbExisted, err := e.schemaExists(site.DBName)
+	if err != nil {
+		return nil, fmt.Errorf("database: %w", err)
+	}
 	if err := e.CreateSiteDB(site); err != nil {
 		return nil, fmt.Errorf("database: %w", err)
 	}
@@ -134,7 +140,9 @@ func (e *Engine) CreateSite(o CreateOpts) (*Site, error) {
 	// only what was put in it, and itself only once it is empty again.
 	rootExisted := fileExists(root)
 	fail := func(err error) (*Site, error) {
-		e.DropSiteDB(site)
+		if !dbExisted {
+			e.DropSiteDB(site)
+		}
 		if !rootExisted {
 			os.RemoveAll(root)
 			return nil, err
@@ -324,6 +332,10 @@ func (e *Engine) AttachSite(o AttachOpts) (*Site, error) {
 		Attached:   true,
 	}
 	cb("database", "provisioning empty "+site.DBName)
+	dbExisted, err := e.schemaExists(site.DBName)
+	if err != nil {
+		return nil, fmt.Errorf("database: %w", err)
+	}
 	if err := e.CreateSiteDB(site); err != nil {
 		return nil, fmt.Errorf("database: %w", err)
 	}
@@ -348,7 +360,9 @@ func (e *Engine) AttachSite(o AttachOpts) (*Site, error) {
 	case fileExists(filepath.Join(docroot, "wp-load.php")):
 		cb("config", "writing wp-config.php for "+site.DBName)
 		if err := writeWPConfig(site, docroot); err != nil {
-			e.DropSiteDB(site)
+			if !dbExisted {
+				e.DropSiteDB(site)
+			}
 			return nil, err
 		}
 	default:
@@ -382,6 +396,29 @@ func (e *Engine) managedDir(path string) bool {
 		}
 	}
 	return false
+}
+
+// ownTree reports whether a path is inside the app's own tree
+// (~/.agent-local/sites), where nothing is the user's. The configured sites
+// directory is deliberately not included: users keep their own checkouts there.
+func ownTree(path string) bool {
+	return strings.HasPrefix(path, P().Sites()+string(os.PathSeparator))
+}
+
+// restoreWPConfig undoes the one change agent-local makes to a directory it
+// does not own: the wp-config.php it pointed at its database. The folder is
+// left as it was found; its content is never touched.
+func restoreWPConfig(site *Site) {
+	cfg := filepath.Join(site.WPDir, "wp-config.php")
+	switch {
+	case fileExists(cfg + ".agent-local.bak"):
+		// restore the config we overwrote, then drop our copy
+		os.Rename(cfg+".agent-local.bak", cfg)
+	case authoredByUs(cfg):
+		// An attached directory that had none: we wrote it, so removing it
+		// leaves the folder exactly as it was found.
+		os.Remove(cfg)
+	}
 }
 
 // htaccessUploadsRule looks for the one .htaccess pattern worth understanding:
@@ -584,8 +621,10 @@ func DocrootFor(dir string) string {
 
 // DeleteOpts controls how much of a site goes away.
 type DeleteOpts struct {
-	// KeepFiles leaves the checkout on disk (an imported external directory is
-	// never removed regardless; its wp-config is restored from our backup).
+	// KeepFiles leaves the checkout and any branch-preview checkouts on disk,
+	// wp-config included, so the folder can be re-adopted as it stands. Without
+	// it, a directory that is not ours is still never removed: only the
+	// wp-config we rewrote is restored from our backup.
 	KeepFiles bool
 	// KeepDB leaves the schema and user in place, so a detached folder whose
 	// wp-config still points here can be re-adopted without recreating it.
@@ -609,7 +648,9 @@ func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 	// here touches the site — stopping the pool, pruning worktrees, or
 	// removing pool config are all steps this function cannot undo, and none
 	// of them should run if the snapshot that makes the rest safe failed.
-	if !o.KeepDB && !o.NoSnapshot {
+	// A schema agent-local did not create is left in place below, so there is
+	// nothing to save it from.
+	if !o.KeepDB && !o.NoSnapshot && ownsDB(site) {
 		if _, err := e.autoSnapshot(slug, "delete"); err != nil {
 			return fmt.Errorf("pre-delete snapshot: %w (--no-snapshot skips it)", err)
 		}
@@ -617,7 +658,9 @@ func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 	_ = e.StopSite(slug)
 	e.StopShare(slug) // no site, no tunnel
 	for _, w := range e.Store.WorktreesFor(slug) {
-		_ = e.RemoveWorktree(w.ID)
+		// With KeepFiles a preview's checkout may hold uncommitted work, so it
+		// is only unregistered; git's own worktree record stays valid.
+		_ = e.removeWorktree(w.ID, o.KeepFiles)
 	}
 	// Drop the generated pool config too, or php-fpm keeps parsing a pool whose
 	// work_dir no longer exists on every later start.
@@ -625,7 +668,11 @@ func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 	// The inbox is transient capture, not user data: it goes with the site.
 	os.RemoveAll(P().MailDir(slug))
 	if !o.KeepDB {
-		if err := e.DropSiteDB(site); err != nil {
+		if !ownsDB(site) {
+			// A serve-only import records the schema its wp-config names; that
+			// database belongs to whatever set it up, not to this site.
+			fmt.Fprintf(os.Stderr, "warning: leaving database %s (user %s) in place: agent-local did not create it\n", site.DBName, site.DBUser)
+		} else if err := e.DropSiteDB(site); err != nil {
 			return fmt.Errorf("drop db: %w", err)
 		}
 	}
@@ -637,9 +684,18 @@ func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 	}
 	if withFiles {
 		switch {
-		case e.managedDir(site.WorkDir):
-			// A directory this app owns — our own tree, or the sites directory the
-			// user pointed us at. All of it goes.
+		case site.Attached:
+			// The user's own directory, wherever it sits — the sites directory
+			// included, which is where most attached checkouts live. Only the
+			// wp-config we wrote is undone (the default branch below).
+			restoreWPConfig(site)
+		case site.Installed && e.managedDir(site.WorkDir),
+			ownTree(site.WorkDir):
+			// A directory this app filled: a site it created inside a tree it
+			// manages, or a copy-mode import (and sites predating the Installed
+			// flag) under its own tree. All of it goes. Being inside the sites
+			// directory is not enough on its own: an in-place import or an attach
+			// of ~/Sites/<repo> is there too, and that repo is the user's.
 			if err := os.RemoveAll(site.WorkDir); err != nil {
 				return fmt.Errorf("remove files: %w", err)
 			}
@@ -657,19 +713,9 @@ func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 				os.Remove(site.WorkDir)
 			}
 		default:
-			// Imported or attached: the files are the user's. Undo only the
-			// wp-config we pointed at our database — never their content. Sites
-			// predating the Installed flag land here, which is the safe side.
-			cfg := filepath.Join(site.WPDir, "wp-config.php")
-			switch {
-			case fileExists(cfg + ".agent-local.bak"):
-				// restore the config we overwrote, then drop our copy
-				os.Rename(cfg+".agent-local.bak", cfg)
-			case authoredByUs(cfg):
-				// An attached directory that had none: we wrote it, so removing
-				// it leaves the folder exactly as it was found.
-				os.Remove(cfg)
-			}
+			// Imported in place: the files are the user's. Undo only the
+			// wp-config we pointed at our database — never their content.
+			restoreWPConfig(site)
 		}
 	}
 	e.Store.DelSite(slug)
@@ -686,26 +732,26 @@ func (e *Engine) StartSite(slug string) error {
 		return err
 	}
 	if err := e.StartFPM(site.Slug, site.WPDir, site.PHPVersion); err != nil {
-		site.State = StateError
+		e.Store.SetSiteState(site, StateError)
 		if serr := e.Store.Save(); serr != nil {
 			return fmt.Errorf("%w (also failed to persist error state: %v)", err, serr)
 		}
 		return err
 	}
 	if err := EnsureHTTPFront(e.Store); err != nil {
-		site.State = StateError
+		e.Store.SetSiteState(site, StateError)
 		_ = e.Store.Save()
 		return err
 	}
 	if _, err := EnsureHosts(e.HostsInteractive, []string{site.Domain}); err != nil {
-		site.State = StateError
+		e.Store.SetSiteState(site, StateError)
 		_ = e.Store.Save()
 		return fmt.Errorf("hosts entry for %s needs root: run `agent-local doctor --fix`", site.Domain)
 	}
 	// Only now, with DB + pool + front + hosts all up, is the site actually
 	// running — marking it so any earlier meant a crash between steps left a
 	// site that says "running" while nothing behind it works.
-	site.State = StateRunning
+	e.Store.SetSiteState(site, StateRunning)
 	return e.Store.Save()
 }
 
@@ -718,7 +764,7 @@ func (e *Engine) StopSite(slug string) error {
 	if err := e.StopFPM(site.Slug); err != nil {
 		return err
 	}
-	site.State = StateStopped
+	e.Store.SetSiteState(site, StateStopped)
 	return e.Store.Save()
 }
 
@@ -1025,7 +1071,7 @@ func (e *Engine) AddWorktree(slug, branch string) (*Worktree, error) {
 	}
 	bSlug := BranchSlug(branch)
 	id := slug + "--" + bSlug
-	if _, ok := e.Store.Data.Worktrees[id]; ok {
+	if e.Store.Worktree(id) != nil {
 		return nil, fmt.Errorf("worktree exists: %s", id)
 	}
 	repoDir := siteRepoDir(site)
@@ -1201,7 +1247,7 @@ func (e *Engine) SiteForPath(path string) (*Site, string, *Worktree) {
 	}
 	// Worktrees first: their paths live inside a site's repo, so a site root
 	// would otherwise shadow the more specific preview.
-	for _, w := range e.Store.Data.Worktrees {
+	for _, w := range e.Store.Worktrees() {
 		if p := normalizePath(w.Path); p != "" && pathWithin(want, p) {
 			return e.Store.Site(w.Site), "worktree", w
 		}
@@ -1392,7 +1438,7 @@ func overlayDir(src, dst string) {
 	for _, e := range ents {
 		name := e.Name()
 		switch name {
-		case "wp-config.php", "wp-config.php.agent-local.bak", ".git", "@":
+		case "wp-config.php", "wp-config.php.agent-local.bak", "wp-config.php.agent-local.prev", ".git", "@":
 			continue
 		}
 		s, d := filepath.Join(src, name), filepath.Join(dst, name)
@@ -1450,8 +1496,8 @@ func writeWorktreeWPConfig(site *Site, wpdir, domain string) error {
 
 // StartWorktree boots the FPM pool for a worktree.
 func (e *Engine) StartWorktree(id string) error {
-	w, ok := e.Store.Data.Worktrees[id]
-	if !ok {
+	w := e.Store.Worktree(id)
+	if w == nil {
 		return fmt.Errorf("no such worktree: %s", id)
 	}
 	site := e.Store.Site(w.Site)
@@ -1465,7 +1511,7 @@ func (e *Engine) StartWorktree(id string) error {
 		return err
 	}
 	// Remember it was up, so a reboot can put it back.
-	w.State = StateRunning
+	e.Store.SetWorktreeState(w, StateRunning)
 	if err := e.Store.Save(); err != nil {
 		return err
 	}
@@ -1477,8 +1523,8 @@ func (e *Engine) StopWorktree(id string) error {
 	if err := e.StopFPM(id); err != nil {
 		return err
 	}
-	if w, ok := e.Store.Data.Worktrees[id]; ok {
-		w.State = StateStopped
+	if w := e.Store.Worktree(id); w != nil {
+		e.Store.SetWorktreeState(w, StateStopped)
 		return e.Store.Save()
 	}
 	return nil
@@ -1486,15 +1532,21 @@ func (e *Engine) StopWorktree(id string) error {
 
 // RemoveWorktree stops + prunes the git worktree.
 func (e *Engine) RemoveWorktree(id string) error {
-	w, ok := e.Store.Data.Worktrees[id]
-	if !ok {
+	return e.removeWorktree(id, false)
+}
+
+// removeWorktree unregisters a branch preview. keepFiles leaves its checkout
+// (and git's record of it) on disk.
+func (e *Engine) removeWorktree(id string, keepFiles bool) error {
+	w := e.Store.Worktree(id)
+	if w == nil {
 		return fmt.Errorf("no such worktree: %s", id)
 	}
 	_ = e.StopWorktree(id)
 	e.RemovePool(id)              // same reason as DeleteSite: don't leave a dead pool config
 	os.RemoveAll(P().MailDir(id)) // and its captured mail
 	site := e.Store.Site(w.Site)
-	if site != nil {
+	if site != nil && !keepFiles {
 		repoDir := siteRepoDir(site)
 		_, _ = runCmdOut("git", "-C", repoDir, "worktree", "remove", "--force", w.Path)
 		if fileExists(w.Path) {

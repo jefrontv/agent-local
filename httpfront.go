@@ -363,7 +363,7 @@ DirectoryIndex index.php index.html
 			emit(site.Slug, a, site.WPDir, e.fpmSock(site.Slug), boot)
 		}
 	}
-	for _, w := range store.Data.Worktrees {
+	for _, w := range store.Worktrees() {
 		emit(w.ID, w.Domain, e.wtServeDir(w), e.fpmSock(w.ID), adminerBootIfReady(store.Site(w.Site)))
 	}
 	return os.WriteFile(p.ApacheConf(), []byte(b.String()), 0o644)

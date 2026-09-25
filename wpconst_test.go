@@ -112,8 +112,13 @@ func TestSetWPConstantRoundTrip(t *testing.T) {
 	}
 
 	cfgPath, _ := wpConfigPath(site)
-	if _, err := os.Stat(cfgPath + ".agent-local.bak"); err != nil {
-		t.Errorf("expected backup file: %v", err)
+	if _, err := os.Stat(cfgPath + ".agent-local.prev"); err != nil {
+		t.Errorf("expected rolling backup file: %v", err)
+	}
+	// .agent-local.bak is the pre-adoption original that delete restores; a
+	// constant edit must never create or overwrite it.
+	if fileExists(cfgPath + ".agent-local.bak") {
+		t.Error("SetWPConstant wrote wp-config.php.agent-local.bak")
 	}
 
 	// Adds a constant that was absent.

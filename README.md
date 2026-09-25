@@ -338,7 +338,9 @@ agent-local wpdebug mysite off
 editing" line when absent) and keeps `WP_DEBUG_DISPLAY` off, so notices land
 in a tailable file rather than the middle of a rendered page. The white-screen
 loop becomes: turn it on, reproduce, `logs wp-<slug>` — or for an agent,
-`set_wp_debug` then `get_logs`.
+`set_wp_debug` then `get_logs`. Each toggle keeps the previous file as
+`wp-config.php.agent-local.prev`; `wp-config.php.agent-local.bak` is only ever
+the config from before agent-local adopted the folder, which `delete` restores.
 
 ## Sharing a site publicly
 

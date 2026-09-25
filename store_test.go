@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -272,4 +273,72 @@ func TestWorktreeDeletionIsExplicit(t *testing.T) {
 	if _, ok := fresh2.Data.Worktrees["a--y"]; ok {
 		t.Error("DelWorktree did not delete")
 	}
+}
+
+// A save that merged another process's changes into the file must leave this
+// process due for a reload. Stamping loadedAt with its own write made the
+// daemon skip the CLI's new site until some unrelated later write.
+func TestSaveThenReloadSeesOtherWriter(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENT_LOCAL_HOME", "")
+	daemon, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli.PutSite(&Site{Slug: "from-cli", Domain: "from-cli.test"})
+	if err := cli.Save(); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon has an unsaved change of its own, so its save merges.
+	daemon.PutSite(&Site{Slug: "from-daemon", Domain: "from-daemon.test"})
+	if err := daemon.Save(); err != nil {
+		t.Fatal(err)
+	}
+	daemon.ReloadIfChanged()
+	if daemon.Site("from-cli") == nil {
+		t.Fatal("daemon never loaded the site the CLI saved")
+	}
+	if daemon.Site("from-daemon") == nil {
+		t.Fatal("daemon lost its own site on reload")
+	}
+	if _, wt := daemon.LookupDomain("from-cli.test"); daemon.Site("from-cli") == nil || wt != nil {
+		t.Error("domain index not rebuilt for the reloaded site")
+	}
+	// With nothing external merged in, a save does not force a reload.
+	daemon.PutSite(&Site{Slug: "solo", Domain: "solo.test"})
+	if err := daemon.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if daemon.loadedAt.IsZero() {
+		t.Error("a save with no external changes still forced a reload")
+	}
+}
+
+// Worktree reads go through the lock; run with -race to catch a regression.
+func TestWorktreeAccessorsUnderConcurrentWrites(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENT_LOCAL_HOME", "")
+	s, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 500; i++ {
+			id := fmt.Sprintf("w%d", i%7)
+			s.PutWorktree(&Worktree{ID: id, Site: "x", Domain: id + ".test"})
+			s.DelWorktree(id)
+		}
+	}()
+	for i := 0; i < 500; i++ {
+		_ = s.Worktree("w3")
+		_ = s.WorktreeCount()
+		_ = s.Worktrees()
+	}
+	<-done
 }

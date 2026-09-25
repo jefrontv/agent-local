@@ -166,7 +166,7 @@ func Doctor(store *Store) *DoctorReport {
 			}
 		}
 	}
-	for _, w := range store.Data.Worktrees {
+	for _, w := range store.Worktrees() {
 		if !hostsHas(w.Domain) {
 			missingHosts = append(missingHosts, w.Domain)
 		}
@@ -401,7 +401,7 @@ func Doctor(store *Store) *DoctorReport {
 
 	// A preview whose checkout was removed behind our back sits in the catalogue
 	// looking merely stopped, then refuses every connection. Name it instead.
-	for _, wt := range store.Data.Worktrees {
+	for _, wt := range store.Worktrees() {
 		if !fileExists(wt.Path) {
 			add(Finding{Check: "preview:" + wt.ID, Status: "warn",
 				Detail:  "checkout gone from " + shortHome(wt.Path),

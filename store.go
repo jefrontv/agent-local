@@ -176,13 +176,23 @@ func (s *Store) Save() error {
 		return err
 	}
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := writeFileSync(tmp, b, 0o644); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
 		return err
 	}
 	s.loadedAt = fileModTime(s.path)
+	// The file now holds another process's changes as well as ours, and memory
+	// holds only ours. Stamping loadedAt with our own write told the next
+	// ReloadIfChanged the file was already loaded, so a site the CLI created
+	// stayed invisible to the daemon until some later write. Clearing it makes
+	// the next reload (at a request boundary, never mid-operation) pick the
+	// merged document up.
+	if !s.sameAsMine(b) {
+		s.loadedAt = time.Time{}
+	}
 	// What we just wrote is the new common ancestor for the next save, and its
 	// deletions are now on disk.
 	s.base = s.snapshot()
@@ -212,6 +222,38 @@ func (s *Store) mergedBytes() ([]byte, error) {
 		return nil, fmt.Errorf("merge store: %w", err)
 	}
 	return merged, nil
+}
+
+// sameAsMine reports whether a merged document says exactly what memory does.
+// Both sides are re-marshalled through storeData so key order and fields this
+// build does not know about cannot make identical content look different.
+// Caller holds mu.
+func (s *Store) sameAsMine(merged []byte) bool {
+	var d storeData
+	if err := json.Unmarshal(merged, &d); err != nil {
+		return false
+	}
+	a, err1 := json.Marshal(d)
+	b, err2 := json.Marshal(s.Data)
+	return err1 == nil && err2 == nil && bytes.Equal(a, b)
+}
+
+// writeFileSync is os.WriteFile plus an fsync before close, so a crash right
+// after the rename cannot leave an empty store that OpenStore rejects as corrupt.
+func writeFileSync(path string, b []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // snapshot records the document as it stands, to serve as the ancestor a later
@@ -370,6 +412,59 @@ func (s *Store) Site(slug string) *Site {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.Data.Sites[slug]
+}
+
+// Worktree fetches a worktree by id. Every read of the worktree map goes
+// through the lock: an unlocked read concurrent with PutWorktree/DelWorktree is
+// Go's fatal "concurrent map read and map write", which takes the daemon — and
+// every site it serves — down.
+func (s *Store) Worktree(id string) *Worktree {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Data.Worktrees[id]
+}
+
+// Worktrees returns every worktree, sorted by id.
+func (s *Store) Worktrees() []*Worktree {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*Worktree, 0, len(s.Data.Worktrees))
+	for _, w := range s.Data.Worktrees {
+		out = append(out, w)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// WorktreeCount is len(worktrees), read under the lock.
+func (s *Store) WorktreeCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.Data.Worktrees)
+}
+
+// SetSiteState records a site's state under the lock and marks the store
+// dirty. Assigning site.State directly did neither: a reload landing between
+// the assignment and the Save replaced the map and dropped the change.
+func (s *Store) SetSiteState(site *Site, st SiteState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	site.State = st
+	if cur := s.Data.Sites[site.Slug]; cur != nil && cur != site {
+		cur.State = st
+	}
+	s.dirty = true
+}
+
+// SetWorktreeState is SetSiteState for a worktree.
+func (s *Store) SetWorktreeState(w *Worktree, st SiteState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w.State = st
+	if cur := s.Data.Worktrees[w.ID]; cur != nil && cur != w {
+		cur.State = st
+	}
+	s.dirty = true
 }
 
 // Sites returns sites sorted by name.

@@ -86,7 +86,7 @@ func restoreRunning(e *Engine, store *Store) int {
 			want = append(want, target{site.Slug, site.WPDir, site.PHPVersion})
 		}
 	}
-	for _, w := range store.Data.Worktrees {
+	for _, w := range store.Worktrees() {
 		site := store.Site(w.Site)
 		if site == nil || w.State != StateRunning || alive[w.ID] {
 			continue
@@ -579,7 +579,7 @@ func (a *APIServer) handleMailUI(w http.ResponseWriter, r *http.Request) {
 	// becomes a directory under ~/.agent-local/mail, and this route is the one
 	// the token does not guard (Apache proxies to it), so a stray "../" here
 	// would read or clear files outside the mail tree.
-	if a.store.Site(id) == nil && a.store.Data.Worktrees[id] == nil {
+	if a.store.Site(id) == nil && a.store.Worktree(id) == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -597,7 +597,7 @@ func (a *APIServer) handleMailUI(w http.ResponseWriter, r *http.Request) {
 // skips the token — and resolves to the site whose tooling is being served.
 func (a *APIServer) handleHubUI(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	site, wt := a.store.Site(id), a.store.Data.Worktrees[id]
+	site, wt := a.store.Site(id), a.store.Worktree(id)
 	title := id
 	switch {
 	case site != nil:
@@ -760,7 +760,7 @@ func (a *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"setup":     SetupState(),
 		"runtimes":  a.store.Inventory().Runtimes(),
 		"sites":     len(a.store.Sites()),
-		"worktrees": len(a.store.Data.Worktrees),
+		"worktrees": a.store.WorktreeCount(),
 	}
 	ok(w, st)
 }
@@ -1474,8 +1474,8 @@ func (a *APIServer) handleWorktreeWPCLI(w http.ResponseWriter, r *http.Request) 
 	if site == nil {
 		return
 	}
-	wt, okw := a.store.Data.Worktrees[r.PathValue("id")]
-	if !okw {
+	wt := a.store.Worktree(r.PathValue("id"))
+	if wt == nil {
 		fail(w, 404, "no such worktree")
 		return
 	}

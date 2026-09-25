@@ -18,7 +18,7 @@ func TestSensitivePath(t *testing.T) {
 	deny := []string{
 		"/.git/HEAD", "/.git/config", "/.env", "/.htaccess", "/.user.ini",
 		"/wp-content/.git/index", "/wp-config.php.bak", "/wp-config.php~",
-		"/wp-config.php.agent-local.bak", "/wp-config.php.save",
+		"/wp-config.php.agent-local.bak", "/wp-config.php.agent-local.prev", "/wp-config.php.save",
 		"/wp-content/debug.log", "/backup.sql", "/dump.sql.gz", "/old/site.sql.zip",
 		"/wp-content/themes/x/style.css.orig", "/notes.swp", "/WP-CONFIG.PHP.BAK",
 		"/a/../.git/config",
