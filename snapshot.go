@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -46,6 +48,37 @@ type SnapshotInfo struct {
 	Auto      bool      `json:"auto"`
 }
 
+// writeGzipFile gzips what fill writes into path, removing the file when
+// anything fails: a half-written snapshot restoring as half a database is
+// worse than no snapshot at all.
+func writeGzipFile(path string, fill func(io.Writer) error) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	// BestSpeed: at the default level gzip, not the dump, set the pace of
+	// every snapshot (39 vs 219 MB/s) for a file only a quarter smaller. The
+	// buffer batches flate's small writes into fewer syscalls.
+	bw := bufio.NewWriterSize(f, 1<<20)
+	gz, err := gzip.NewWriterLevel(bw, gzip.BestSpeed)
+	if err == nil {
+		err = fill(gz)
+		if cerr := gz.Close(); err == nil {
+			err = cerr
+		}
+		if cerr := bw.Flush(); err == nil {
+			err = cerr
+		}
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(path)
+	}
+	return err
+}
+
 // SnapshotDB saves a snapshot of a site's database. The label is optional
 // colour ("pre-migration"); the returned timestamped name is what restore
 // takes either way.
@@ -72,22 +105,7 @@ func (e *Engine) SnapshotDB(slug, label string) (*SnapshotInfo, error) {
 		path = filepath.Join(dir, fmt.Sprintf("%s-%d.sql.gz", name, i))
 	}
 	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return nil, err
-	}
-	gz := gzip.NewWriter(f)
-	err = e.dumpDB(site, gz)
-	if cerr := gz.Close(); err == nil {
-		err = cerr
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		// A half-written snapshot restoring as half a database is worse
-		// than no snapshot at all.
-		os.Remove(tmp)
+	if err := writeGzipFile(tmp, func(w io.Writer) error { return e.dumpDB(site, w) }); err != nil {
 		return nil, err
 	}
 	if err := os.Rename(tmp, path); err != nil {

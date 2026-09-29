@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,5 +150,48 @@ func TestRestoreSnapshotResolution(t *testing.T) {
 	// An unknown site is a fact about the request.
 	if _, err := e.RestoreSnapshot("ghost", "", false); err == nil || !strings.Contains(err.Error(), "no such site") {
 		t.Errorf("ghost site error = %v", err)
+	}
+}
+
+// Past the 1 MB write buffer, so a missed flush would truncate the dump.
+func TestWriteGzipFileRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.sql.gz")
+	dump := bytes.Repeat([]byte("INSERT INTO wp_posts VALUES (1,'x');\n"), 100_000)
+	if err := writeGzipFile(path, func(w io.Writer) error {
+		_, err := w.Write(dump)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(gz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, dump) {
+		t.Fatalf("round trip: got %d bytes, want %d", len(got), len(dump))
+	}
+}
+
+func TestWriteGzipFileRemovesFailedDump(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.sql.gz")
+	boom := errors.New("dump failed")
+	err := writeGzipFile(path, func(w io.Writer) error {
+		w.Write([]byte("half a dump"))
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want %v", err, boom)
+	}
+	if fileExists(path) {
+		t.Fatal("a failed dump left its file behind")
 	}
 }

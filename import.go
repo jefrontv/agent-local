@@ -303,10 +303,9 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 	if o.Copy {
 		targetWPDir = filepath.Join(P().Sites(), slug, "wp")
 		cb("files", "copying docroot → "+targetWPDir)
-		if err := os.MkdirAll(filepath.Dir(targetWPDir), 0o755); err != nil {
-			return nil, err
-		}
-		if err := runCmdQuiet("cp", "-R", docroot, targetWPDir); err != nil {
+		// A clone on APFS: uploads can be gigabytes, and a byte copy of them
+		// took 5 s per GB and the same again in disk.
+		if _, err := cloneTree(docroot, targetWPDir); err != nil {
 			os.RemoveAll(targetWPDir)
 			return nil, fmt.Errorf("copy docroot: %w", err)
 		}
@@ -1194,14 +1193,14 @@ func (e *Engine) rewriteImportedURLs(site *Site, olds map[string]bool, cb func(s
 	var first error
 	for old := range olds {
 		cb("urls", fmt.Sprintf("search-replace %s → %s", old, site.Domain))
-		for _, scheme := range []string{"https://", "http://"} {
-			// guid is an identifier, not a URL; user_email shares the old host on
-			// sites whose staff use it, and rewriting it locks them out.
-			out, err := wpCLI(site, "search-replace", scheme+old, scheme+site.Domain,
-				"--all-tables", "--skip-columns=guid,user_email", "--skip-plugins", "--skip-themes")
-			if err != nil && first == nil {
-				first = fmt.Errorf("%s%s: %s", scheme, old, tail(out, 200))
-			}
+		// One pass per host: "//old" covers https://, http:// and
+		// protocol-relative URLs, and each pass scans every table.
+		// guid is an identifier, not a URL; user_email shares the old host on
+		// sites whose staff use it, and rewriting it locks them out.
+		out, err := wpCLI(site, "search-replace", "//"+old, "//"+site.Domain,
+			"--all-tables", "--skip-columns=guid,user_email", "--skip-plugins", "--skip-themes")
+		if err != nil && first == nil {
+			first = fmt.Errorf("//%s: %s", old, tail(out, 200))
 		}
 	}
 	if err := rewriteWPConfigDomains(filepath.Join(site.WPDir, "wp-config.php"), olds, site.Domain); err != nil && first == nil {
