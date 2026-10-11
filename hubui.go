@@ -133,7 +133,7 @@ func serveHub(w http.ResponseWriter, req *http.Request, e *Engine, site *Site, w
 	case "/requests":
 		hubRequests(w, req, e, site, wt, base, title)
 	case "/login":
-		hubLogin(w, req, e, site, base)
+		hubLogin(w, req, e, site, wt, base)
 	default:
 		http.NotFound(w, req)
 	}
@@ -289,8 +289,10 @@ func outStateHTML(running bool) string {
 
 // hubLogin mints a one-time wp-admin link and sends the browser to it. POST
 // only, and same-origin only: minting a session is a write, and a GET (or a
-// form on another origin) must not be able to trigger it.
-func hubLogin(w http.ResponseWriter, req *http.Request, e *Engine, site *Site, base string) {
+// form on another origin) must not be able to trigger it. On a branch domain
+// wt is set and the link is the worktree's, so the session opens that
+// branch's wp-admin rather than the site's.
+func hubLogin(w http.ResponseWriter, req *http.Request, e *Engine, site *Site, wt *Worktree, base string) {
 	if req.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		http.Error(w, "agent-local: log in is a POST", http.StatusMethodNotAllowed)
@@ -304,9 +306,17 @@ func hubLogin(w http.ResponseWriter, req *http.Request, e *Engine, site *Site, b
 		http.Error(w, notWordPress(site, "magic login").Error(), http.StatusConflict)
 		return
 	}
-	link, err := e.MagicLogin(site, "")
+	var link *LoginLink
+	var err error
+	title := site.Domain
+	if wt != nil {
+		link, err = e.MagicLoginWorktree(site, wt, "")
+		title = wt.Domain
+	} else {
+		link, err = e.MagicLogin(site, "")
+	}
 	if err != nil {
-		hubError(w, base, site.Domain, "Log in", "Could not mint a login link: "+err.Error())
+		hubError(w, base, title, "Log in", "Could not mint a login link: "+err.Error())
 		return
 	}
 	http.Redirect(w, req, link.URL, http.StatusSeeOther)

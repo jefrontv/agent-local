@@ -109,11 +109,19 @@ add_action('init', function () {
 
 // muPluginsDir is the directory the login mu-plugin lives in.
 func muPluginsDir(site *Site) string {
-	return filepath.Join(site.WPDir, "wp-content", "mu-plugins")
+	return muPluginsDirAt(site.WPDir)
+}
+
+func muPluginsDirAt(wpdir string) string {
+	return filepath.Join(wpdir, "wp-content", "mu-plugins")
 }
 
 func loginMUPath(site *Site) string {
-	return filepath.Join(muPluginsDir(site), loginMUName)
+	return loginMUPathAt(site.WPDir)
+}
+
+func loginMUPathAt(wpdir string) string {
+	return filepath.Join(muPluginsDirAt(wpdir), loginMUName)
 }
 
 // phpSingleQuote turns an absolute path into a PHP single-quoted string
@@ -128,24 +136,43 @@ func phpSingleQuote(s string) string {
 // Safe to call when neither exists (e.g. a repeat sweep, or before writing a
 // fresh token so a stale plugin never coexists with a new one).
 func RemoveLoginMU(site *Site) {
-	_ = os.Remove(loginMUPath(site))
-	_ = os.Remove(loginTokenPath(site.Slug))
+	removeLoginMU(site.WPDir, site.Slug)
+}
+
+func removeLoginMU(wpdir, key string) {
+	_ = os.Remove(loginMUPathAt(wpdir))
+	_ = os.Remove(loginTokenPath(key))
 }
 
 // MagicLogin mints a one-time login link for a site. user is a wp-cli login
 // or numeric ID; empty means "the first administrator", resolved via wp-cli.
 func (e *Engine) MagicLogin(site *Site, user string) (*LoginLink, error) {
-	RemoveLoginMU(site)
+	return e.magicLogin(site, site.Slug, site.WPDir, site.Domain, user)
+}
+
+// MagicLoginWorktree is MagicLogin for a worktree preview. The token, the
+// mu-plugin and the link belong to the worktree's checkout and domain, so the
+// session lands in the branch's wp-admin; the users are the site's, since a
+// worktree shares the site's database.
+func (e *Engine) MagicLoginWorktree(site *Site, wt *Worktree, user string) (*LoginLink, error) {
+	return e.magicLogin(site, wt.ID, e.wtServeDir(wt), wt.Domain, user)
+}
+
+// magicLogin mints the link against one docroot: key names the token file
+// (a site slug or a worktree ID), wpdir is the WordPress the mu-plugin goes
+// into, and domain is where the link points.
+func (e *Engine) magicLogin(site *Site, key, wpdir, domain, user string) (*LoginLink, error) {
+	removeLoginMU(wpdir, key)
 
 	user = strings.TrimSpace(user)
 	if user == "" {
-		out, err := wpCLI(site, "user", "list", "--role=administrator", "--field=user_login", "--orderby=ID", "--order=ASC")
+		out, err := wpCLIAt(site, wpdir, "user", "list", "--role=administrator", "--field=user_login", "--orderby=ID", "--order=ASC")
 		if err != nil {
 			return nil, fmt.Errorf("listing administrators: %w", err)
 		}
 		lines := strings.Split(strings.TrimSpace(out), "\n")
 		if len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
-			return nil, fmt.Errorf("no administrator user found on %s", site.Slug)
+			return nil, fmt.Errorf("no administrator user found on %s", key)
 		}
 		user = strings.TrimSpace(lines[0])
 	}
@@ -155,7 +182,7 @@ func (e *Engine) MagicLogin(site *Site, user string) (*LoginLink, error) {
 		User:    user,
 		Expires: time.Now().Add(5 * time.Minute),
 	}
-	tokPath := loginTokenPath(site.Slug)
+	tokPath := loginTokenPath(key)
 	if err := os.MkdirAll(filepath.Dir(tokPath), 0o755); err != nil {
 		return nil, err
 	}
@@ -167,17 +194,17 @@ func (e *Engine) MagicLogin(site *Site, user string) (*LoginLink, error) {
 		return nil, err
 	}
 
-	muDir := muPluginsDir(site)
+	muDir := muPluginsDirAt(wpdir)
 	if err := os.MkdirAll(muDir, 0o755); err != nil {
 		return nil, err
 	}
 	plugin := fmt.Sprintf(loginMUTemplate, tokPath, phpSingleQuote(tokPath))
-	if err := os.WriteFile(loginMUPath(site), []byte(plugin), 0o644); err != nil {
+	if err := os.WriteFile(loginMUPathAt(wpdir), []byte(plugin), 0o644); err != nil {
 		return nil, err
 	}
 
 	return &LoginLink{
-		URL:     BareURL(site) + "/?agent_local_login=" + tok.Token,
+		URL:     BareDomainURL(domain) + "/?agent_local_login=" + tok.Token,
 		User:    user,
 		Expires: tok.Expires,
 	}, nil

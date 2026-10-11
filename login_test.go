@@ -115,3 +115,39 @@ func TestMagicLoginReplacesPreviousToken(t *testing.T) {
 		t.Error("token file does not hold the newest token")
 	}
 }
+
+// A login from a branch domain must land in that branch's wp-admin: the
+// mu-plugin goes into the worktree's checkout and the link points at the
+// worktree's domain, leaving the site's own docroot untouched.
+func TestMagicLoginWorktreeTargetsTheWorktree(t *testing.T) {
+	site := newLoginTestSite(t)
+	wtPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wtPath, "wp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "wp", "wp-load.php"), []byte("<?php"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wt := &Worktree{ID: "loginsite--feature", Site: site.Slug, Branch: "feature", Path: wtPath, Domain: "feature.loginsite.test"}
+	e := &Engine{}
+
+	link, err := e.MagicLoginWorktree(site, wt, "admin")
+	if err != nil {
+		t.Fatalf("MagicLoginWorktree: %v", err)
+	}
+	if !strings.Contains(link.URL, "://feature.loginsite.test") {
+		t.Errorf("URL = %s, want the worktree domain", link.URL)
+	}
+	if !fileExists(loginMUPathAt(filepath.Join(wtPath, "wp"))) {
+		t.Error("mu-plugin not written into the worktree docroot")
+	}
+	if fileExists(loginMUPath(site)) {
+		t.Error("mu-plugin written into the site's docroot")
+	}
+	if !fileExists(loginTokenPath(wt.ID)) {
+		t.Error("token not keyed by the worktree ID")
+	}
+	if fileExists(loginTokenPath(site.Slug)) {
+		t.Error("token written under the site slug")
+	}
+}
