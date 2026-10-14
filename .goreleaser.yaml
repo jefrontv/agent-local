@@ -73,12 +73,17 @@ changelog:
   use: github
   sort: asc
   groups:
+    # New surface reads as a feature, not as "Other": the release body is the
+    # only changelog anyone reads.
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
     - title: Fixes and changes
       regexp: '^.*?fix(\(.+\))??!?:.+$'
-      order: 0
+      order: 1
     - title: Refactors
       regexp: '^.*?refactor(\(.+\))??!?:.+$'
-      order: 1
+      order: 2
     - title: Other
       order: 99
   filters:
