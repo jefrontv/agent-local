@@ -93,6 +93,7 @@ var helpGroups = []helpGroup{
 		{"restart-daemon", "", "hand over to a freshly installed binary"},
 		{"update", "[--check]", "install the latest release"},
 		{"autoupdate", "[on|off]", "let the daemon install releases itself (off by default)"},
+		{"idle", "[on|off|HOURS]", "park a site's pool after this long unused (12h by default)"},
 		{"version", "", "what build this is, and the latest published"},
 	}},
 }
@@ -129,7 +130,7 @@ func renderHelp() string {
 			}
 		}
 	}
-	b.WriteString("\n" + stDim.Render("Every command here is also an MCP tool for the agents you connect —\nexcept mcp, connect, api-token, alias, sudo, autostart, daemon, restart-daemon,\nupdate, autoupdate and version, which only make sense run by hand.") + "\n")
+	b.WriteString("\n" + stDim.Render("Every command here is also an MCP tool for the agents you connect —\nexcept mcp, connect, api-token, alias, sudo, autostart, daemon, restart-daemon,\nupdate, autoupdate, idle and version, which only make sense run by hand.") + "\n")
 	return b.String()
 }
 

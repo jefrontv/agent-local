@@ -31,6 +31,11 @@ const (
 	StateStopped SiteState = "stopped"
 	StateRunning SiteState = "running"
 	StateError   SiteState = "error"
+	// StateSleeping is a pool the machine parked after a quiet window. It serves
+	// exactly like stopped — a request still wakes it — and is kept apart so "I
+	// stopped this" and "nothing has touched this in twelve hours" read
+	// differently in list, the hub and the API.
+	StateSleeping SiteState = "sleeping"
 )
 
 // Site is one managed PHP site — WordPress by default, and the origin of
@@ -59,6 +64,16 @@ type Site struct {
 	HTTPSPort  int       `json:"https_port"`
 	CreatedAt  time.Time `json:"created_at"`
 	State      SiteState `json:"state"` // persisted last known state
+	// LastActive is when this site last served a request. It is written when the
+	// pool sleeps and when the daemon shuts down, never on the request path: the
+	// live clock is in memory (see activity), because a store write per request
+	// means a flock and an fsync per request.
+	LastActive time.Time `json:"last_active,omitempty"`
+	// IdleSleepsIn is derived, never persisted: roughly how long until the
+	// sweeper parks this pool, empty when idle sleeping is off or the clock is
+	// not known yet. It is set on the payload copies that go out over the API,
+	// so an agent can see when a site will park on its own.
+	IdleSleepsIn string `json:"idle_sleeps_in,omitempty"`
 	// MediaOff disables the media fallback for a site whose .htaccess asks for one:
 	// unset means "honour the file", which is what people expect of a rule sitting
 	// in their own repo, so refusing it has to be recorded explicitly.
@@ -127,6 +142,9 @@ type Worktree struct {
 	// State is the last known liveness, so a reboot can put back exactly what was
 	// running. Worktrees used to persist nothing and always came back stopped.
 	State SiteState `json:"state,omitempty"`
+	// LastActive is Site.LastActive for this preview's own pool, so a preview
+	// parks on the same quiet window the site does.
+	LastActive time.Time `json:"last_active,omitempty"`
 }
 
 // Inventory is the persisted runtime environment.

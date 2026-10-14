@@ -229,11 +229,13 @@ func hubSiteCard(e *Engine, site *Site, wt *Worktree) string {
 	}
 	esc := html.EscapeString
 	poolID := site.Slug
+	poolState := site.State
 	if wt != nil {
 		poolID = wt.ID
+		poolState = wt.State
 	}
 	row("app", esc(site.Kind.Label()))
-	row("state", outStateHTML(e.FPMRunning(poolID)))
+	row("state", outStateHTMLFor(e.FPMRunning(poolID), poolState))
 	row("php", esc(site.PHPVersion))
 	if wt != nil {
 		row("branch", esc(wt.Branch)+` <span class=dim>preview of `+esc(site.Domain)+`</span>`)
@@ -281,8 +283,18 @@ func hubSiteCard(e *Engine, site *Site, wt *Worktree) string {
 
 // outStateHTML is outState for a browser: the same lamp, lit or parked.
 func outStateHTML(running bool) string {
-	if running {
+	return outStateHTMLFor(running, StateStopped)
+}
+
+// outStateHTMLFor is outStateHTML for a pool whose reason for being down
+// matters: stopped is a person, sleeping is the machine parking a site nobody
+// has touched. Both wake on the next request.
+func outStateHTMLFor(alive bool, st SiteState) string {
+	if alive {
 		return `<span class=lamp></span> running`
+	}
+	if st == StateSleeping {
+		return `<span class="lamp off"></span> <span class=dim>sleeping</span>`
 	}
 	return `<span class="lamp off"></span> <span class=dim>stopped</span>`
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"strconv"
@@ -148,6 +149,8 @@ func main() {
 		err = cmdUpdate(rest)
 	case "autoupdate":
 		err = cmdAutoupdate(rest)
+	case "idle":
+		err = cmdIdle(rest)
 	case "restart-daemon":
 		err = cmdRestartDaemon()
 	case "help", "--help", "-h":
@@ -390,6 +393,105 @@ func cmdAutoupdate(args []string) error {
 	return nil
 }
 
+// cmdIdle shows or sets how long a pool may sit unused before the daemon parks
+// it. Parking costs the next request a few hundred milliseconds to boot the pool
+// again, which is why the default is a long window rather than a short one.
+func cmdIdle(args []string) error {
+	store, _, err := openEnv()
+	if err != nil {
+		return err
+	}
+	// Read the window inside the closure: it is shown before and after a change,
+	// and a value captured once would report the old one in the answer.
+	state := func() string {
+		window, enabled := store.IdleSleepWindow()
+		switch {
+		case !enabled:
+			return stDim.Render("off") + stDim.Render("  pools stay up until something stops them")
+		case store.Data.IdleSleepMinutes == 0:
+			return stOK.Render("on") + stDim.Render("  "+window.String()+", the default window")
+		default:
+			return stOK.Render("on") + stDim.Render("  "+window.String())
+		}
+	}
+	outTitle(AppName, "idle")
+	if pos := positional(args); len(pos) > 0 {
+		switch strings.ToLower(pos[0]) {
+		case "on":
+			err = store.SetIdleSleepMinutes(0)
+		case "off":
+			err = store.SetIdleSleepMinutes(IdleSleepOff)
+		default:
+			hours, perr := strconv.ParseFloat(pos[0], 64)
+			if perr != nil || hours <= 0 {
+				return fmt.Errorf("usage: %s idle [on|off|HOURS]  e.g. %s idle 6", AppName, AppName)
+			}
+			minutes := int(math.Round(hours * 60))
+			if minutes < 1 {
+				minutes = 1
+			}
+			err = store.SetIdleSleepMinutes(minutes)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	outRow("state", state())
+	outRow("next", nextParkLine())
+	outHint("change", AppName+" idle on|off|HOURS")
+	return nil
+}
+
+// nextParkLine names the pool closest to being parked. It asks the daemon
+// because the clock lives in that process: this one has just started and has no
+// history at all.
+func nextParkLine() string {
+	data, isErr := apiGet("/sites")
+	if isErr {
+		return stDim.Render("no daemon answering, so nothing is on the clock")
+	}
+	list, _ := data.([]interface{})
+	best := time.Duration(-1)
+	name := ""
+	for _, item := range list {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		left, ok := m["idle_sleeps_in"].(string)
+		if !ok || left == "" {
+			continue
+		}
+		slug, _ := m["slug"].(string)
+		d := parseSleepsIn(left)
+		if d < 0 || (best >= 0 && d >= best) {
+			continue
+		}
+		best, name = d, slug
+	}
+	switch {
+	case name == "":
+		return stDim.Render("no pool is on the clock yet")
+	case best == 0:
+		return stName.Render(name) + stDim.Render("  on the next sweep")
+	default:
+		return stName.Render(name) + stDim.Render("  in "+best.Round(time.Minute).String())
+	}
+}
+
+// parseSleepsIn reads the duration string the API puts in idle_sleeps_in, where
+// "now" means the pool is due and the next sweep will take it.
+func parseSleepsIn(s string) time.Duration {
+	if s == "now" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return -1
+	}
+	return d
+}
+
 // openEnv boots store+engine with fresh inventory discovery.
 func openEnv() (*Store, *Engine, error) {
 	store, err := OpenStore()
@@ -484,9 +586,9 @@ func cmdList() error {
 	alive := e.AliveAll()
 	var rows [][]string
 	for _, s := range sites {
-		rows = append(rows, []string{s.Slug, s.PHPVersion, outState(alive[s.Slug]), BareURL(s)})
+		rows = append(rows, []string{s.Slug, s.PHPVersion, outStateLine(alive[s.Slug], s.State), BareURL(s)})
 		for _, w := range store.WorktreesFor(s.Slug) {
-			rows = append(rows, []string{dimf("  └ ") + w.Branch, dimf(s.PHPVersion), outState(alive[w.ID]), BareDomainURL(w.Domain)})
+			rows = append(rows, []string{dimf("  └ ") + w.Branch, dimf(s.PHPVersion), outStateLine(alive[w.ID], w.State), BareDomainURL(w.Domain)})
 		}
 	}
 	outTable([]string{"site", "php", "state", "url"}, rows)
@@ -1767,7 +1869,7 @@ func cmdWorktrees(args []string) error {
 	alive := e.AliveAll()
 	var rows [][]string
 	for _, w := range wts {
-		rows = append(rows, []string{w.Branch, outState(alive[w.ID]), BareDomainURL(w.Domain)})
+		rows = append(rows, []string{w.Branch, outStateLine(alive[w.ID], w.State), BareDomainURL(w.Domain)})
 	}
 	outTable([]string{"branch", "state", "url"}, rows)
 	return nil
@@ -1862,7 +1964,7 @@ func cmdDoctor(args []string) error {
 }
 
 func cmdFront(args []string) error {
-	store, _, err := openEnv()
+	store, engine, err := openEnv()
 	if err != nil {
 		return err
 	}
@@ -1883,6 +1985,15 @@ func cmdFront(args []string) error {
 	// Re-applying the current front is a repair, not a no-op: config is
 	// re-rendered and the front restarted.
 	same := store.Data.Front == want
+	if want == "apache" {
+		// Apache proxies straight to each pool's socket and cannot start one, so
+		// a parked site under it is a dark site. Put them all back first.
+		if woke, err := engine.WakeSleeping(); err != nil {
+			outWarn("could not wake every parked site: " + err.Error())
+		} else if woke > 0 {
+			outStep(fmt.Sprintf("woke %d parked site(s): apache cannot start a pool by itself", woke))
+		}
+	}
 	store.Data.Front = want
 	if err := store.Save(); err != nil {
 		return err

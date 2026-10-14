@@ -23,6 +23,7 @@ missing — Homebrew, PHP, MariaDB, Apache, wp-cli — the app detects and insta
 - [Install](#install) · [Quick start](#quick-start) · [Zero prompts](#zero-prompts-recommended-one-time)
 - [Create a site](#create-a-site) · [Import an existing site](#import-an-existing-site) · [Domains](#domains)
 - [PHP versions](#php-versions) · [Databases](#databases) · [Snapshots](#snapshots) · [Branch previews](#branch-previews-git-worktrees) · [Working on a site](#working-on-a-site)
+- [Idle sleeping](#idle-sleeping) · [Sharing a machine with LocalWP](#sharing-a-machine-with-localwp)
 - [The tools page](#the-tools-page) · [Outgoing mail](#outgoing-mail) · [WP_DEBUG](#wp_debug-without-the-ritual) · [Sharing publicly](#sharing-a-site-publicly)
 - [For agents](#for-agents) · [HTTP fronts](#http-fronts) · [CLI reference](#cli-reference)
 - [Layout & ports](#layout--ports) · [How it works](#how-it-works) · [Troubleshooting](#troubleshooting) · [Releasing](#releasing) · [Uninstall](#uninstall)
@@ -203,7 +204,7 @@ someone's job rather than a manual step:
 |---|---|
 | `127.0.0.2` back on `lo0` | the root front daemon, at startup and whenever the address disappears — macOS does not persist `ifconfig` aliases |
 | the router/API daemon running | a per-user LaunchAgent (`agent-local autostart`, on by default) |
-| sites that were running, running | the daemon restores every site and preview whose state says it was up, concurrently |
+| sites that were running, running | the daemon restores the ones used inside the idle window; the rest come back `sleeping` and their next request starts them (see [Idle sleeping](#idle-sleeping)) |
 
 The alias is the one that used to bite: without it the front daemon has nothing to
 bind, so bare URLs vanish and every address falls back to `:1080`. It is now
@@ -217,6 +218,38 @@ agent-local autostart --off    # only run the daemon when something asks for it
 The login job stands by while another daemon holds the ports rather than exiting,
 so if that one dies the standby takes over in about two seconds — verified by
 killing it: `api=200 site=200` on the next probe.
+
+## Idle sleeping
+
+A site keeps a php-fpm pool, and a pool nobody is using still holds memory: about
+12 MB of dirty pages each, which on a machine with seventy of them is most of a
+gigabyte. Workers already exit after 30 seconds of quiet; this is the master
+process, the part that stays.
+
+After twelve hours without a request the daemon parks a site's pool and marks it
+`sleeping`. Nothing is lost: the database stays up, the files stay put, and the
+next request starts the pool again in about a third of a second — a third of a
+second once, then warm.
+
+```sh
+agent-local idle        # the window, and which site is closest to parking
+agent-local idle 6      # park after six hours
+agent-local idle off    # never park: pools stay up until something stops them
+```
+
+A parked site is not a stopped one. `stopped` means a person stopped it; `sleeping`
+means the machine did, and the word is the whole difference — both are woken by the
+next request. It shows up in `list`, the dashboard and the API's `state` field, and
+the site record carries `last_active` plus `idle_sleeps_in` so an agent can see
+when a site will park without guessing.
+
+Idle sleeping only runs on the router front. Apache forwards straight to a pool's
+socket and cannot start one, so switching to that front wakes everything parked
+first.
+
+The reboot is where most of the memory comes back: only pools used inside the
+window are restored, and the rest come up parked. An unattended box that should be
+ready on arrival turns the whole thing off with `agent-local idle off`.
 
 ## Sharing a machine with LocalWP
 
@@ -1010,6 +1043,7 @@ agent-local daemon [--background]      router + agent API
 agent-local restart-daemon             hand over to a freshly installed binary
 agent-local update [--check]           install the latest release
 agent-local autoupdate [on|off]        let the daemon install releases itself (off by default)
+agent-local idle [on|off|HOURS]        park a site's pool after this long unused (12h by default)
 agent-local mcp [--config]             MCP server over stdio; --config prints the client block
 agent-local connect [--list|--all|--remove|--json|--yes] [harness...]  register (or remove) the MCP server in a client
 agent-local api-token | version

@@ -74,24 +74,44 @@ var (
 )
 
 // restoreRunning starts the pools for every site and worktree whose persisted
-// state says it was running. Returns how many came back.
+// state says it was running — except the ones nobody has touched for longer than
+// the idle window, which come back parked instead. Returns how many came back.
 func restoreRunning(e *Engine, store *Store) int {
 	type target struct {
 		id, dir, php string
 	}
+	now := time.Now()
 	var want []target
+	parked := 0
 	alive := e.AliveAll()
 	for _, site := range store.Sites() {
-		if site.State == StateRunning && !alive[site.Slug] {
-			want = append(want, target{site.Slug, site.WPDir, site.PHPVersion})
+		if site.State != StateRunning || alive[site.Slug] {
+			continue
 		}
+		if !restoreDue(store, site.LastActive, now) {
+			store.SetSiteState(site, StateSleeping)
+			parked++
+			continue
+		}
+		want = append(want, target{site.Slug, site.WPDir, site.PHPVersion})
 	}
 	for _, w := range store.Worktrees() {
 		site := store.Site(w.Site)
 		if site == nil || w.State != StateRunning || alive[w.ID] {
 			continue
 		}
+		if !restoreDue(store, w.LastActive, now) {
+			store.SetWorktreeState(w, StateSleeping)
+			parked++
+			continue
+		}
 		want = append(want, target{w.ID, e.wtServeDir(w), site.PHPVersion})
+	}
+	if parked > 0 {
+		if err := store.Save(); err != nil {
+			log.Printf("idle sleep: saving state: %v", err)
+		}
+		log.Printf("idle sleep: %d pool(s) came back parked — quiet for longer than the window, and woken by the next request", parked)
 	}
 	const restoreConcurrency = 4
 	sem := make(chan struct{}, restoreConcurrency)
@@ -115,6 +135,19 @@ func restoreRunning(e *Engine, store *Store) int {
 	}
 	wg.Wait()
 	return started
+}
+
+// restoreDue decides between starting a pool on boot and leaving it parked: a
+// machine that has been off for longer than the idle window comes back lean,
+// because every one of those pools would sit idle behind a wake nobody has paid
+// for yet. A pool with no clock at all is started, so a store from before this
+// feature behaves exactly as it always did.
+func restoreDue(store *Store, last, now time.Time) bool {
+	window, enabled := store.IdleSleepWindow()
+	if !enabled || last.IsZero() {
+		return true
+	}
+	return now.Sub(last) < window
 }
 
 // unreadableDocroots lists sites whose docroot exists on disk but this process
@@ -262,9 +295,22 @@ func RunDaemon(background bool) error {
 			log.Printf("database: %v", err)
 		}
 	}
+	// The idle clock resumes from what the store remembers, so a handover does
+	// not hand every pool a fresh window.
+	e.SeedActivity()
 	restored := restoreRunning(e, store)
 	if restored > 0 {
 		log.Printf("restored %d pool(s) that were running before shutdown", restored)
+	}
+	// Apache proxies straight to a pool's socket and cannot start one, so a
+	// parked site under that front is a dark site until something else starts it.
+	if FrontKind(store) == "apache" {
+		woke, err := e.WakeSleeping()
+		if err != nil {
+			log.Printf("idle sleep: waking parked pools for the apache front: %v", err)
+		} else if woke > 0 {
+			log.Printf("idle sleep: woke %d parked pool(s): the apache front cannot wake one itself", woke)
+		}
 	}
 
 	// HTTP front: router serves in-process; apache is a child process. The API
@@ -329,6 +375,7 @@ func RunDaemon(background bool) error {
 	// is one to install.
 	go watchBinary(watchedBinaryPath(), binaryWatchEvery, daemonHandover(jobs, hand))
 	go updateLoop(store)
+	go sleepLoop(store, e)
 
 	handingOver := ""
 	select {
@@ -340,6 +387,11 @@ func RunDaemon(background bool) error {
 	// Give any in-flight import/deploy job a moment to finish rather than
 	// being cut off mid-write.
 	jobs.DrainRunning(5 * time.Second)
+	// The live clocks exist only in this process. Write them back so the next
+	// daemon resumes the same windows instead of starting new ones.
+	if err := e.PersistActivity(); err != nil {
+		log.Printf("idle sleep: saving activity: %v", err)
+	}
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutCtx); err != nil {
@@ -879,7 +931,7 @@ func (a *APIServer) handleList(w http.ResponseWriter, r *http.Request) {
 		ok(w, a.store.Sites())
 		return
 	}
-	ok(w, publicSites(a.store.Sites()))
+	ok(w, a.withIdleSleeps(publicSites(a.store.Sites())))
 }
 
 func (a *APIServer) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -890,6 +942,8 @@ func (a *APIServer) handleGet(w http.ResponseWriter, r *http.Request) {
 	record := publicSite(site)
 	if wantSecrets(r) {
 		record = site
+	} else {
+		record = a.withIdleSleeps([]*Site{record})[0]
 	}
 	detail := map[string]interface{}{
 		"site":      record,
@@ -1053,6 +1107,32 @@ func (a *APIServer) runtimeInfo(site *Site) map[string]interface{} {
 		"running":     a.engine.FPMRunning(site.Slug),
 		"db":          dbBlock(site),
 	}
+}
+
+// withIdleSleeps annotates payload copies with when each pool will park by
+// itself. Derived, so it lives on the copy and never in sites.json: the stored
+// record keeps only when the pool was last used.
+func (a *APIServer) withIdleSleeps(sites []*Site) []*Site {
+	window, enabled := a.store.IdleSleepWindow()
+	if !enabled {
+		return sites
+	}
+	now := time.Now()
+	for _, s := range sites {
+		if s == nil || s.State != StateRunning {
+			continue
+		}
+		idle, known := a.engine.IdleSleeps(s.Slug, now)
+		if !known {
+			continue
+		}
+		if left := window - idle; left > 0 {
+			s.IdleSleepsIn = left.Round(time.Minute).String()
+		} else {
+			s.IdleSleepsIn = "now"
+		}
+	}
+	return sites
 }
 
 // publicSite is a site record safe to hand out in bulk: the database and admin
@@ -1623,8 +1703,13 @@ func (a *APIServer) handleListWorktrees(w http.ResponseWriter, r *http.Request) 
 	alive := a.engine.fpmAliveBatch(ids)
 	for _, wt := range wts {
 		state := "stopped"
-		if alive[wt.ID] {
+		switch {
+		case alive[wt.ID]:
 			state = "running"
+		case wt.State == StateSleeping:
+			// Parked by the machine, not by a person, and the next request wakes
+			// it: an agent reading "stopped" would go and start it.
+			state = "sleeping"
 		}
 		out = append(out, map[string]interface{}{
 			"id":     wt.ID,

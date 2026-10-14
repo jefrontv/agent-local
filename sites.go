@@ -752,6 +752,10 @@ func (e *Engine) StartSite(slug string) error {
 	// running — marking it so any earlier meant a crash between steps left a
 	// site that says "running" while nothing behind it works.
 	e.Store.SetSiteState(site, StateRunning)
+	// A pool that has just come up is in use by definition. This stamp is what
+	// keeps the sweeper from parking it again on its next pass, and what a wake
+	// resets.
+	e.act.stamp(site.Slug)
 	return e.Store.Save()
 }
 
@@ -1512,6 +1516,7 @@ func (e *Engine) StartWorktree(id string) error {
 	}
 	// Remember it was up, so a reboot can put it back.
 	e.Store.SetWorktreeState(w, StateRunning)
+	e.act.stamp(w.ID)
 	if err := e.Store.Save(); err != nil {
 		return err
 	}

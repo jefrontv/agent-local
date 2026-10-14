@@ -68,8 +68,18 @@ func outBlank() { fmt.Println() }
 // outState renders a running/stopped pair the way the TUI does: one lamp,
 // lit or parked, then the word.
 func outState(running bool) string {
-	if running {
+	return outStateLine(running, StateStopped)
+}
+
+// outStateLine is outState for a pool whose reason for being down matters: a
+// person stopped it, or the machine parked it after a window nothing broke.
+// Both wake on the next request; only the word differs.
+func outStateLine(alive bool, st SiteState) string {
+	if alive {
 		return stOK.Render("●") + " running"
+	}
+	if st == StateSleeping {
+		return stGutter.Render("●") + " " + stDim.Render("sleeping")
 	}
 	return stGutter.Render("●") + " " + stDim.Render("stopped")
 }

@@ -51,10 +51,24 @@ type storeData struct {
 	// AutoUpdate lets the daemon install releases it finds on its daily check.
 	// Off unless asked: a tool agents drive should change under them only
 	// when someone said so.
-	AutoUpdate bool      `json:"auto_update,omitempty"`
-	Inv        Inventory `json:"inventory"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	AutoUpdate bool `json:"auto_update,omitempty"`
+	// IdleSleepMinutes is the quiet window before the daemon parks a site's pool:
+	// > 0 minutes, -1 never sleeps on its own, 0 — the absent field — the default.
+	// A sentinel rather than a pointer so a sites.json written before this existed
+	// reads as "on, twelve hours" instead of "off".
+	IdleSleepMinutes int       `json:"idle_sleep_minutes,omitempty"`
+	Inv              Inventory `json:"inventory"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
+
+// IdleSleepDefault is the quiet window for a store that has never been told
+// otherwise: long enough that a site someone is actually using never parks, short
+// enough that a site nobody has touched since yesterday is not still holding its
+// pool.
+const IdleSleepDefault = 12 * time.Hour
+
+// IdleSleepOff is the setting that keeps pools up until something stops them.
+const IdleSleepOff = -1
 
 func fileModTime(p string) time.Time {
 	st, err := os.Stat(p)
@@ -619,6 +633,32 @@ func (s *Store) Suffix() string {
 		return DefaultSuffix
 	}
 	return s.Data.Suffix
+}
+
+// IdleSleepWindow is how long a pool may sit unused before the daemon parks it.
+// The second return is false when sleeping is off, so callers cannot mistake
+// "off" for "a very long window".
+func (s *Store) IdleSleepWindow() (time.Duration, bool) {
+	s.mu.RLock()
+	v := s.Data.IdleSleepMinutes
+	s.mu.RUnlock()
+	switch {
+	case v == 0:
+		return IdleSleepDefault, true
+	case v < 0:
+		return 0, false
+	default:
+		return time.Duration(v) * time.Minute, true
+	}
+}
+
+// SetIdleSleepMinutes stores the quiet window in minutes: a positive value parks
+// a pool after that long, IdleSleepOff never parks one, and 0 restores the
+// default. Validation lives in the CLI, which is the only caller that takes the
+// number from a person.
+func (s *Store) SetIdleSleepMinutes(min int) error {
+	s.Data.IdleSleepMinutes = min
+	return s.Save()
 }
 
 // SetSuffix stores the default domain suffix (must start with a dot).

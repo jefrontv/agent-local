@@ -101,6 +101,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// From here to the end of the response this pool is in use, and the idle
+	// sweeper must not park it: StopFPM signals the whole process group and
+	// SIGKILLs it five seconds later, which cuts a 130 s render in half.
+	r.engine.act.enter(fpmID)
+	defer r.engine.act.leave(fpmID)
+
 	if isAdminerPath(req.URL.Path) || isMailPath(req.URL.Path) || underHub(req.URL.Path) {
 		// A share exposes the site, not its tooling: the database GUI, the
 		// inbox and the hub pages stay local-only.
@@ -130,6 +136,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		serveHub(w, req, r.engine, site, wt, HubPath, host)
 		return
 	}
+
+	// A request that gets this far is the site being used. The tooling paths
+	// above return early and refresh themselves, and counting a hub page as
+	// traffic would keep a site awake while nobody is looking at the site.
+	r.engine.act.stamp(fpmID)
 
 	sw := &statusWriter{ResponseWriter: w}
 	scheme := "http"
@@ -211,7 +222,7 @@ func (r *Router) serve(w *statusWriter, req *http.Request, rec *requestRecord, h
 	// those lines to this request — the same trick probe uses.
 	poolLog := r.engine.fpmLog(fpmID)
 	from := fileSize(poolLog)
-	r.proxyFCGIScript(w, req, wpdir, sock, host, script, scriptName)
+	r.proxyFCGIScript(w, req, wpdir, sock, fpmID, host, script, scriptName)
 	rec.PHPErrors = logDelta(poolLog, from)
 }
 
@@ -449,12 +460,6 @@ func within(full, root string) bool {
 	return full == root || strings.HasPrefix(full, root+string(os.PathSeparator))
 }
 
-// proxyFCGI speaks FastCGI to the pool socket and streams back.
-func (r *Router) proxyFCGI(w http.ResponseWriter, req *http.Request, wpdir, sock, host string) {
-	script, scriptName := resolveScript(wpdir, req.URL.Path)
-	r.proxyFCGIScript(w, req, wpdir, sock, host, script, scriptName)
-}
-
 // serveAdminer runs the downloaded Adminer wrapper through the site's PHP.
 func (r *Router) serveAdminer(w http.ResponseWriter, req *http.Request, host, wpdir string) {
 	site := r.engine.SiteForHost(host)
@@ -476,16 +481,25 @@ func (r *Router) serveAdminer(w http.ResponseWriter, req *http.Request, host, wp
 			return
 		}
 	}
-	r.proxyFCGIScript(w, req, wpdir, sock, host, boot, AdminerPath)
+	r.proxyFCGIScript(w, req, wpdir, sock, site.Slug, host, boot, AdminerPath)
 }
 
-// proxyFCGIScript is proxyFCGI with an explicit script filename, used by
-// permalinks and by Adminer (which lives outside the docroot).
-func (r *Router) proxyFCGIScript(w http.ResponseWriter, req *http.Request, wpdir, sock, host, script, scriptName string) {
+// proxyFCGIScript answers one request from a pool socket, with an explicit
+// script filename: permalinks and Adminer (which lives outside the docroot)
+// both need to say which file runs.
+func (r *Router) proxyFCGIScript(w http.ResponseWriter, req *http.Request, wpdir, sock, fpmID, host, script, scriptName string) {
 	conn, err := net.DialTimeout("unix", sock, 3*time.Second)
 	if err != nil {
-		http.Error(w, "agent-local: php-fpm connect: "+err.Error(), http.StatusBadGateway)
-		return
+		// The socket was there when ServeHTTP looked and is gone now: the pool
+		// parked in between, or it died. Start it and dial once more rather than
+		// failing a request this router knows how to serve.
+		if werr := r.engine.ensurePool(fpmID); werr == nil {
+			conn, err = net.DialTimeout("unix", sock, 3*time.Second)
+		}
+		if err != nil {
+			http.Error(w, "agent-local: php-fpm connect: "+err.Error(), http.StatusBadGateway)
+			return
+		}
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(130 * time.Second))

@@ -18,6 +18,10 @@ type Engine struct {
 	// HostsInteractive lets CLI/TUI pop the macOS password dialog for
 	// /etc/hosts edits; the daemon keeps this false to stay headless.
 	HostsInteractive bool
+	// act is the idle clock and in-flight count per pool (see sleep.go). It is
+	// this process's memory of what was used when, and the only thing that keeps
+	// a pool from being parked mid-request.
+	act activity
 }
 
 // NewEngine wires an engine to the store.
@@ -525,6 +529,7 @@ func (e *Engine) StopFPM(id string) error {
 // growing pile of pools naming directories that no longer exist.
 func (e *Engine) RemovePool(id string) {
 	_ = e.StopFPM(id)
+	e.act.forget(id)
 	os.Remove(e.fpmConf(id))
 	os.Remove(e.fpmPid(id))
 	os.Remove(e.fpmSock(id))

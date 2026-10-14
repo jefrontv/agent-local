@@ -1869,6 +1869,10 @@ func (m *model) viewSites() string {
 			// lamp would promise a site that answers nothing but 404.
 			gutter = lampFor("fail") + " "
 			body += stErr.Render("  docroot missing")
+		} else if !live && s.State == StateSleeping {
+			// The same grey lamp as a stopped site, and the word says which: the
+			// machine parked this one, and the next request wakes it.
+			body += stDim.Render("  sleeping")
 		}
 		b.WriteString(rowFor(live, i == m.siteCur, gutter, body) + "\n")
 	}
@@ -1972,6 +1976,8 @@ func (m model) viewWorktrees() string {
 		if !fileExists(w.Path) {
 			gutter = lampFor("fail") + " "
 			body += stErr.Render("  checkout missing")
+		} else if !live && w.State == StateSleeping {
+			body += stDim.Render("  sleeping")
 		}
 		b.WriteString(rowFor(live, i == m.wtCur, gutter, body) + "\n")
 	}
