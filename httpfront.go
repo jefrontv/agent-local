@@ -323,6 +323,7 @@ DirectoryIndex index.php index.html
     SetHandler "proxy:unix:%s|fcgi://localhost"
   </FilesMatch>
   RewriteEngine On
+  RewriteRule ^/\.al(/.*)?$ /.agent-local$1 [R=302,L]
   RewriteCond %%{REQUEST_URI} !^/\.agent-local/
   RewriteCond %%{REQUEST_URI} !^/\.agent-local/?$
   RewriteCond %%{REQUEST_FILENAME} !-f

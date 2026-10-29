@@ -107,11 +107,19 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.engine.act.enter(fpmID)
 	defer r.engine.act.leave(fpmID)
 
-	if isAdminerPath(req.URL.Path) || isMailPath(req.URL.Path) || underHub(req.URL.Path) {
+	short, isShort := hubShortTarget(req.URL.Path)
+	if isShort || isAdminerPath(req.URL.Path) || isMailPath(req.URL.Path) || underHub(req.URL.Path) {
 		// A share exposes the site, not its tooling: the database GUI, the
-		// inbox and the hub pages stay local-only.
+		// inbox and the hub pages stay local-only, and so does the shorthand.
 		if shared {
 			http.NotFound(w, req)
+			return
+		}
+		if isShort {
+			if req.URL.RawQuery != "" {
+				short += "?" + req.URL.RawQuery
+			}
+			http.Redirect(w, req, short, http.StatusFound)
 			return
 		}
 		// Adminer and the inbox live under the hub's prefix on longer, more

@@ -796,6 +796,9 @@ reserved path rendered by this binary, kept out of the WordPress tree so a
 permalink cannot swallow it, and local only: a share tunnel answers 404 for
 the whole prefix.
 
+`/.al` is a shorthand: it redirects to `/.agent-local` and keeps the rest of
+the path, so `/.al/mail` opens the inbox.
+
 The index opens with what the daemon already knows about the site, with
 nothing to ask: app kind, pool state, PHP version, docroot, database,
 WordPress version, WP_DEBUG, checkpoints and snapshots, media fallback,

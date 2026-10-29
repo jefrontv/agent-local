@@ -18,6 +18,20 @@ import (
 // tree so a permalink cannot swallow it, and stays local-only on shares.
 const HubPath = "/.agent-local"
 
+// HubShortPath is a shorthand that redirects to HubPath, keeping whatever
+// follows it, so /.al/mail lands on the inbox. A redirect rather than a
+// second mount: every hub page links relative to HubPath.
+const HubShortPath = "/.al"
+
+// hubShortTarget is where a request on the shorthand belongs, and whether it
+// is on the shorthand at all. The query string is the caller's to carry.
+func hubShortTarget(urlPath string) (string, bool) {
+	if urlPath != HubShortPath && !strings.HasPrefix(urlPath, HubShortPath+"/") {
+		return "", false
+	}
+	return HubPath + strings.TrimPrefix(urlPath, HubShortPath), true
+}
+
 // hubPages are the paths under HubPath this binary answers itself. Anything
 // else below HubPath is a 404 rather than a fall-through to WordPress: the
 // whole prefix is ours, and a typo should say so instead of rendering the

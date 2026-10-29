@@ -56,6 +56,50 @@ func TestRouterServesHubPage(t *testing.T) {
 	}
 }
 
+// /.al redirects to the hub with the rest of the path and the query kept,
+// leaves look-alike paths to WordPress, and stays local-only on a share.
+func TestRouterRedirectsHubShorthand(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	docroot := filepath.Join(home, "wp")
+	if err := os.MkdirAll(docroot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.PutSite(&Site{Slug: "s", Domain: "s.test", WPDir: docroot, PHPVersion: "8.2",
+		DBName: "al_s", DBUser: "al_s", DBPass: "x"})
+	r := NewRouter(NewEngine(store))
+
+	for in, want := range map[string]string{
+		"/.al":              "/.agent-local",
+		"/.al/":             "/.agent-local/",
+		"/.al/mail":         "/.agent-local/mail",
+		"/.al/errors?x=1":   "/.agent-local/errors?x=1",
+		"/.al/adminer?sql=": "/.agent-local/adminer?sql=",
+	} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://s.test"+in, nil))
+		if rec.Code != http.StatusFound || rec.Header().Get("Location") != want {
+			t.Errorf("GET %s = %d %q, want 302 %q", in, rec.Code, rec.Header().Get("Location"), want)
+		}
+	}
+	if _, ok := hubShortTarget("/.always"); ok {
+		t.Error("/.always should not match the shorthand")
+	}
+
+	sh := &Share{Slug: "s", Host: "x.trycloudflare.com", URL: "https://x.trycloudflare.com"}
+	shares.add(sh)
+	defer shares.remove(sh)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://x.trycloudflare.com/.al", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("/.al over tunnel = %d, want 404", rec.Code)
+	}
+}
+
 // The daemon route behind the apache ProxyPass validates the pool id like
 // the inbox does, and titles the page with the site domain.
 func TestHubUIRouteValidatesID(t *testing.T) {
@@ -107,6 +151,7 @@ func TestApacheConfProxiesHubPages(t *testing.T) {
 	for _, want := range []string{
 		`ProxyPassMatch ^/\.agent-local(/(?:errors|requests|login))?/?$`,
 		"/hub-ui/s$1", "ProxyPass /.agent-local/mail",
+		`RewriteRule ^/\.al(/.*)?$ /.agent-local$1 [R=302,L]`,
 	} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("apache conf missing %q", want)
