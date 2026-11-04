@@ -206,6 +206,20 @@ func Doctor(store *Store) *DoctorReport {
 		}
 	}
 
+	// local CA: trusted once, it makes every new site cert trusted without a
+	// prompt. Checked before tls so --fix trusts it before issuing any certs.
+	if ca := InspectCA(); ca.Trusted {
+		add(Finding{Check: "ca", Status: "ok", Detail: "local CA trusted; new site certs need no password"})
+	} else {
+		detail := "no local CA yet; each new site cert needs its own trust"
+		if ca.Exists {
+			detail = "local CA not trusted; new site certs will show a browser warning"
+		}
+		add(Finding{Check: "ca", Status: "warn", Detail: detail,
+			FixHint: "trusts one local CA (one password prompt at most); site certs it signs need none",
+			FixCmd:  "agent-local doctor --fix", AutoFix: true, FixRoot: true})
+	}
+
 	// certs
 	var missingCerts []string
 	for _, d := range store.AllDomains() {
@@ -561,6 +575,12 @@ func DoctorFix(store *Store, interactive bool) []string {
 				done = append(done, fmt.Sprintf("failed: dns: %v", err))
 			} else if n > 0 {
 				done = append(done, fmt.Sprintf("updated %d /etc/hosts line(s)", n))
+			}
+		case f.Check == "ca":
+			if err := TrustLocalCA(interactive); err != nil {
+				done = append(done, fmt.Sprintf("failed: trust local CA: %v", err))
+			} else {
+				done = append(done, "trusted the local CA; new site certs need no password")
 			}
 		case f.Check == "tls":
 			for _, d := range store.AllDomains() {

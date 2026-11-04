@@ -61,7 +61,7 @@ agent-local setup         # one-time: root, certs, hosts, bare URLs, agent harne
 ```
 
 `setup` installs the passwordless allowlist (one password dialog), writes the
-`/etc/hosts` entries, trusts the per-domain TLS certs, turns on bare URLs, and
+`/etc/hosts` entries, trusts agent-local's local CA, turns on bare URLs, and
 registers the MCP server in every coding-agent harness it finds installed — Claude
 Code, Codex, Cursor and the rest. Then it reports whether the machine is ready.
 
@@ -73,8 +73,14 @@ Prefer to drive it by hand? `agent-local doctor` reports what is present and wha
 is missing, and `agent-local doctor --fix` repairs everything fixable.
 
 Root is needed for exactly two things — `/etc/hosts` entries and trusting the
-per-domain TLS cert — and the app asks (macOS password dialog) at the moment it
-needs them. [Zero prompts](#zero-prompts-recommended-one-time) removes even that.
+local CA — and the app asks (macOS password dialog) at the moment it needs them.
+[Zero prompts](#zero-prompts-recommended-one-time) removes even that.
+
+Site certs are signed by a local CA (`~/.agent-local/certs/ca/`) that is trusted
+once, so a new site's cert is trusted with no keychain write and no prompt. The CA
+is name-constrained to `.al`, `.test`, `.local`, `localhost` and the configured
+suffix, so its key cannot sign for any other domain. A domain outside that set gets
+a self-signed cert and its own trust step, as before.
 
 ### Updating
 

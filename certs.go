@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -22,7 +23,8 @@ func CertPaths(domain string) (cert, key string) {
 	return filepath.Join(p, domain+".crt"), filepath.Join(p, domain+".key")
 }
 
-// EnsureCert generates (once) a self-signed cert for the domain.
+// EnsureCert generates (once) a cert for the domain: signed by the local CA
+// when the CA covers the name (ca.go), self-signed otherwise.
 func EnsureCert(domain string) (cert, key string, created bool, err error) {
 	cert, key = CertPaths(domain)
 	if fileExists(cert) && fileExists(key) {
@@ -45,7 +47,11 @@ func EnsureCert(domain string) (cert, key string, created bool, err error) {
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		DNSNames:    []string{domain},
 	}
-	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &priv.PublicKey, priv)
+	parent, signer := &tmpl, crypto.Signer(priv)
+	if ca := signerFor(domain); ca != nil {
+		parent, signer = ca.cert, ca.key
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, parent, &priv.PublicKey, signer)
 	if err != nil {
 		return "", "", false, err
 	}
@@ -87,6 +93,9 @@ var trustStageMu sync.Mutex
 // the GUI dialog against the cert's real path; a non-interactive one fails
 // with the setup hint. Success is what the OS says afterwards, never the
 // command's exit code: a cancelled dialog exits 0 on some macOS builds.
+//
+// A cert the local CA signed is trusted by trusting the CA, so once the CA is
+// in the keychain the certTrusted check below returns before anything runs.
 func TrustCert(certPath string, interactive bool) error {
 	if !fileExists(certPath) {
 		return fmt.Errorf("cert missing: %s", certPath)
@@ -94,6 +103,16 @@ func TrustCert(certPath string, interactive bool) error {
 	if certTrusted(certPath) {
 		return nil
 	}
+	return trustAnchor(trustAnchorFor(certPath), certPath, interactive)
+}
+
+// trustAnchor adds anchorPath to the system keychain as an SSL root, then
+// confirms that checkPath (the anchor itself, or a leaf it issued) verifies.
+func trustAnchor(anchorPath, checkPath string, interactive bool) error {
+	if certTrusted(checkPath) {
+		return nil
+	}
+	certPath := anchorPath
 	der, err := os.ReadFile(certPath)
 	if err != nil {
 		return err
@@ -108,18 +127,18 @@ func TrustCert(certPath string, interactive bool) error {
 			sudoN("-n", "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
 				"-p", "ssl", "-k", "/Library/Keychains/System.keychain", trustStagePath) == nil
 	}()
-	if trusted && certTrusted(certPath) {
+	if trusted && certTrusted(checkPath) {
 		return nil
 	}
 	if !interactive {
-		return fmt.Errorf("needs root to trust %s (run: agent-local sudo, or: agent-local cert %s --trust)", filepath.Base(certPath), strings.TrimSuffix(filepath.Base(certPath), ".crt"))
+		return fmt.Errorf("needs root to trust %s (run: agent-local sudo, or: agent-local cert %s --trust)", filepath.Base(certPath), strings.TrimSuffix(filepath.Base(checkPath), ".crt"))
 	}
 	if err := RunPrivileged(true, "security", "add-trusted-cert", "-d", "-r", "trustRoot",
 		"-p", "ssl", "-k", "/Library/Keychains/System.keychain", certPath); err != nil {
 		return err
 	}
-	if !certTrusted(certPath) {
-		return fmt.Errorf("the password prompt was cancelled or the keychain refused; %s is still untrusted", filepath.Base(certPath))
+	if !certTrusted(checkPath) {
+		return fmt.Errorf("the password prompt was cancelled or the keychain refused; %s is still untrusted", filepath.Base(checkPath))
 	}
 	return nil
 }
