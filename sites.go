@@ -638,7 +638,11 @@ type DeleteOpts struct {
 // DeleteSite removes a site. Files and database are independently keepable:
 // dropping the schema while keeping files left a wp-config pointing at nothing,
 // and re-adopting that folder then failed in the copy step.
-func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
+func (e *Engine) DeleteSite(slug string, o DeleteOpts, reports ...func(string, string)) error {
+	report := warnStderr
+	if len(reports) > 0 && reports[0] != nil {
+		report = reports[0]
+	}
 	site := e.Store.Site(slug)
 	if site == nil {
 		return fmt.Errorf("no such site: %s", slug)
@@ -671,7 +675,7 @@ func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 		if !ownsDB(site) {
 			// A serve-only import records the schema its wp-config names; that
 			// database belongs to whatever set it up, not to this site.
-			fmt.Fprintf(os.Stderr, "warning: leaving database %s (user %s) in place: agent-local did not create it\n", site.DBName, site.DBUser)
+			report("warn", fmt.Sprintf("leaving database %s (user %s) in place: agent-local did not create it", site.DBName, site.DBUser))
 		} else if err := e.DropSiteDB(site); err != nil {
 			return fmt.Errorf("drop db: %w", err)
 		}
@@ -680,7 +684,7 @@ func (e *Engine) DeleteSite(slug string, o DeleteOpts) error {
 	withFiles := !o.KeepFiles
 	domains := append([]string{site.Domain}, site.Aliases...)
 	if err := RemoveHosts(interactiveHosts, domains); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not remove /etc/hosts entries: %v\n", err)
+		report("warn", fmt.Sprintf("could not remove /etc/hosts entries: %v", err))
 	}
 	if withFiles {
 		switch {
@@ -874,7 +878,11 @@ func (e *Engine) phpMissingErr(version string) error {
 }
 
 // SetDomain changes a site's domain (hosts + cert follow).
-func (e *Engine) SetDomain(slug, domain string) error {
+func (e *Engine) SetDomain(slug, domain string, reports ...func(string, string)) error {
+	report := warnStderr
+	if len(reports) > 0 && reports[0] != nil {
+		report = reports[0]
+	}
 	site := e.Store.Site(slug)
 	if site == nil {
 		return fmt.Errorf("no such site: %s", slug)
@@ -897,19 +905,19 @@ func (e *Engine) SetDomain(slug, domain string) error {
 	}
 	// A rename whose hosts entry cannot be written leaves the new name
 	// unresolvable, so say so rather than reporting a clean rename.
-	ensureHostsOrReport(e.HostsInteractive, []string{domain}, EnsureHosts, warnStderr)
+	ensureHostsOrReport(e.HostsInteractive, []string{domain}, EnsureHosts, report)
 	// The name we just left behind would otherwise keep resolving to us forever,
 	// so /etc/hosts grows a dead entry per rename — and the old address still
 	// answers, which is worse than not resolving at all.
 	if old != "" && old != domain && e.Store.DomainFree(old) {
 		if err := RemoveHosts(e.HostsInteractive, []string{old}); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not remove the old %s hosts entry: %v\n", old, err)
+			report("warn", fmt.Sprintf("could not remove the old %s hosts entry: %v", old, err))
 		}
 	}
 	if cert, _, created, err := EnsureCert(domain); err == nil && created {
 		// The prompt is deliberate for this command: an interactive caller falls
 		// through to the osascript dialog here, so this line blocks until answered.
-		trustCertOrReport(cert, e.HostsInteractive, TrustCert, warnStderr) // no progress callback on this path
+		trustCertOrReport(cert, e.HostsInteractive, TrustCert, report) // no progress callback on this path
 	}
 	if site.State == StateRunning {
 		if err := e.StopSite(slug); err != nil {
@@ -930,13 +938,13 @@ func (e *Engine) SetDomain(slug, domain string) error {
 		olds := e.foreignHosts(site)
 		olds[old] = true
 		if err := e.rewriteImportedURLs(site, olds, func(string, string) {}); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not rewrite the site's URLs: %v\n", err)
+			report("warn", fmt.Sprintf("could not rewrite the site's URLs: %v", err))
 		}
 		// The rename is also when a stale cache drop-in first shows: the old
 		// name's warm page cache hid it, the new name has none. Clear that
 		// cache and say what is wrong before the user blames the rename.
 		for _, w := range afterDomainChange(site.WPDir, old) {
-			fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+			report("warn", fmt.Sprintf("%s", w))
 		}
 	}
 	return nil
@@ -1068,7 +1076,11 @@ func moveTree(src, dst string) error {
 // ---------- Worktrees ----------
 
 // AddWorktree creates a git worktree for a branch and serves it on its own domain.
-func (e *Engine) AddWorktree(slug, branch string) (*Worktree, error) {
+func (e *Engine) AddWorktree(slug, branch string, reports ...func(string, string)) (*Worktree, error) {
+	report := warnStderr
+	if len(reports) > 0 && reports[0] != nil {
+		report = reports[0]
+	}
 	site := e.Store.Site(slug)
 	if site == nil {
 		return nil, fmt.Errorf("no such site: %s", slug)
@@ -1151,11 +1163,11 @@ func (e *Engine) AddWorktree(slug, branch string) (*Worktree, error) {
 	}
 	// A preview whose hosts entry cannot be written is unreachable, so say so
 	// rather than returning a preview that silently never resolves.
-	ensureHostsOrReport(e.HostsInteractive, []string{domain}, EnsureHosts, warnStderr)
+	ensureHostsOrReport(e.HostsInteractive, []string{domain}, EnsureHosts, report)
 	if cert, _, created, err := EnsureCert(domain); err == nil && created {
 		// The prompt is deliberate for this command: an interactive caller falls
 		// through to the osascript dialog here, so this line blocks until answered.
-		trustCertOrReport(cert, e.HostsInteractive, TrustCert, warnStderr) // no progress callback on this path
+		trustCertOrReport(cert, e.HostsInteractive, TrustCert, report) // no progress callback on this path
 	}
 	if err := e.StartWorktree(id); err != nil {
 		return w, err
@@ -1721,8 +1733,11 @@ func remoteBranchExists(dir, branch string) bool {
 }
 
 // SiteDirSize returns a human-readable size of a site directory.
-func SiteDirSize(slug string) string {
-	out, err := runCmdOut("du", "-sh", filepath.Join(P().Sites(), slug))
+func SiteDirSize(workDir string) string {
+	if workDir == "" {
+		return "?"
+	}
+	out, err := runCmdOut("du", "-sh", workDir)
 	if err != nil {
 		return "?"
 	}
@@ -1731,4 +1746,11 @@ func SiteDirSize(slug string) string {
 		return fields[0]
 	}
 	return "?"
+}
+
+func (e *Engine) RestartSite(slug string) error {
+	if err := e.StopSite(slug); err != nil && e.FPMRunning(slug) {
+		return fmt.Errorf("stop: %w", err)
+	}
+	return e.StartSite(slug)
 }

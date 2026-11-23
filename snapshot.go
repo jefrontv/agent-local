@@ -213,6 +213,9 @@ func (e *Engine) RestoreSnapshot(slug, name string, backup bool) (string, error)
 			return "", fmt.Errorf("no snapshot %q for %s; have: %s", name, slug, strings.Join(names, ", "))
 		}
 	}
+	if !ownsDB(site) {
+		return "", fmt.Errorf("refusing to restore unmanaged database %s", site.DBName)
+	}
 	msg := ""
 	var preRestorePath string
 	if backup {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -23,16 +24,17 @@ import (
 // when anything at all is listening. So when such an app is running and its
 // own listener is not up yet, we let go, wait for it to bind, then re-bind:
 func RunFrontDaemon(args []string) error {
-	// Runs as root, so P() would resolve to root's home. The installing user's
-	// run dir arrives via the LaunchDaemon args instead.
+	// Use the run directory specified by the installed LaunchDaemon.
 	if v := flagValue(args, "--run-dir"); v != "" {
 		frontRunDir = v
 	}
 	log.Printf("front-daemon: %s:80 -> :%d, %s:443 -> :%d (yield file %s)",
 		LoopbackAlias, DefaultHTTPPort, LoopbackAlias, DefaultHTTPSPort, frontYieldPath())
-	// A root process nobody thinks about is the one most likely to be left on
-	// an old build. Its plist is KeepAlive, so exiting is all it takes: launchd
-	// brings the new binary up, and :1080/:10443 carry on meanwhile.
+	// A legacy root plist must be replaced by the user before this process
+	// can follow an updated executable.
+	if os.Geteuid() == 0 {
+		return fmt.Errorf("run agent-local alias to reinstall the unprivileged front")
+	}
 	if self, err := os.Executable(); err == nil {
 		go watchBinary(self, binaryWatchEvery, func(v string) {
 			log.Printf("front-daemon: binary on disk is now %s (running %s) — exiting for launchd to restart", v, Version)
@@ -112,32 +114,6 @@ func waitForRival() {
 	log.Printf("front-daemon: nothing claimed :80 within %s — taking %s:80/443", startupGrace, LoopbackAlias)
 }
 
-// ensureAlias puts LoopbackAlias back on lo0. macOS does not persist ifconfig
-// aliases across a reboot, so after every restart the address this daemon exists
-// to serve was simply gone — it had nothing to bind, and every URL fell back to
-// :1080. We run as root here, so fixing it needs no prompt and no user action.
-func ensureAliasBound() bool {
-	ok := true
-	if !interfaceHasAddr(LoopbackAlias) {
-		if out, err := runCmdOut("/sbin/ifconfig", "lo0", "alias", LoopbackAlias); err != nil {
-			log.Printf("front-daemon: could not add the %s alias: %v %s", LoopbackAlias, err, strings.TrimSpace(out))
-			ok = false
-		} else {
-			log.Printf("front-daemon: re-added the %s alias to lo0 (it does not survive a reboot)", LoopbackAlias)
-		}
-	}
-	// IPv6 is what keeps ".local" domains off the five-second mDNS path. Its
-	// absence is not fatal, so it never blocks the IPv4 half.
-	if !interfaceHasAddr(LoopbackAlias6) {
-		if out, err := runCmdOut("/sbin/ifconfig", "lo0", "inet6", LoopbackAlias6, "prefixlen", "128", "alias"); err != nil {
-			log.Printf("front-daemon: could not add the %s alias (.local will be slow): %v %s", LoopbackAlias6, err, strings.TrimSpace(out))
-		} else {
-			log.Printf("front-daemon: re-added the %s alias to lo0", LoopbackAlias6)
-		}
-	}
-	return ok
-}
-
 // dialableAlias reports whether lo0 carries the address the listeners are
 // bound to. Only the IPv4 half counts: bind() serves IPv6 when it is present
 // and carries on without it, so a machine where the ULA alias cannot be added
@@ -152,7 +128,6 @@ func dialableAlias() bool {
 // supervise keeps the listeners in the right state forever: bound normally,
 // released while a competing router is starting up.
 func (f *frontDaemon) supervise() {
-	ensureAliasBound()
 	waitForRival()
 	f.bind()
 	var pausedAt time.Time
@@ -162,13 +137,10 @@ func (f *frontDaemon) supervise() {
 		case f.paused && yieldActive():
 			// explicitly requested: wait it out, however long it asked for
 		case !dialableAlias():
-			// The address we exist to serve is gone: a reboot clears lo0 aliases,
-			// and removing one does not close the sockets already bound to it — so
-			// we still "hold" listeners that can never accept anything. Put the
-			// alias back and rebuild them.
-			if ensureAliasBound() {
+			// The root one-shot boot job owns the alias. Release stale sockets
+			// until launchd has restored it, then resume binding.
+			if !f.paused {
 				f.release()
-				f.bind()
 			}
 		case f.paused && !rivalStarting():
 			f.bind()
@@ -183,7 +155,7 @@ func (f *frontDaemon) supervise() {
 			// failed. It used to stop there — a boot with no alias yet left the
 			// daemon idle forever, which is exactly how sites lost their bare URLs
 			// until someone ran a command.
-			ensureAliasBound()
+
 			f.bind()
 		}
 	}
@@ -347,13 +319,23 @@ func acceptLoop(l net.Listener, dstPort int) {
 
 func pipeConn(client net.Conn, dstPort int) {
 	defer client.Close()
-	backend, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(dstPort)))
+	backend, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(dstPort)), 5*time.Second)
 	if err != nil {
 		return
 	}
 	defer backend.Close()
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(backend, client); done <- struct{}{} }()
-	go func() { io.Copy(client, backend); done <- struct{}{} }()
+	copyTo := func(dst, src net.Conn) {
+		_, err := io.Copy(dst, src)
+		if tcp, ok := dst.(*net.TCPConn); ok && err == nil {
+			tcp.CloseWrite()
+		} else {
+			dst.Close()
+		}
+		done <- struct{}{}
+	}
+	go copyTo(backend, client)
+	go copyTo(client, backend)
+	<-done
 	<-done
 }

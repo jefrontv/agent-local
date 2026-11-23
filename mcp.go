@@ -550,7 +550,7 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 	case "list_sites":
 		return apiGet("/sites")
 	case "get_site":
-		return apiGet("/sites/" + get("slug"))
+		return apiGet("/sites/" + url.PathEscape(get("slug")))
 	case "create_site":
 		path := "/sites"
 		if args["async"] == true {
@@ -594,9 +594,9 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		}
 		return ps, false
 	case "set_media_fallback":
-		return apiPost("/sites/"+get("slug")+"/media", map[string]string{"url": get("url")})
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/media", map[string]string{"url": get("url")})
 	case "get_media_fallback":
-		return apiGet("/sites/" + get("slug") + "/media")
+		return apiGet("/sites/" + url.PathEscape(get("slug")) + "/media")
 	case "set_sites_dir":
 		return apiPost("/sites-dir", map[string]string{"dir": get("dir")})
 	case "get_sites_dir":
@@ -604,11 +604,11 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 	case "set_domain_suffix":
 		return apiPost("/suffix", map[string]string{"suffix": get("suffix")})
 	case "start_site":
-		return apiPost("/sites/"+get("slug")+"/start", nil)
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/start", nil)
 	case "stop_site":
-		return apiPost("/sites/"+get("slug")+"/stop", nil)
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/stop", nil)
 	case "restart_site":
-		return apiPost("/sites/"+get("slug")+"/restart", nil)
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/restart", nil)
 	case "delete_site":
 		q := []string{}
 		if args["keep_files"] == true {
@@ -620,7 +620,7 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		if args["no_snapshot"] == true {
 			q = append(q, "snapshot=off")
 		}
-		path := "/sites/" + get("slug")
+		path := "/sites/" + url.PathEscape(get("slug"))
 		if len(q) > 0 {
 			path += "?" + strings.Join(q, "&")
 		}
@@ -630,52 +630,52 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		if v, okv := args["install"].(bool); okv {
 			body["install"] = v
 		}
-		path := "/sites/" + get("slug") + "/php"
+		path := "/sites/" + url.PathEscape(get("slug")) + "/php"
 		if args["async"] == true {
 			path += "?async=1"
 		}
 		return apiPost(path, body)
 	case "set_domain":
-		return apiPost("/sites/"+get("slug")+"/domain", map[string]string{"domain": get("domain")})
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/domain", map[string]string{"domain": get("domain")})
 	case "move_site":
-		return apiPost("/sites/"+get("slug")+"/move", map[string]string{"dir": get("dir")})
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/move", map[string]string{"dir": get("dir")})
 	case "db_creds":
-		return apiPost("/sites/"+get("slug")+"/db", nil)
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/db", nil)
 	case "db_query":
 		if slug := get("slug"); slug != "" {
-			return apiPost("/sites/"+slug+"/db/query", map[string]string{"sql": get("sql")})
+			return apiPost("/sites/"+url.PathEscape(slug)+"/db/query", map[string]string{"sql": get("sql")})
 		}
 		return apiPost("/db/query", map[string]string{"sql": get("sql")})
 	case "db_import":
-		return apiPost("/sites/"+get("slug")+"/db/import", map[string]interface{}{
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/db/import", map[string]interface{}{
 			"path": get("path"), "keep_urls": args["keep_urls"] == true,
 			"no_snapshot": args["no_snapshot"] == true})
 	case "db_export":
-		return apiPost("/sites/"+get("slug")+"/db/export", map[string]string{"path": get("path")})
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/db/export", map[string]string{"path": get("path")})
 	case "db_reset":
-		return apiPost("/sites/"+get("slug")+"/db/reset", map[string]interface{}{
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/db/reset", map[string]interface{}{
 			"no_snapshot": args["no_snapshot"] == true})
 	case "db_snapshot":
-		return apiPost("/sites/"+get("slug")+"/db/snapshot", map[string]string{"name": get("name")})
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/db/snapshot", map[string]string{"name": get("name")})
 	case "db_snapshots":
-		return apiGet("/sites/" + get("slug") + "/db/snapshots")
+		return apiGet("/sites/" + url.PathEscape(get("slug")) + "/db/snapshots")
 	case "db_restore":
-		return apiPost("/sites/"+get("slug")+"/db/restore", map[string]interface{}{
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/db/restore", map[string]interface{}{
 			"name": get("name"), "no_snapshot": args["no_snapshot"] == true})
 	case "resolve_path":
 		return apiGet("/resolve?path=" + url.QueryEscape(get("path")))
 	case "cert_status":
-		return apiGet("/certs/" + get("domain"))
+		return apiGet("/certs/" + url.PathEscape(get("domain")))
 	case "cert_trust":
-		return apiPost("/certs/"+get("domain")+"/trust", nil)
+		return apiPost("/certs/"+url.PathEscape(get("domain"))+"/trust", nil)
 	case "db_tables":
-		return apiGet("/sites/" + get("slug") + "/db/tables")
+		return apiGet("/sites/" + url.PathEscape(get("slug")) + "/db/tables")
 	case "wp_cli":
 		wpArgs, err := strArgs(args["args"])
 		if err != nil {
 			return map[string]string{"error": "args: " + err.Error()}, true
 		}
-		return apiPost("/sites/"+get("slug")+"/wp-cli", map[string]interface{}{"args": wpArgs})
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/wp-cli", map[string]interface{}{"args": wpArgs})
 	case "yield_ports":
 		body := map[string]interface{}{}
 		if n, okn := args["seconds"].(float64); okn {
@@ -683,30 +683,30 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		}
 		return apiPost("/yield", body)
 	case "add_worktree":
-		return apiPost("/sites/"+get("slug")+"/worktrees", map[string]string{"branch": get("branch")})
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/worktrees", map[string]string{"branch": get("branch")})
 	case "list_worktrees":
-		return apiGet("/sites/" + get("slug") + "/worktrees")
+		return apiGet("/sites/" + url.PathEscape(get("slug")) + "/worktrees")
 	case "start_worktree":
 		id := get("id")
 		site, ok := worktreeSiteSlug(id)
 		if !ok {
 			return map[string]string{"error": "invalid worktree id: " + id}, true
 		}
-		return apiPost("/sites/"+site+"/worktrees/"+id+"/start", nil)
+		return apiPost("/sites/"+url.PathEscape(site)+"/worktrees/"+url.PathEscape(id)+"/start", nil)
 	case "stop_worktree":
 		id := get("id")
 		site, ok := worktreeSiteSlug(id)
 		if !ok {
 			return map[string]string{"error": "invalid worktree id: " + id}, true
 		}
-		return apiPost("/sites/"+site+"/worktrees/"+id+"/stop", nil)
+		return apiPost("/sites/"+url.PathEscape(site)+"/worktrees/"+url.PathEscape(id)+"/stop", nil)
 	case "remove_worktree":
 		id := get("id")
 		site, ok := worktreeSiteSlug(id)
 		if !ok {
 			return map[string]string{"error": "invalid worktree id: " + id}, true
 		}
-		return apiDelete("/sites/" + site + "/worktrees/" + id)
+		return apiDelete("/sites/" + url.PathEscape(site) + "/worktrees/" + url.PathEscape(id))
 	case "list_runtimes":
 		return apiGet("/runtimes")
 	case "install_runtime":
@@ -721,11 +721,11 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 	case "doctor_fix":
 		return apiPost("/doctor/fix", map[string]interface{}{"interactive": args["interactive"] == true})
 	case "get_wp_debug":
-		return apiGet("/sites/" + get("slug") + "/wp-debug")
+		return apiGet("/sites/" + url.PathEscape(get("slug")) + "/wp-debug")
 	case "set_wp_debug":
-		return apiPost("/sites/"+get("slug")+"/wp-debug", map[string]interface{}{"on": args["on"] == true})
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/wp-debug", map[string]interface{}{"on": args["on"] == true})
 	case "get_logs":
-		q := "/logs/" + get("name")
+		q := "/logs/" + url.PathEscape(get("name"))
 		if n, okn := args["lines"].(float64); okn && n > 0 {
 			q += fmt.Sprintf("?lines=%d", int(n))
 		}
@@ -737,7 +737,7 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 	case "get_domain_suffix":
 		return apiGet("/suffix")
 	case "list_branches":
-		return apiGet("/sites/" + get("slug") + "/branches")
+		return apiGet("/sites/" + url.PathEscape(get("slug")) + "/branches")
 	case "worktree_wp_cli":
 		id := get("id")
 		site, ok := worktreeSiteSlug(id)
@@ -748,7 +748,7 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		if err != nil {
 			return map[string]string{"error": "args: " + err.Error()}, true
 		}
-		return apiPost("/sites/"+site+"/worktrees/"+id+"/wp-cli", map[string]interface{}{"args": wtArgs})
+		return apiPost("/sites/"+url.PathEscape(site)+"/worktrees/"+url.PathEscape(id)+"/wp-cli", map[string]interface{}{"args": wtArgs})
 	case "add_hosts_entries":
 		domains, err := strArgs(args["domains"])
 		if err != nil {
@@ -764,46 +764,46 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 	case "list_jobs":
 		return apiGet("/jobs")
 	case "get_job":
-		return apiGet("/jobs/" + get("id"))
+		return apiGet("/jobs/" + url.PathEscape(get("id")))
 	case "open_adminer":
-		return apiGet("/sites/" + get("slug") + "/adminer")
+		return apiGet("/sites/" + url.PathEscape(get("slug")) + "/adminer")
 	case "list_mail":
-		return apiGet("/sites/" + get("slug") + "/mail")
+		return apiGet("/sites/" + url.PathEscape(get("slug")) + "/mail")
 	case "get_mail":
-		return apiGet("/sites/" + get("slug") + "/mail/" + get("id"))
+		return apiGet("/sites/" + url.PathEscape(get("slug")) + "/mail/" + url.PathEscape(get("id")))
 	case "clear_mail":
-		return apiDelete("/sites/" + get("slug") + "/mail")
+		return apiDelete("/sites/" + url.PathEscape(get("slug")) + "/mail")
 	case "share_local_site":
 		body := map[string]interface{}{}
 		if n, okn := args["minutes"].(float64); okn {
 			body["minutes"] = int(n)
 		}
-		path := "/sites/" + get("slug") + "/share"
+		path := "/sites/" + url.PathEscape(get("slug")) + "/share"
 		if args["async"] == true {
 			path += "?async=1"
 		}
 		return apiPost(path, body)
 	case "unshare_local_site":
-		return apiDelete("/sites/" + get("slug") + "/share")
+		return apiDelete("/sites/" + url.PathEscape(get("slug")) + "/share")
 	case "probe_site":
-		return apiPost("/sites/"+get("slug")+"/probe", nil)
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/probe", nil)
 	case "http_request":
 		body := map[string]interface{}{"path": get("path"), "method": get("method"),
 			"follow_redirects": args["follow_redirects"] == true}
 		if n, okn := args["body_max"].(float64); okn && n > 0 {
 			body["body_max"] = int(n)
 		}
-		return apiPost("/sites/"+get("slug")+"/request", body)
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/request", body)
 	case "wp_info":
-		return apiGet("/sites/" + get("slug") + "/wp-info")
+		return apiGet("/sites/" + url.PathEscape(get("slug")) + "/wp-info")
 	case "get_errors":
-		q := "/sites/" + get("slug") + "/errors?since=" + url.QueryEscape(get("since"))
+		q := "/sites/" + url.PathEscape(get("slug")) + "/errors?since=" + url.QueryEscape(get("since"))
 		if n, okn := args["limit"].(float64); okn && n > 0 {
 			q += fmt.Sprintf("&limit=%d", int(n))
 		}
 		return apiGet(q)
 	case "get_requests":
-		q := "/sites/" + get("slug") + "/requests?since=" + url.QueryEscape(get("since")) +
+		q := "/sites/" + url.PathEscape(get("slug")) + "/requests?since=" + url.QueryEscape(get("since")) +
 			"&path=" + url.QueryEscape(get("path_contains"))
 		if args["errors_only"] == true {
 			q += "&errors=1"
@@ -816,29 +816,29 @@ func dispatchTool(name string, args map[string]interface{}) (interface{}, bool) 
 		}
 		return apiGet(q)
 	case "clear_requests":
-		return apiDelete("/sites/" + get("slug") + "/requests")
+		return apiDelete("/sites/" + url.PathEscape(get("slug")) + "/requests")
 	case "checkpoint":
-		return apiPost("/sites/"+get("slug")+"/checkpoints", map[string]string{"label": get("label"), "scope": get("scope")})
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/checkpoints", map[string]string{"label": get("label"), "scope": get("scope")})
 	case "list_checkpoints":
-		return apiGet("/sites/" + get("slug") + "/checkpoints")
+		return apiGet("/sites/" + url.PathEscape(get("slug")) + "/checkpoints")
 	case "rollback":
-		return apiPost("/sites/"+get("slug")+"/checkpoints/"+url.PathEscape(get("name"))+"/rollback", nil)
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/checkpoints/"+url.PathEscape(get("name"))+"/rollback", nil)
 	case "delete_checkpoint":
-		return apiDelete("/sites/" + get("slug") + "/checkpoints/" + url.PathEscape(get("name")))
+		return apiDelete("/sites/" + url.PathEscape(get("slug")) + "/checkpoints/" + url.PathEscape(get("name")))
 	case "db_search":
-		return apiPost("/sites/"+get("slug")+"/db/search", map[string]string{"needle": get("needle")})
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/db/search", map[string]string{"needle": get("needle")})
 	case "search_replace":
 		body := map[string]interface{}{"old": get("old"), "new": get("new")}
 		if v, okv := args["dry_run"].(bool); okv {
 			body["dry_run"] = v
 		}
-		return apiPost("/sites/"+get("slug")+"/db/search-replace", body)
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/db/search-replace", body)
 	case "magic_login":
-		return apiPost("/sites/"+get("slug")+"/login", map[string]string{"user": get("user")})
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/login", map[string]string{"user": get("user")})
 	case "get_wp_constants":
-		return apiGet("/sites/" + get("slug") + "/wp-config/constants")
+		return apiGet("/sites/" + url.PathEscape(get("slug")) + "/wp-config/constants")
 	case "set_wp_constant":
-		return apiPost("/sites/"+get("slug")+"/wp-config/constant", map[string]interface{}{
+		return apiPost("/sites/"+url.PathEscape(get("slug"))+"/wp-config/constant", map[string]interface{}{
 			"name": get("name"), "value": get("value"), "type": get("type"), "remove": args["remove"] == true})
 	default:
 		return map[string]string{"error": "unknown tool: " + name}, true

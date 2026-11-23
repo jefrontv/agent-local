@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -414,9 +415,11 @@ type APIServer struct {
 }
 
 type apiResp struct {
-	OK    bool        `json:"ok"`
-	Error string      `json:"error,omitempty"`
-	Data  interface{} `json:"data,omitempty"`
+	Warnings []string    `json:"warnings,omitempty"`
+	OK       bool        `json:"ok"`
+	Error    string      `json:"error,omitempty"`
+	Code     string      `json:"code,omitempty"`
+	Data     interface{} `json:"data,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {
@@ -426,7 +429,39 @@ func writeJSON(w http.ResponseWriter, code int, v interface{}) {
 }
 
 func fail(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, apiResp{Error: msg})
+	kind := ""
+	switch {
+	case strings.Contains(msg, "only applies to WordPress"):
+		kind = "not_wordpress"
+		code = 409
+	case strings.HasPrefix(msg, "invalid domain"):
+		kind = "invalid_input"
+		code = 400
+	case strings.HasPrefix(msg, "domain ") && strings.Contains(msg, "already in use"):
+		code = 409
+		kind = "domain_in_use"
+	case sourceDBFailure(msg):
+		kind = "source_db_unreachable"
+	case strings.Contains(msg, "already exists"):
+		code = 409
+		kind = "site_exists"
+	case strings.HasPrefix(msg, "no snapshot") || strings.HasPrefix(msg, "no checkpoint "):
+		code = 404
+		kind = "not_found"
+	case strings.HasPrefix(msg, "nothing to checkpoint"):
+		code = 400
+		kind = "invalid_input"
+	case strings.HasPrefix(msg, "no such site") || strings.HasPrefix(msg, "no such worktree"):
+		code = 404
+		kind = "not_found"
+	case strings.HasPrefix(msg, "authorization failed"):
+		kind = "authorization_failed"
+	case code == 400:
+		kind = "invalid_input"
+	case code == 404:
+		kind = "not_found"
+	}
+	writeJSON(w, code, apiResp{Error: msg, Code: kind})
 }
 
 func ok(w http.ResponseWriter, data interface{}) {
@@ -436,6 +471,12 @@ func ok(w http.ResponseWriter, data interface{}) {
 // auth wraps the mux with bearer-token auth.
 func (a *APIServer) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch strings.ToLower(r.Host) {
+		case "127.0.0.1:10809", "localhost:10809", "[::1]:10809":
+		default:
+			fail(w, http.StatusMisdirectedRequest, "unknown API host")
+			return
+		}
 		a.store.ReloadIfChanged()
 		// /mail-ui and /hub-ui are the apache front's ProxyPass targets for the
 		// inbox UI and the tooling index — the same pages the router serves
@@ -461,7 +502,7 @@ func (a *APIServer) auth(next http.Handler) http.Handler {
 	})
 }
 
-func (a *APIServer) routes() *http.ServeMux {
+func (a *APIServer) registeredRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { ok(w, "alive") })
 	mux.HandleFunc("GET /status", a.handleStatus)
@@ -546,6 +587,25 @@ func (a *APIServer) routes() *http.ServeMux {
 	mux.HandleFunc("GET /sites/{slug}/requests", a.handleRequests)
 	mux.HandleFunc("DELETE /sites/{slug}/requests", a.handleClearRequests)
 	return mux
+}
+func (a *APIServer) routes() http.Handler {
+	mux := a.registeredRoutes()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h, pattern := mux.Handler(r)
+		if pattern != "" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		// The standard mux computes Allow for 405 responses.
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		if rec.Code == 405 {
+			w.Header().Set("Allow", rec.Header().Get("Allow"))
+			fail(w, 405, "method not allowed")
+			return
+		}
+		writeJSON(w, 404, apiResp{Error: "route not found", Code: "route_not_found"})
+	})
 }
 
 // handleWPDebug reads or flips a site's WP_DEBUG. On points WP_DEBUG_LOG at
@@ -1052,7 +1112,10 @@ func (a *APIServer) handleCertStatus(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "invalid domain")
 		return
 	}
-	ok(w, InspectCert(domain))
+	ok(w, struct {
+		CertStatus
+		CA CAStatus `json:"ca"`
+	}{InspectCert(domain), InspectCA()})
 }
 
 // handleCertTrust issues the cert if absent, then trusts it. Non-interactive:
@@ -1164,24 +1227,8 @@ func (a *APIServer) requireSite(w http.ResponseWriter, r *http.Request) *Site {
 		fail(w, 404, "no such site: "+r.PathValue("slug"))
 		return nil
 	}
-	healKind(a.store, site)
+	a.engine.healKind(site)
 	return site
-}
-
-// healKind replaces a placeholder kind with whatever the docroot now holds.
-// "empty" is the only placeholder, so every other site costs nothing, and the
-// store is written only when the answer actually changed.
-func healKind(store *Store, site *Site) {
-	if site.Kind != KindEmpty {
-		return
-	}
-	detected := DetectKind(site.WPDir)
-	if detected == KindEmpty {
-		return
-	}
-	site.Kind = detected
-	store.PutSite(site)
-	_ = store.Save()
 }
 
 // requireWordPress is requireSite plus the kind check every WordPress-only
@@ -1196,8 +1243,8 @@ func (a *APIServer) requireWordPress(w http.ResponseWriter, r *http.Request, too
 	if site == nil {
 		return nil
 	}
-	if !site.IsWordPress() {
-		fail(w, 409, notWordPress(site, tool).Error())
+	if err := a.engine.requireWordPress(site, tool); err != nil {
+		fail(w, 409, err.Error())
 		return nil
 	}
 	return site
@@ -1233,11 +1280,7 @@ func (a *APIServer) handleRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := r.PathValue("slug")
-	if err := a.engine.StopSite(slug); err != nil {
-		fail(w, 500, fmt.Sprintf("stop: %v", err))
-		return
-	}
-	if err := a.engine.StartSite(slug); err != nil {
+	if err := a.engine.RestartSite(slug); err != nil {
 		fail(w, 500, err.Error())
 		return
 	}
@@ -1251,15 +1294,17 @@ func (a *APIServer) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	var warnings []string
+	report := func(_, msg string) { warnings = append(warnings, msg) }
 	if err := a.engine.DeleteSite(r.PathValue("slug"), DeleteOpts{
 		KeepFiles:  q.Get("files") == "keep",
 		KeepDB:     q.Get("db") == "keep",
 		NoSnapshot: q.Get("snapshot") == "off",
-	}); err != nil {
+	}, report); err != nil {
 		fail(w, 500, err.Error())
 		return
 	}
-	ok(w, "deleted")
+	writeJSON(w, 200, apiResp{OK: true, Warnings: warnings, Data: "deleted"})
 }
 
 type phpReq struct {
@@ -1316,11 +1361,13 @@ func (a *APIServer) handleDomain(w http.ResponseWriter, r *http.Request) {
 	}
 	var req domainReq
 	json.NewDecoder(r.Body).Decode(&req)
-	if err := a.engine.SetDomain(r.PathValue("slug"), req.Domain); err != nil {
+	var warnings []string
+	report := func(_, msg string) { warnings = append(warnings, msg) }
+	if err := a.engine.SetDomain(r.PathValue("slug"), req.Domain, report); err != nil {
 		fail(w, 500, err.Error())
 		return
 	}
-	ok(w, req.Domain)
+	writeJSON(w, 200, apiResp{OK: true, Warnings: warnings, Data: req.Domain})
 }
 
 type moveReq struct {
@@ -1434,7 +1481,7 @@ func (a *APIServer) handleDBImport(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	a.runJob(w, r, "db-import", func(cb func(string, string)) (any, error) {
 		cb("database", "loading "+req.Path)
-		return a.engine.ImportSQL(slug, req.Path, !req.KeepURLs, !req.NoSnapshot)
+		return a.engine.ImportSQL(slug, req.Path, !req.KeepURLs, !req.NoSnapshot, cb)
 	})
 }
 func (a *APIServer) handleDBExport(w http.ResponseWriter, r *http.Request) {
@@ -1555,7 +1602,7 @@ func (a *APIServer) handleWorktreeWPCLI(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	wt := a.store.Worktree(r.PathValue("id"))
-	if wt == nil {
+	if wt == nil || wt.Site != site.Slug {
 		fail(w, 404, "no such worktree")
 		return
 	}
@@ -1649,28 +1696,38 @@ type worktreeReq struct {
 }
 
 func (a *APIServer) handleAddWorktree(w http.ResponseWriter, r *http.Request) {
+	if a.requireSite(w, r) == nil {
+		return
+	}
 	var req worktreeReq
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.Branch == "" {
 		fail(w, 400, "branch required")
 		return
 	}
-	wt, err := a.engine.AddWorktree(r.PathValue("slug"), req.Branch)
+	var warnings []string
+	report := func(_, msg string) { warnings = append(warnings, msg) }
+	wt, err := a.engine.AddWorktree(r.PathValue("slug"), req.Branch, report)
 	if err != nil {
 		fail(w, 500, err.Error())
 		return
 	}
-	ok(w, map[string]interface{}{
+	writeJSON(w, 200, apiResp{OK: true, Warnings: warnings, Data: map[string]interface{}{
 		"id":     wt.ID,
 		"branch": wt.Branch,
 		"domain": wt.Domain,
 		"url":    BareDomainURL(wt.Domain),
 		"path":   wt.Path,
-	})
+	}})
 }
 
 func (a *APIServer) handleStartWorktree(w http.ResponseWriter, r *http.Request) {
-	if err := a.engine.StartWorktree(r.PathValue("id")); err != nil {
+	wt := a.store.Worktree(r.PathValue("id"))
+	if wt == nil || wt.Site != r.PathValue("slug") {
+		fail(w, 404, "no such worktree")
+		return
+	}
+	if err := a.engine.StartWorktree(wt.ID); err != nil {
 		fail(w, 500, err.Error())
 		return
 	}
@@ -1678,7 +1735,12 @@ func (a *APIServer) handleStartWorktree(w http.ResponseWriter, r *http.Request) 
 }
 
 func (a *APIServer) handleStopWorktree(w http.ResponseWriter, r *http.Request) {
-	if err := a.engine.StopWorktree(r.PathValue("id")); err != nil {
+	wt := a.store.Worktree(r.PathValue("id"))
+	if wt == nil || wt.Site != r.PathValue("slug") {
+		fail(w, 404, "no such worktree")
+		return
+	}
+	if err := a.engine.StopWorktree(wt.ID); err != nil {
 		fail(w, 500, err.Error())
 		return
 	}
@@ -1686,7 +1748,12 @@ func (a *APIServer) handleStopWorktree(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *APIServer) handleRemoveWorktree(w http.ResponseWriter, r *http.Request) {
-	if err := a.engine.RemoveWorktree(r.PathValue("id")); err != nil {
+	wt := a.store.Worktree(r.PathValue("id"))
+	if wt == nil || wt.Site != r.PathValue("slug") {
+		fail(w, 404, "no such worktree")
+		return
+	}
+	if err := a.engine.RemoveWorktree(wt.ID); err != nil {
 		fail(w, 500, err.Error())
 		return
 	}
@@ -1815,13 +1882,10 @@ func (a *APIServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := P().Log(name)
-	b, err := os.ReadFile(path)
+	b, err := readLogTail(path, 1<<20)
 	if err != nil {
 		fail(w, 404, "no log: "+name)
 		return
-	}
-	if len(b) > 1024*1024 {
-		b = b[len(b)-1024*1024:]
 	}
 	lines := 100
 	if v := r.URL.Query().Get("lines"); v != "" {
@@ -1919,4 +1983,17 @@ func (a *APIServer) handleSuffix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w, map[string]string{"suffix": a.store.Suffix()})
+}
+
+func sourceDBFailure(msg string) bool {
+	msg = strings.ToLower(msg)
+	if !strings.Contains(msg, "copy database") && !strings.Contains(msg, "dump") {
+		return false
+	}
+	for _, s := range []string{"can't connect", "cannot connect", "connection refused", "unknown database", "access denied", "2002", "2003"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }

@@ -163,7 +163,14 @@ func (p *Proc) Stop() error {
 		os.Remove(p.PidTo)
 		return nil
 	}
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	signal := func(sig syscall.Signal) {
+		target := pid
+		if group, err := syscall.Getpgid(pid); err == nil && group == pid {
+			target = -pid
+		}
+		_ = syscall.Kill(target, sig)
+	}
+	signal(syscall.SIGTERM)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if !Alive(pid) {
@@ -172,8 +179,9 @@ func (p *Proc) Stop() error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	if current, ok := p.Pid(); ok && current == pid {
+		signal(syscall.SIGKILL)
+	}
 	os.Remove(p.PidTo)
 	return nil
 }

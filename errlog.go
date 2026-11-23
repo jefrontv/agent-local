@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"net/http"
 	"os"
 	"sort"
@@ -135,29 +134,16 @@ func collectErrors(paths []string, sources []string, since time.Duration, limit 
 		if i < len(sources) {
 			source = sources[i]
 		}
-		f, err := os.Open(path)
-		if err != nil {
-			continue
+		ring := logTailLines(path)
+		n := len(ring)
+		if n > errTailLines {
+			ring = ring[n-errTailLines:]
 		}
-		ring := make([]string, errTailLines)
-		n := 0
-		sc := bufio.NewScanner(f)
-		sc.Buffer(make([]byte, 64*1024), 1024*1024)
-		for sc.Scan() {
-			ring[n%errTailLines] = sc.Text()
-			n++
-		}
-		f.Close()
 		scanned += n
 
-		start := 0
-		if n > errTailLines {
-			start = n - errTailLines
-		}
 		var curTime time.Time
 		haveTime := false
-		for i := start; i < n; i++ {
-			line := ring[i%errTailLines]
+		for _, line := range ring {
 			if t, ok := fpmLogTime(line); ok {
 				curTime = t
 				haveTime = true

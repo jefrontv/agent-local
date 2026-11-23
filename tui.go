@@ -140,17 +140,18 @@ type inputSpec struct {
 }
 
 type model struct {
-	store    *Store
-	engine   *Engine
-	tab      tab
-	siteCur  int
-	wtCur    int
-	rtCur    int
-	docCur   int
-	mode     mode
-	input    inputSpec
-	confirm  string
-	confirmA func() error
+	needsHealth, healthInFlight bool
+	store                       *Store
+	engine                      *Engine
+	tab                         tab
+	siteCur                     int
+	wtCur                       int
+	rtCur                       int
+	docCur                      int
+	mode                        mode
+	input                       inputSpec
+	confirm                     string
+	confirmA                    func() error
 	// confirmLabel is what the busy line says while a confirmed action runs.
 	confirmLabel string
 	// pendingCmd carries a command out of applyInput, which can only return an
@@ -247,17 +248,7 @@ func (m *model) refresh() {
 		}
 	}
 	m.inv = *m.store.Inventory()
-	// Liveness for every row in one shared scan per refresh — not one spawn
-	// per row per frame. A refresh happens on the periodic tick and after
-	// actions; keypresses between them read this map.
-	var ids []string
-	for _, s := range m.sites {
-		ids = append(ids, s.Slug)
-		for _, w := range m.store.WorktreesFor(s.Slug) {
-			ids = append(ids, w.ID)
-		}
-	}
-	m.alive = m.engine.fpmAliveBatch(ids)
+	m.needsHealth = true
 	// Clamp each cursor to its own list: deleting the last row otherwise leaves
 	// a cursor pointing past the end.
 	for _, t := range []tab{tabSites, tabWorktrees, tabRuntimes, tabDoctor} {
@@ -269,30 +260,61 @@ func (m *model) refresh() {
 			*c = 0
 		}
 	}
-	latest, _ := availableUpdate()
-	m.health = healthSnapshot{
-		db:     m.engine.DBRunning(),
-		http:   portOpen(DefaultHTTPPort),
-		https:  portOpen(DefaultHTTPSPort),
-		api:    portOpen(DefaultAPIPort),
-		front:  FrontKind(m.store),
-		update: latest,
+}
+
+type runtimeHealthMsg struct {
+	alive  map[string]bool
+	health healthSnapshot
+}
+
+func (m model) healthCmd() tea.Cmd {
+	// Liveness for every row in one shared scan per refresh — not one spawn
+	// per row per frame. A refresh happens on the periodic tick and after
+	// actions; keypresses between them read this map.
+	var ids []string
+	for _, s := range m.sites {
+		ids = append(ids, s.Slug)
+		for _, w := range m.store.WorktreesFor(s.Slug) {
+			ids = append(ids, w.ID)
+		}
+	}
+
+	e := m.engine
+	return func() tea.Msg {
+		latest, _ := availableUpdate()
+		return runtimeHealthMsg{alive: e.fpmAliveBatch(ids), health: healthSnapshot{
+			db:     e.DBRunning(),
+			http:   portOpen(DefaultHTTPPort),
+			https:  portOpen(DefaultHTTPSPort),
+			api:    portOpen(DefaultAPIPort),
+			front:  FrontKind(e.Store),
+			update: latest,
+		}}
 	}
 }
 
 // siteSize reports a site's disk usage, once per slug per session. Measuring it
 // walks the whole tree, and the panel re-renders on every keypress: an imported
 // multi-gigabyte checkout would turn arrow keys into a stall.
-func (m *model) siteSize(slug string) string {
+type siteSizeMsg struct{ slug, path, size string }
+
+func (m *model) sizeCmd() tea.Cmd {
+	if m.tab != tabSites || m.store == nil {
+		return nil
+	}
+	site := m.currentSite()
+	if site == nil {
+		return nil
+	}
 	if m.sizes == nil {
 		m.sizes = map[string]string{}
 	}
-	if v, ok := m.sizes[slug]; ok {
-		return v
+	if _, ok := m.sizes[site.Slug]; ok {
+		return nil
 	}
-	v := SiteDirSize(slug)
-	m.sizes[slug] = v
-	return v
+	m.sizes[site.Slug] = "…"
+	slug, path := site.Slug, site.WorkDir
+	return func() tea.Msg { return siteSizeMsg{slug, path, SiteDirSize(path)} }
 }
 
 // phpInUse is the set of PHP versions actually serving something right now, so
@@ -486,6 +508,11 @@ func (m model) runActionWith(label string, fn func(cb func(stage, detail string)
 	m.progress = ch
 	go func() {
 		defer close(ch)
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				ch <- actionMsg{done: true, err: fmt.Errorf("%s: %v", label, recovered)}
+			}
+		}()
 		cb := func(stage, detail string) {
 			// Never block the work on a UI that is slow to drain.
 			select {
@@ -538,6 +565,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	if nm, ok := next.(model); ok {
 		nm.layout()
+		if nm.needsHealth && !nm.healthInFlight && nm.engine != nil {
+			nm.needsHealth = false
+			nm.healthInFlight = true
+			cmd = tea.Batch(cmd, nm.healthCmd())
+		}
+		if size := nm.sizeCmd(); size != nil {
+			return nm, tea.Batch(cmd, size)
+		}
 		return nm, cmd
 	}
 	return next, cmd
@@ -545,6 +580,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case runtimeHealthMsg:
+		m.health = msg.health
+		m.alive = msg.alive
+		m.healthInFlight = false
+		return m, nil
+	case siteSizeMsg:
+		if site := m.store.Site(msg.slug); site != nil && site.WorkDir == msg.path {
+			m.sizes[msg.slug] = msg.size
+		} else {
+			delete(m.sizes, msg.slug)
+		}
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
@@ -615,23 +662,6 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case modeBusy:
-		// Quitting must still work; everything else waits, since acting on a
-		// half-changed site is how people end up with two problems.
-		if k.String() == "ctrl+c" {
-			m.quitting = true
-			// Update stops calling waitForAction once we quit, so the
-			// goroutine's progress sends (buffered) and its final done send
-			// (unbuffered-equivalent once the buffer fills) would otherwise
-			// block forever on a channel nobody reads — drain it in the
-			// background so the action can still finish and exit.
-			if ch := m.progress; ch != nil {
-				go func() {
-					for range ch {
-					}
-				}()
-			}
-			return m, tea.Quit
-		}
 		return m, nil
 	case modeHelp:
 		switch k.String() {
@@ -1053,12 +1083,14 @@ func (m *model) applyInput(spec inputSpec) error {
 		if val == "" {
 			return nil
 		}
-		if err := m.engine.EnsureDB(); err != nil {
-			return err
-		}
-		out, err := m.engine.DB(val)
-		m.setMsg(strings.TrimSpace(tail(out, 160)), err != nil)
-		return err
+		m.startBackground("running SQL", func(func(string, string)) (string, error) {
+			if err := m.engine.EnsureDB(); err != nil {
+				return "", err
+			}
+			out, err := m.engine.DB(val)
+			return strings.TrimSpace(tail(out, 160)), err
+		})
+		return nil
 	case inputImportSource:
 		if val == "" {
 			return fmt.Errorf("a LocalWP site name or a WordPress directory")
@@ -1178,25 +1210,15 @@ func (m model) handleSitesKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if site == nil {
 			return m, nil
 		}
-		if err := m.engine.StopSite(site.Slug); err != nil {
-			m.setMsg(err.Error(), true)
-		} else {
-			m.setMsg(site.Slug+" stopped", false)
-		}
-		return m, nil
+		slug := site.Slug
+		return m.runAction("stopping "+slug, func(func(string, string)) (string, error) { return slug + " stopped", m.engine.StopSite(slug) })
 	case "R":
 		if site == nil {
 			return m, nil
 		}
 		slug := site.Slug
 		return m.runAction("restarting "+slug, func(func(string, string)) (string, error) {
-			stopErr := m.engine.StopSite(slug)
-			// A failed stop used to be discarded: the following start then found
-			// the pool still up, returned nil, and reported nothing at all.
-			if stopErr != nil && m.engine.FPMRunning(slug) {
-				return "", fmt.Errorf("restart failed: %w", stopErr)
-			}
-			if err := m.engine.StartSite(slug); err != nil {
+			if err := m.engine.RestartSite(slug); err != nil {
 				return "", err
 			}
 			return "restarted " + slug, nil
@@ -1906,7 +1928,7 @@ func (m *model) sitePanel(s *Site) string {
 		{"admin", BareURL(s) + "/wp-admin"},
 		{"db", s.DBName + stDim.Render("  as ") + s.DBUser + stDim.Render(fmt.Sprintf("  127.0.0.1:%d", DefaultDBPort))},
 		{"gui", AdminerURL(s.Domain) + stDim.Render("  g")},
-		{"files", shortHome(s.WPDir) + stDim.Render("   "+m.siteSize(s.Slug))},
+		{"files", shortHome(s.WPDir) + stDim.Render("   "+m.sizes[s.Slug])},
 	}
 	// Credentials only exist for sites we installed; an adopted folder keeps
 	// whatever admin it already had, and inventing a blank pair reads as data.
@@ -2313,9 +2335,15 @@ func orDash(s, fallback string) string {
 
 // runTUI starts the bubbletea program.
 func runTUI() {
-	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
+	m := initialModel()
+	if m.store == nil {
+		fmt.Fprintln(os.Stderr, m.msg)
+		os.Exit(1)
+	}
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		fmt.Println("tui error:", err)
+		fmt.Fprintln(os.Stderr, "tui error:", err)
+		os.Exit(1)
 	}
 }
 
@@ -2342,6 +2370,12 @@ func renderFrame(args []string) error {
 		}
 	}
 	m := initialModel()
+	if m.store == nil {
+		return fmt.Errorf("open store: %s", m.msg)
+	}
+	health := m.healthCmd()().(runtimeHealthMsg)
+	m.health = health.health
+	m.alive = health.alive
 	m.width, m.height = w, h
 	switch flagValue(args, "--tab") {
 	case "worktrees":

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"golang.org/x/mod/semver"
 	"io"
 	"log"
 	"net/http"
@@ -82,7 +83,18 @@ func LatestRelease() (*ghRelease, error) {
 // (plain `go build`) is never considered up to date: the whole point of asking
 // is to find out what is published.
 func UpdateAvailable(current string, rel *ghRelease) bool {
-	return strings.TrimPrefix(rel.TagName, "v") != strings.TrimPrefix(current, "v")
+	if rel == nil {
+		return false
+	}
+	latest := "v" + strings.TrimPrefix(rel.TagName, "v")
+	if !semver.IsValid(latest) {
+		return false
+	}
+	if current == "dev" {
+		return true
+	}
+	installed := "v" + strings.TrimPrefix(current, "v")
+	return semver.IsValid(installed) && semver.Compare(installed, latest) < 0
 }
 
 // managedByHomebrew reports whether this binary belongs to a Homebrew cask, in
@@ -441,7 +453,7 @@ func SelfUpdate(progress func(string)) (string, error) {
 	if progress == nil {
 		progress = func(string) {}
 	}
-	self, err := os.Executable()
+	self, err := installedBinaryPath()
 	if err != nil {
 		return "", err
 	}
@@ -455,8 +467,12 @@ func SelfUpdate(progress func(string)) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !UpdateAvailable(Version, rel) {
-		return rel.TagName, nil
+	current := binaryVersion(self)
+	if current == "" {
+		return "", fmt.Errorf("cannot read installed binary version")
+	}
+	if !UpdateAvailable(current, rel) {
+		return current, nil
 	}
 	var assetURL, assetName, sumsURL string
 	for _, a := range rel.Assets {
@@ -484,12 +500,20 @@ func SelfUpdate(progress func(string)) (string, error) {
 		return "", fmt.Errorf("release %s publishes no checksums.txt; refusing to install unverified bytes", rel.TagName)
 	}
 	progress("verifying checksum")
-	if err := verifyChecksum(archive, assetName, sumsURL); err != nil {
+	if err := verifyReleaseDownload(archive, assetName, sumsURL, rel.TagName); err != nil {
 		return "", err
 	}
 
 	progress("unpacking")
-	staged := self + ".new"
+	tmp, err := os.CreateTemp(filepath.Dir(self), ".agent-local-update-*")
+	if err != nil {
+		return "", err
+	}
+	staged := tmp.Name()
+	defer os.Remove(staged)
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
 	if err := extractBinary(archive, "agent-local", staged); err != nil {
 		return "", err
 	}
@@ -510,6 +534,14 @@ func SelfUpdate(progress func(string)) (string, error) {
 		return "", fmt.Errorf("downloaded binary does not run: %v %s", err, tail(string(out), 200))
 	}
 	progress("installing")
+	backup := staged + ".old"
+	if err := os.Link(self, backup); err != nil {
+		return "", err
+	}
+	defer os.Remove(backup)
+	if err := os.Rename(backup, self+".old"); err != nil {
+		return "", err
+	}
 	if err := os.Rename(staged, self); err != nil {
 		os.Remove(staged)
 		return "", fmt.Errorf("replace %s: %w (try: sudo agent-local update)", self, err)
@@ -524,7 +556,10 @@ const maxDownloadSize = 200 << 20
 
 func downloadTemp(url, pattern string) (string, error) {
 	client := &http.Client{Timeout: 10 * time.Minute}
-	req, _ := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
 	req.Header.Set("User-Agent", AppName+"/"+Version)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -558,16 +593,7 @@ func downloadTemp(url, pattern string) (string, error) {
 // digest to assetName — the exact release asset this download was meant to
 // be — instead of accepting any line in the file that happens to carry a
 // matching hash.
-func verifyChecksum(archivePath, assetName, sumsURL string) error {
-	sums, err := downloadTemp(sumsURL, "agent-local-sums-*.txt")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(sums)
-	b, err := os.ReadFile(sums)
-	if err != nil {
-		return err
-	}
+func checkArchiveChecksum(archivePath, assetName string, b []byte) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return err

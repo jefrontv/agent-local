@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -223,10 +224,11 @@ func EnsureApacheFront(store *Store) error {
 		return err
 	}
 	proc := &Proc{
-		Name:  "apache",
-		Args:  apacheStartArgs(inv.HTTP.Bin, conf),
-		LogTo: P().Log("apache"),
-		PidTo: P().ApachePid(),
+		Name:   "apache",
+		Args:   apacheStartArgs(inv.HTTP.Bin, conf),
+		LogTo:  P().Log("apache"),
+		PidTo:  P().ApachePid(),
+		Marker: P().ApacheConf(),
 	}
 	if pid, ok := proc.Pid(); ok {
 		// Re-rendered config; ask the running master to pick it up. New sites
@@ -247,6 +249,10 @@ func EnsureApacheFront(store *Store) error {
 // renderApacheConf writes a self-contained httpd.conf serving every site +
 // worktree through mod_proxy_fcgi.
 func renderApacheConf(store *Store) error {
+	account, err := user.Current()
+	if err != nil {
+		return err
+	}
 	p := P()
 	prefix := filepath.Dir(filepath.Dir(store.Inventory().HTTP.Bin))
 	var b strings.Builder
@@ -296,11 +302,21 @@ DirectoryIndex index.php index.html
   Require all denied
 </FilesMatch>
 
-`, p.ApachePid(), p.Log("apache"), os.Getenv("USER"), mimeTypesPath(prefix)))
+`, p.ApachePid(), p.Log("apache"), account.Username, mimeTypesPath(prefix)))
 
 	adminerDir := P().AdminerDir()
+	emitted := map[int]bool{}
 	emit := func(id, domain, docroot, sock, adminerBoot string) {
 		vhost := func(port int, tls bool) {
+			if !emitted[port] {
+				emitted[port] = true
+				fmt.Fprintf(&b, "<VirtualHost 127.0.0.1:%d>\n  ServerName invalid.invalid\n", port)
+				if tls {
+					crt, key := CertPaths(domain)
+					fmt.Fprintf(&b, "  SSLEngine on\n  SSLCertificateFile %q\n  SSLCertificateKeyFile %q\n", crt, key)
+				}
+				b.WriteString("  RewriteEngine On\n  RewriteRule ^ - [R=421,L]\n</VirtualHost>\n")
+			}
 			b.WriteString(fmt.Sprintf("<VirtualHost 127.0.0.1:%d>\n  ServerName %s\n  DocumentRoot \"%s\"\n", port, domain, docroot))
 			if tls {
 				crt, key := CertPaths(domain)

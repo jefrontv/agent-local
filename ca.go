@@ -64,9 +64,10 @@ func (ca *localCA) permits(domain string) bool {
 }
 
 var (
-	caMu      sync.Mutex
-	caCache   *localCA
-	caCacheAt string // bundle path the cache was loaded from; tests move $HOME
+	caMu          sync.Mutex
+	caCache       *localCA
+	caBundleMtime time.Time
+	caCacheAt     string // bundle path the cache was loaded from; tests move $HOME
 )
 
 // loadCA returns the local CA, creating it first when create is set and none
@@ -77,7 +78,8 @@ func loadCA(create bool) (*localCA, error) {
 	caMu.Lock()
 	defer caMu.Unlock()
 	bundle, certPath := caPaths()
-	if caCache != nil && caCacheAt == bundle && fileExists(bundle) {
+	st, statErr := os.Stat(bundle)
+	if caCache != nil && caCacheAt == bundle && statErr == nil && caBundleMtime.Equal(st.ModTime()) {
 		return caCache, nil
 	}
 	b, err := os.ReadFile(bundle)
@@ -101,6 +103,11 @@ func loadCA(create bool) (*localCA, error) {
 		return nil, err
 	}
 	ca.certPath = certPath
+	if statErr == nil {
+		caBundleMtime = st.ModTime()
+	} else {
+		caBundleMtime = time.Time{}
+	}
 	caCache, caCacheAt = ca, bundle
 	return ca, nil
 }

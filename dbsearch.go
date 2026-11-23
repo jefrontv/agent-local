@@ -189,12 +189,20 @@ func (e *Engine) DBSearch(site *Site, needle string) (*searchReport, error) {
 // wp-config.php's own hardcoded domain pins are rewritten too - those are
 // checked before the database on every request, so a search-replace that
 // only touched rows would leave the site redirecting to the old host.
-func (e *Engine) SearchReplace(site *Site, old, new string, dryRun bool) (*searchReport, error) {
+func (e *Engine) SearchReplace(site *Site, old, new string, dryRun bool, skipSnapshot ...bool) (*searchReport, error) {
+	if strings.HasPrefix(old, "-") || strings.HasPrefix(new, "-") {
+		return nil, apiError{Code: 400, Msg: "old and new cannot begin with a hyphen"}
+	}
 	if len(old) < minSearchNeedleLen {
 		return nil, apiError{Code: 400, Msg: fmt.Sprintf("old must be at least %d characters", minSearchNeedleLen)}
 	}
 	if old == new {
 		return nil, apiError{Code: 400, Msg: "old and new must differ"}
+	}
+	if !dryRun && !(len(skipSnapshot) > 0 && skipSnapshot[0]) {
+		if _, err := e.autoSnapshot(site.Slug, "search-replace"); err != nil {
+			return nil, err
+		}
 	}
 	out, err := wpCLI(site, searchReplaceArgs(old, new, dryRun)...)
 	if err != nil {
@@ -261,9 +269,10 @@ func (a *APIServer) handleSearchReplace(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		Old    string `json:"old"`
-		New    string `json:"new"`
-		DryRun *bool  `json:"dry_run"`
+		Old        string `json:"old"`
+		New        string `json:"new"`
+		NoSnapshot bool   `json:"no_snapshot"`
+		DryRun     *bool  `json:"dry_run"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, 400, "bad json: "+err.Error())
@@ -273,7 +282,7 @@ func (a *APIServer) handleSearchReplace(w http.ResponseWriter, r *http.Request) 
 	if req.DryRun != nil {
 		dryRun = *req.DryRun
 	}
-	rep, err := a.engine.SearchReplace(site, req.Old, req.New, dryRun)
+	rep, err := a.engine.SearchReplace(site, req.Old, req.New, dryRun, req.NoSnapshot)
 	if err != nil {
 		if ae, ok := err.(apiError); ok {
 			fail(w, ae.Code, ae.Msg)

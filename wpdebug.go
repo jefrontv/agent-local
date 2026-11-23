@@ -77,6 +77,9 @@ func (e *Engine) SetWPDebug(slug string, on bool) (WPDebugState, error) {
 	if site == nil {
 		return WPDebugState{}, fmt.Errorf("no such site: %s", slug)
 	}
+	if err := e.requireWordPress(site, "wp-debug"); err != nil {
+		return WPDebugState{}, err
+	}
 	cfg, err := wpConfigPath(site)
 	if err != nil {
 		return WPDebugState{}, err

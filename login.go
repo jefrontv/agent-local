@@ -162,6 +162,9 @@ func (e *Engine) MagicLoginWorktree(site *Site, wt *Worktree, user string) (*Log
 // (a site slug or a worktree ID), wpdir is the WordPress the mu-plugin goes
 // into, and domain is where the link points.
 func (e *Engine) magicLogin(site *Site, key, wpdir, domain, user string) (*LoginLink, error) {
+	if err := e.requireWordPress(site, "magic login"); err != nil {
+		return nil, err
+	}
 	removeLoginMU(wpdir, key)
 
 	user = strings.TrimSpace(user)

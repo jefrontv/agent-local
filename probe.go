@@ -195,10 +195,13 @@ func logDelta(path string, from int64) []string {
 	if from > info.Size() {
 		from = info.Size()
 	}
+	if info.Size()-from > 64<<10 {
+		from = info.Size() - (64 << 10)
+	}
 	if _, err := f.Seek(from, io.SeekStart); err != nil {
 		return nil
 	}
-	data, err := io.ReadAll(f)
+	data, err := io.ReadAll(io.LimitReader(f, 64<<10))
 	if err != nil {
 		return nil
 	}

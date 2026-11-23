@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -98,6 +99,17 @@ func OpenStore() (*Store, error) {
 	}
 	s.normalize()
 	s.base = s.snapshot()
+	for _, site := range s.Data.Sites {
+		if site.WPDir != "" && site.WorkDir == filepath.Dir(site.WPDir) && importedWorkDir(site.WPDir) == site.WPDir && !fileExists(filepath.Join(site.WorkDir, ".git")) {
+			site.WorkDir = site.WPDir
+			s.dirty = true
+		}
+	}
+	if s.dirty {
+		if err := s.Save(); err != nil {
+			return nil, err
+		}
+	}
 	return s, nil
 }
 
@@ -728,8 +740,50 @@ func SanitizeName(name string) (string, error) {
 
 // ValidDomain does a light sanity check on a local domain.
 func ValidDomain(d string) bool {
-	if d == "" || strings.ContainsAny(d, " \t/\\:*?\"<>|") {
+	labels := strings.Split(d, ".")
+	if len(d) > 253 || len(labels) < 2 {
 		return false
 	}
-	return strings.Contains(d, ".")
+	for _, label := range labels {
+		if len(label) > 63 || !domainLabel.MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
+
+var domainLabel = regexp.MustCompile(`^[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?$`)
+
+func (s *Store) recordSiteActivity(id string, last time.Time, sleeping bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item := s.Data.Sites[id]
+	if item == nil || (!sleeping && !last.After(item.LastActive)) {
+		return false
+	}
+	next := *item
+	if sleeping {
+		next.State = StateSleeping
+	}
+	next.LastActive = last
+	s.Data.Sites[id] = &next
+	s.dirty = true
+	return true
+}
+
+func (s *Store) recordWorktreeActivity(id string, last time.Time, sleeping bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item := s.Data.Worktrees[id]
+	if item == nil || (!sleeping && !last.After(item.LastActive)) {
+		return false
+	}
+	next := *item
+	if sleeping {
+		next.State = StateSleeping
+	}
+	next.LastActive = last
+	s.Data.Worktrees[id] = &next
+	s.dirty = true
+	return true
 }

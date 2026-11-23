@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	_ "embed"
 	"fmt"
 	"io"
@@ -70,13 +71,20 @@ func EnsureAdminer() error {
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("download adminer: HTTP %s", resp.Status)
 	}
-	tmp := dst + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	f, err := os.CreateTemp(p.AdminerDir(), ".download-*")
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(f, resp.Body)
-	f.Close()
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	hash := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(f, hash), io.LimitReader(resp.Body, 8<<20))
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if fmt.Sprintf("%x", hash.Sum(nil)) != "aa1964047a7ce6e44b26db14dc16a942820c54034b417e6223884df6fa8e24a9" {
+		return fmt.Errorf("adminer download checksum mismatch")
+	}
 	if copyErr != nil {
 		os.Remove(tmp)
 		return copyErr
@@ -119,7 +127,22 @@ func writeAdminerBoot(site *Site) (string, error) {
 	}
 	dst := P().AdminerBoot(site.Slug)
 	host := fmt.Sprintf("127.0.0.1:%d", DefaultDBPort)
+	domains := append([]string{site.Domain}, site.Aliases...)
+	store, err := OpenStore()
+	if err != nil {
+		return "", err
+	}
+	for _, wt := range store.WorktreesFor(site.Slug) {
+		domains = append(domains, wt.Domain)
+	}
+	allowed := make([]string, 0, len(domains))
+	for _, d := range domains {
+		if ValidDomain(d) {
+			allowed = append(allowed, phpQuote(d))
+		}
+	}
 	body := fmt.Sprintf(`<?php
+if (!in_array(strtolower(explode(':', $_SERVER['HTTP_HOST'] ?? '', 2)[0]), [%s], true)) { http_response_code(421); exit; }
 /**
  * agent-local database GUI for %s. Auto-generated — do not edit.
  *
@@ -185,6 +208,7 @@ function adminer_object() {
 }
 include __DIR__ . '/adminer-%s.php';
 `,
+		strings.Join(allowed, ", "),
 		site.Slug,
 		phpQuote(host), phpQuote(site.DBUser), phpQuote(site.DBPass), phpQuote(site.DBName),
 		phpQuote("agent-local · "+site.Slug),
@@ -193,7 +217,10 @@ include __DIR__ . '/adminer-%s.php';
 		phpQuote(themeJS),
 		adminerVersion,
 	)
-	if err := os.WriteFile(dst, []byte(body), 0o600); err != nil {
+	if previous, err := os.ReadFile(dst); err == nil && string(previous) == body {
+		return dst, nil
+	}
+	if err := atomicWriteMode(dst, []byte(body), 0o600); err != nil {
 		return "", err
 	}
 	return dst, nil

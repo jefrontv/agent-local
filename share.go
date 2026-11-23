@@ -143,6 +143,8 @@ func sharePidFile(slug string) string {
 // comes back; a tunnel that never routes is torn down and retried once with
 // a fresh hostname.
 func (e *Engine) StartShare(slug string, minutes int, cb func(string, string)) (*Share, error) {
+	unlock := shareStartLocks.lock(slug)
+	defer unlock()
 	site := e.Store.Site(slug)
 	if site == nil {
 		return nil, fmt.Errorf("no such site: %s", slug)
@@ -308,8 +310,11 @@ func SweepShares(store *Store) {
 	pids, _ := filepath.Glob(filepath.Join(P().Run(), "share-*.pid"))
 	for _, pf := range pids {
 		if b, err := os.ReadFile(pf); err == nil {
-			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 1 && Alive(pid) {
-				syscall.Kill(pid, syscall.SIGKILL)
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 1 {
+				comm, err := runCmdOut("ps", "-p", strconv.Itoa(pid), "-o", "comm=")
+				if err == nil && filepath.Base(strings.TrimSpace(comm)) == "cloudflared" {
+					syscall.Kill(pid, syscall.SIGKILL)
+				}
 			}
 		}
 		os.Remove(pf)

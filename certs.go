@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -23,12 +24,28 @@ func CertPaths(domain string) (cert, key string) {
 	return filepath.Join(p, domain+".crt"), filepath.Join(p, domain+".key")
 }
 
+type keyedLocks struct{ entries sync.Map }
+
+func (k *keyedLocks) lock(id string) func() {
+	v, _ := k.entries.LoadOrStore(id, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+var certLocks, shareStartLocks, poolActivityLocks keyedLocks
+
 // EnsureCert generates (once) a cert for the domain: signed by the local CA
 // when the CA covers the name (ca.go), self-signed otherwise.
 func EnsureCert(domain string) (cert, key string, created bool, err error) {
 	cert, key = CertPaths(domain)
-	if fileExists(cert) && fileExists(key) {
-		return cert, key, false, nil
+	unlock := certLocks.lock(cert)
+	defer unlock()
+	if pair, err := tls.LoadX509KeyPair(cert, key); err == nil {
+		leaf, err := x509.ParseCertificate(pair.Certificate[0])
+		if err == nil && leaf.VerifyHostname(domain) == nil && time.Until(leaf.NotAfter) > 30*24*time.Hour {
+			return cert, key, false, nil
+		}
 	}
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -39,10 +56,8 @@ func EnsureCert(domain string) (cert, key string, created bool, err error) {
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: domain, Organization: []string{AppName}},
 		NotBefore:    time.Now().Add(-time.Hour),
-		// 398 days: the max lifetime modern browsers/OSes accept for a
-		// leaf cert (Apple/Chrome cap at 397). A 10-year cert used to
-		// outlive that policy and start failing TLS handshakes silently.
-		NotAfter:    time.Now().Add(398 * 24 * time.Hour),
+		// Leave room for the backdated start within the browser lifetime limit.
+		NotAfter:    time.Now().Add(396 * 24 * time.Hour),
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		DNSNames:    []string{domain},
@@ -59,43 +74,16 @@ func EnsureCert(domain string) (cert, key string, created bool, err error) {
 	if err != nil {
 		return "", "", false, err
 	}
-	if err := os.WriteFile(cert, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
+	if err := atomicWriteMode(cert, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
 		return "", "", false, err
 	}
-	if err := os.WriteFile(key, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDer}), 0o600); err != nil {
+	if err := atomicWriteMode(key, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDer}), 0o600); err != nil {
 		return "", "", false, err
 	}
 	return cert, key, true, nil
 }
 
-// trustStagePath is the one path the sudoers allowlist permits
-// `add-trusted-cert` on. Root-owned (written through `tee` as root), fixed,
-// and outside any user-writable directory, so the allowlist entry cannot be
-// pointed at an arbitrary certificate. /var/db is root-only and survives
-// reboots; /tmp would let another user pre-create the name.
-const trustStagePath = "/var/db/agent-local-trust.crt"
-
-// trustStageMu serializes the staged tee-then-trust pair. trustStagePath is
-// one fixed file and the daemon trusts certs from concurrent jobs, so without
-// this two calls interleave — each trusting the other's bytes, both told
-// success, one cert still untrusted. Same reasoning as hostsMu for the one
-// temp path /etc/hosts goes through.
-var trustStageMu sync.Mutex
-
-// TrustCert adds our cert to the system keychain as trusted for SSL
-// (macOS only). No-op when the OS already trusts it.
-//
-// Silent path first: stage the PEM to trustStagePath through `sudo -n tee`
-// (stdin, so the bytes never sit in a user-writable file), then trust that
-// exact path. Both steps are on the allowlist `agent-local sudo` installs,
-// which is what lets the daemon — with nowhere to show a password prompt —
-// trust a new site's cert. Without the allowlist, an interactive caller gets
-// the GUI dialog against the cert's real path; a non-interactive one fails
-// with the setup hint. Success is what the OS says afterwards, never the
-// command's exit code: a cancelled dialog exits 0 on some macOS builds.
-//
-// A cert the local CA signed is trusted by trusting the CA, so once the CA is
-// in the keychain the certTrusted check below returns before anything runs.
+// TrustCert verifies trust after the system keychain prompt.
 func TrustCert(certPath string, interactive bool) error {
 	if !fileExists(certPath) {
 		return fmt.Errorf("cert missing: %s", certPath)
@@ -113,27 +101,13 @@ func trustAnchor(anchorPath, checkPath string, interactive bool) error {
 		return nil
 	}
 	certPath := anchorPath
-	der, err := os.ReadFile(certPath)
-	if err != nil {
-		return err
-	}
-	// Only the staged pair is serialized: the interactive fallback below names
-	// the cert's real path, so it never touches trustStagePath. Scoped, so the
-	// unlock cannot be skipped — a panic in here must not wedge every later call.
-	trusted := func() bool {
-		trustStageMu.Lock()
-		defer trustStageMu.Unlock()
-		return sudoNStdin(der, "/usr/bin/tee", trustStagePath) == nil &&
-			sudoN("-n", "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
-				"-p", "ssl", "-k", "/Library/Keychains/System.keychain", trustStagePath) == nil
-	}()
-	if trusted && certTrusted(checkPath) {
-		return nil
-	}
 	if !interactive {
-		return fmt.Errorf("needs root to trust %s (run: agent-local sudo, or: agent-local cert %s --trust)", filepath.Base(certPath), strings.TrimSuffix(filepath.Base(checkPath), ".crt"))
+		if certPath == checkPath && filepath.Base(certPath) == "agent-local-ca.crt" {
+			return fmt.Errorf("needs root to trust local CA (run: agent-local setup)")
+		}
+		return fmt.Errorf("needs root to trust %s (run: agent-local cert %s --trust)", filepath.Base(certPath), strings.TrimSuffix(filepath.Base(checkPath), ".crt"))
 	}
-	if err := RunPrivileged(true, "security", "add-trusted-cert", "-d", "-r", "trustRoot",
+	if err := RunPrivileged(true, "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
 		"-p", "ssl", "-k", "/Library/Keychains/System.keychain", certPath); err != nil {
 		return err
 	}
@@ -146,7 +120,7 @@ func trustAnchor(anchorPath, checkPath string, interactive bool) error {
 // certRemedy is the next step for an untrusted cert, appended to a failure
 // that does not already name it — the non-interactive message does, the
 // cancelled-prompt and osascript ones do not.
-const certRemedy = " (run: agent-local sudo to allow this without a prompt)"
+const certRemedy = " (run: agent-local setup)"
 
 // trustCertOrReport trusts a cert we just issued and reports a failure instead
 // of dropping it. A setup path is served either way, so a swallowed error here
@@ -162,7 +136,7 @@ func trustCertOrReport(certPath string, interactive bool, trust func(string, boo
 		return
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "agent-local sudo") {
+	if !strings.Contains(msg, "run: agent-local") {
 		msg += certRemedy
 	}
 	report("warn", "cert not trusted: "+msg)

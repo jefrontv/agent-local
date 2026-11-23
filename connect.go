@@ -398,7 +398,10 @@ func atomicWrite(path string, data []byte) error {
 	if fi, err := os.Stat(path); err == nil {
 		perm = fi.Mode().Perm()
 	}
-	tmp, err := os.CreateTemp(dir, ".agent-local-connect-*")
+	return atomicWriteMode(path, data, perm)
+}
+func atomicWriteMode(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".agent-local-connect-*")
 	if err != nil {
 		return err
 	}

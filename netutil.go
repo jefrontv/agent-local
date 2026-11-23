@@ -66,6 +66,7 @@ func httpProbeHostTimed(url, host string, timeout time.Duration) (code int, loca
 		return 0, "", 0, err
 	}
 	req.Host = host
+	req.Header.Set("X-Agent-Local-Probe", "1")
 	client := probeClient()
 	if timeout > 0 {
 		c := *client

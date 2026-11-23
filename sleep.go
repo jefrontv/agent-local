@@ -72,6 +72,8 @@ func (a *activity) lastFor(id string) (time.Time, bool) {
 // StopFPM signals the whole process group and SIGKILLs it five seconds later,
 // while a request is allowed 130.
 func (a *activity) enter(id string) {
+	unlock := poolActivityLocks.lock(id)
+	defer unlock()
 	if id == "" {
 		return
 	}
@@ -150,11 +152,17 @@ func (e *Engine) SleepIdlePools(now time.Time) []string {
 	}
 	onRouter := FrontKind(e.Store) == "router"
 	var slept []string
-	park := func(id string, last time.Time) bool {
+	park := func(id string, last time.Time, markSleeping func()) bool {
+		unlock := poolActivityLocks.lock(id)
+		defer unlock()
+		if !e.sleepInputFor(id, now, window, enabled, onRouter).due() {
+			return false
+		}
 		if err := e.StopFPM(id); err != nil {
 			log.Printf("idle sleep: %s: %v", id, err)
 			return false
 		}
+		markSleeping()
 		e.act.forget(id)
 		slept = append(slept, id)
 		return true
@@ -169,10 +177,7 @@ func (e *Engine) SleepIdlePools(now time.Time) []string {
 			e.startClockIfUnknown(site.Slug, in, now)
 			continue
 		}
-		if park(site.Slug, in.last) {
-			site.LastActive = in.last
-			e.Store.SetSiteState(site, StateSleeping)
-		}
+		park(site.Slug, in.last, func() { e.Store.recordSiteActivity(site.Slug, in.last, true) })
 	}
 	for _, w := range e.Store.Worktrees() {
 		if w.State != StateRunning {
@@ -183,10 +188,7 @@ func (e *Engine) SleepIdlePools(now time.Time) []string {
 			e.startClockIfUnknown(w.ID, in, now)
 			continue
 		}
-		if park(w.ID, in.last) {
-			w.LastActive = in.last
-			e.Store.SetWorktreeState(w, StateSleeping)
-		}
+		park(w.ID, in.last, func() { e.Store.recordWorktreeActivity(w.ID, in.last, true) })
 	}
 	if len(slept) > 0 {
 		if err := e.Store.Save(); err != nil {
@@ -274,21 +276,21 @@ func (e *Engine) PersistActivity() error {
 	changed := false
 	for _, site := range e.Store.Sites() {
 		last, known := e.act.lastFor(site.Slug)
-		if !known || !last.After(site.LastActive) {
+		if !known {
 			continue
 		}
-		site.LastActive = last
-		e.Store.PutSite(site)
-		changed = true
+		if e.Store.recordSiteActivity(site.Slug, last, false) {
+			changed = true
+		}
 	}
 	for _, w := range e.Store.Worktrees() {
 		last, known := e.act.lastFor(w.ID)
-		if !known || !last.After(w.LastActive) {
+		if !known {
 			continue
 		}
-		w.LastActive = last
-		e.Store.PutWorktree(w)
-		changed = true
+		if e.Store.recordWorktreeActivity(w.ID, last, false) {
+			changed = true
+		}
 	}
 	if !changed {
 		return nil

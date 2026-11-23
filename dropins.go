@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -140,29 +139,13 @@ func afterDomainChange(wpdir, oldDomain string) []string {
 // never rotated, so a crash from last week would otherwise warn forever.
 // Returns the count and the last message, trimmed.
 func recentFatals(logPath string, tailLines int, within time.Duration) (int, string) {
-	f, err := os.Open(logPath)
-	if err != nil {
-		return 0, ""
-	}
-	defer f.Close()
-	// Keep a ring of the last N lines; logs can be large and only the tail
-	// says anything about the site as it is now.
-	ring := make([]string, tailLines)
-	n := 0
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	for sc.Scan() {
-		ring[n%tailLines] = sc.Text()
-		n++
-	}
-	start := 0
-	if n > tailLines {
-		start = n - tailLines
+	ring := logTailLines(logPath)
+	if len(ring) > tailLines {
+		ring = ring[len(ring)-tailLines:]
 	}
 	cutoff := time.Now().Add(-within)
 	count, last := 0, ""
-	for i := start; i < n; i++ {
-		line := ring[i%tailLines]
+	for _, line := range ring {
 		if !strings.Contains(line, "PHP Fatal error:") {
 			continue
 		}

@@ -136,6 +136,9 @@ func listWPConstants(src string) []wpConstant {
 // are listed by name with their value withheld: nothing an agent does needs
 // them, and a transcript is no place for a site's cookie-signing secrets.
 func (e *Engine) WPConstants(site *Site) ([]wpConstant, error) {
+	if err := e.requireWordPress(site, "wp-config constants"); err != nil {
+		return nil, err
+	}
 	cfg, err := wpConfigPath(site)
 	if err != nil {
 		return nil, err
@@ -158,6 +161,9 @@ func (e *Engine) WPConstants(site *Site) ([]wpConstant, error) {
 // "stop editing" marker, WordPress's own convention); this just supplies
 // the validated name and encoded literal.
 func (e *Engine) SetWPConstant(site *Site, name, value, typ string) (wpConstant, error) {
+	if err := e.requireWordPress(site, "wp-config constants"); err != nil {
+		return wpConstant{}, err
+	}
 	if err := checkWPConstName(name); err != nil {
 		return wpConstant{}, err
 	}

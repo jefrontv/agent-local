@@ -2,24 +2,41 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
+	"os/user"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
 
 func main() {
+	if filepath.Base(os.Args[0]) == "agent-local-hosts" {
+		if err := runHostsHelper(os.Args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// Before anything can look up brew, php or httpd: under launchd this
 	// process inherits a PATH with no Homebrew in it.
 	normalizePATH()
-	args := os.Args[1:]
-	if len(args) == 0 {
+	if len(os.Args) < 2 {
 		runTUI()
 		return
 	}
+	os.Exit(runCLI(os.Args[1:]))
+}
+
+// runCLI runs one command and returns the process exit code: 0 when it worked,
+// 1 when it failed, 2 for a command that does not exist.
+func runCLI(args []string) int {
 	cmd, rest := args[0], args[1:]
 	var err error
 	switch cmd {
@@ -34,7 +51,16 @@ func main() {
 	case "attach":
 		err = cmdAttach(rest)
 	case "list", "ls":
-		err = cmdList()
+		if hasFlag(rest, "--json") {
+			data, bad := apiGet("/sites")
+			if bad {
+				err = fmt.Errorf("%v", data)
+			} else {
+				err = json.NewEncoder(os.Stdout).Encode(data)
+			}
+		} else {
+			err = cmdList()
+		}
 	case "start":
 		err = cmdStart(rest)
 	case "stop":
@@ -135,6 +161,12 @@ func main() {
 		err = cmdWPInfo(rest)
 	case "wpconst":
 		err = cmdWPConst(rest)
+	case "verify-release":
+		if len(rest) != 5 {
+			err = fmt.Errorf("usage: agent-local verify-release ARCHIVE ASSET CHECKSUMS BUNDLE TAG")
+		} else {
+			err = verifyReleaseFiles(rest[0], rest[1], rest[2], rest[3], rest[4])
+		}
 	case "version", "--version":
 		outTitle(AppName, Version)
 		if buildCommit != "" {
@@ -158,12 +190,13 @@ func main() {
 	default:
 		fmt.Fprintln(os.Stderr, stErr.Render("unknown command: "+cmd))
 		printHelp()
-		os.Exit(2)
+		return 2
 	}
 	if err != nil {
 		outFail(err.Error())
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func hasFlag(args []string, f string) bool {
@@ -183,23 +216,59 @@ func flagValue(args []string, f string) string {
 	}
 	return ""
 }
-func positional(args []string) []string {
-	var out []string
+
+// parseOptions allows flags before or after operands. Each command registers
+// only its own switches, and -- ends option parsing for literal operands.
+func parseOptions(args []string, values, switches string) (*flag.FlagSet, []string, error) {
+	fs := flag.NewFlagSet(AppName, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	for _, name := range strings.Fields(values) {
+		fs.String(name, "", "")
+	}
+	for _, name := range strings.Fields(switches) {
+		fs.Bool(name, false, "")
+	}
+	var pos, opts []string
 	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if strings.HasPrefix(a, "--") {
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
-				// flags that take values skip their value
-				switch a {
-				case "--domain", "--php", "--wp-version", "--repo", "--admin-user", "--admin-pass", "--admin-email", "--title", "--name", "--sql", "--db-host", "--db-port", "--db-user", "--db-pass", "--db-name":
-					i++
-				}
-			}
+		arg := args[i]
+		if arg == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(arg, "--") {
+			pos = append(pos, arg)
 			continue
 		}
-		out = append(out, a)
+		name, _, assigned := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+		option := fs.Lookup(name)
+		if option == nil {
+			return nil, nil, fmt.Errorf("unknown option --%s", name)
+		}
+		opts = append(opts, arg)
+		if _, boolean := option.Value.(interface{ IsBoolFlag() bool }); !boolean && !assigned {
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
+				return nil, nil, fmt.Errorf("--%s requires a value", name)
+			}
+			i++
+			opts = append(opts, args[i])
+		}
 	}
-	return out
+	if err := fs.Parse(opts); err != nil {
+		return nil, nil, err
+	}
+	return fs, pos, nil
+}
+func positional(args []string) []string {
+	var pos []string
+	for i, arg := range args {
+		if arg == "--" {
+			return append(pos, args[i+1:]...)
+		}
+		if !strings.HasPrefix(arg, "--") {
+			pos = append(pos, arg)
+		}
+	}
+	return pos
 }
 
 func atoi0(s string) int {
@@ -505,7 +574,11 @@ func openEnv() (*Store, *Engine, error) {
 }
 
 func cmdCreate(args []string) error {
-	pos := positional(args)
+	flags, pos, parseErr := parseOptions(args, "admin-email admin-pass admin-user dir domain php repo title wp-version", "")
+	if parseErr != nil {
+		return parseErr
+	}
+
 	if len(pos) < 1 {
 		return fmt.Errorf("usage: agent-local create NAME [--dir path] [--domain d] [--php v] [--repo url]")
 	}
@@ -516,15 +589,15 @@ func cmdCreate(args []string) error {
 	outTitle(AppName, "create", pos[0])
 	site, err := e.CreateSite(CreateOpts{
 		Name:       pos[0],
-		Dir:        flagValue(args, "--dir"),
-		Domain:     flagValue(args, "--domain"),
-		PHPVersion: flagValue(args, "--php"),
-		WPVersion:  flagValue(args, "--wp-version"),
-		Repo:       flagValue(args, "--repo"),
-		AdminUser:  flagValue(args, "--admin-user"),
-		AdminPass:  flagValue(args, "--admin-pass"),
-		AdminEmail: flagValue(args, "--admin-email"),
-		Title:      flagValue(args, "--title"),
+		Dir:        flags.Lookup("dir").Value.String(),
+		Domain:     flags.Lookup("domain").Value.String(),
+		PHPVersion: flags.Lookup("php").Value.String(),
+		WPVersion:  flags.Lookup("wp-version").Value.String(),
+		Repo:       flags.Lookup("repo").Value.String(),
+		AdminUser:  flags.Lookup("admin-user").Value.String(),
+		AdminPass:  flags.Lookup("admin-pass").Value.String(),
+		AdminEmail: flags.Lookup("admin-email").Value.String(),
+		Title:      flags.Lookup("title").Value.String(),
 		Progress:   outStage,
 	})
 	if err != nil {
@@ -542,7 +615,11 @@ func cmdCreate(args []string) error {
 // cmdAttach serves a directory the user already has. Unlike import it copies no
 // database: the site gets an empty one and their files are left alone.
 func cmdAttach(args []string) error {
-	pos := positional(args)
+	flags, pos, parseErr := parseOptions(args, "domain name php", "")
+	if parseErr != nil {
+		return parseErr
+	}
+
 	if len(pos) < 1 {
 		return fmt.Errorf("usage: agent-local attach DIR [--name n] [--domain d] [--php v]")
 	}
@@ -553,9 +630,9 @@ func cmdAttach(args []string) error {
 	outTitle(AppName, "attach", pos[0])
 	site, err := e.AttachSite(AttachOpts{
 		Dir:      pos[0],
-		Name:     flagValue(args, "--name"),
-		Domain:   flagValue(args, "--domain"),
-		PHPVer:   flagValue(args, "--php"),
+		Name:     flags.Lookup("name").Value.String(),
+		Domain:   flags.Lookup("domain").Value.String(),
+		PHPVer:   flags.Lookup("php").Value.String(),
 		Progress: outStage,
 	})
 	if err != nil {
@@ -648,8 +725,7 @@ func cmdRestart(args []string) error {
 	if err != nil {
 		return err
 	}
-	_ = e.StopSite(slug)
-	if err := e.StartSite(slug); err != nil {
+	if err := e.RestartSite(slug); err != nil {
 		return err
 	}
 	outTitle(AppName, "restart", slug)
@@ -914,14 +990,31 @@ func cmdProbe(args []string) error {
 		return err
 	}
 	pos := positional(args)
-	outTitle(AppName, "probe", site.Slug)
+	asJSON := hasFlag(args, "--json")
+	if !asJSON {
+		outTitle(AppName, "probe", site.Slug)
+	}
 	if len(pos) > 1 {
 		// One URL, in full.
 		r := e.requestSite(site, "GET", pos[1], hasFlag(args, "--follow"), 4096)
-		printRequestReport(pos[1], r)
+		if asJSON {
+			_ = json.NewEncoder(os.Stdout).Encode(r)
+		} else {
+			printRequestReport(pos[1], r)
+		}
+		if r.Error != "" || r.Status >= 400 {
+			return fmt.Errorf("probe failed: HTTP %d %s", r.Status, r.Error)
+		}
 		return nil
 	}
 	rep := e.probeSite(site)
+	if asJSON {
+		_ = json.NewEncoder(os.Stdout).Encode(rep)
+		if rep.Verdict != "healthy" {
+			return fmt.Errorf("%s: %s", rep.Verdict, rep.Reason)
+		}
+		return nil
+	}
 	for _, p := range probePaths {
 		printRequestReport(p, rep.Requests[p])
 	}
@@ -929,7 +1022,7 @@ func cmdProbe(args []string) error {
 	if rep.Verdict == "healthy" {
 		outStep("healthy")
 	} else {
-		outWarn(rep.Verdict + ": " + rep.Reason)
+		return fmt.Errorf("%s: %s", rep.Verdict, rep.Reason)
 	}
 	return nil
 }
@@ -966,11 +1059,15 @@ func printRequestReport(path string, r requestReport) {
 
 // cmdErrors is get_errors: the site's PHP errors, deduplicated.
 func cmdErrors(args []string) error {
-	_, e, site, err := siteEnv(args)
+	flags, pos, parseErr := parseOptions(args, "since", "")
+	if parseErr != nil {
+		return parseErr
+	}
+	_, e, site, err := siteEnv(pos)
 	if err != nil {
 		return err
 	}
-	since, err := parseSince(flagValue(args, "--since"))
+	since, err := parseSince(flags.Lookup("since").Value.String())
 	if err != nil {
 		return err
 	}
@@ -995,12 +1092,16 @@ func cmdErrors(args []string) error {
 
 // cmdCheckpoint saves or lists whole-site restore points.
 func cmdCheckpoint(args []string) error {
-	_, e, site, err := siteEnv(args)
+	flags, pos, parseErr := parseOptions(args, "scope", "list")
+	if parseErr != nil {
+		return parseErr
+	}
+	_, e, site, err := siteEnv(pos)
 	if err != nil {
 		return err
 	}
-	pos := positional(args)
-	if hasFlag(args, "--list") {
+
+	if flags.Lookup("list").Value.String() == "true" {
 		list, err := e.ListCheckpoints(site.Slug)
 		if err != nil {
 			return err
@@ -1018,7 +1119,7 @@ func cmdCheckpoint(args []string) error {
 		}
 		return nil
 	}
-	label, scope := "", flagValue(args, "--scope")
+	label, scope := "", flags.Lookup("scope").Value.String()
 	if len(pos) > 1 {
 		label = pos[1]
 	}
@@ -1197,7 +1298,11 @@ func cmdPHP(args []string) error {
 }
 
 func cmdImport(args []string) error {
-	pos := positional(args)
+	flags, pos, parseErr := parseOptions(args, "db-host db-name db-pass db-port db-user domain name php sql", "copy keep-ddev serve-only")
+	if parseErr != nil {
+		return parseErr
+	}
+
 	if len(pos) < 1 {
 		return fmt.Errorf("usage: agent-local import <localwp-name|ddev-project|docroot> [--name n] [--domain d] [--php v] [--copy] [--sql file] [--serve-only] [--keep-ddev] [--db-host h] [--db-port p] [--db-user u] [--db-pass p] [--db-name n]")
 	}
@@ -1208,18 +1313,18 @@ func cmdImport(args []string) error {
 	outTitle(AppName, "import", pos[0])
 	site, err := e.ImportSite(ImportOpts{
 		Source:    pos[0],
-		Name:      flagValue(args, "--name"),
-		Domain:    flagValue(args, "--domain"),
-		PHPVer:    flagValue(args, "--php"),
-		Copy:      hasFlag(args, "--copy"),
-		SQLDump:   flagValue(args, "--sql"),
-		ServeOnly: hasFlag(args, "--serve-only"),
-		KeepDDEV:  hasFlag(args, "--keep-ddev"),
-		DBHost:    flagValue(args, "--db-host"),
-		DBPort:    atoi0(flagValue(args, "--db-port")),
-		DBUser:    flagValue(args, "--db-user"),
-		DBPass:    flagValue(args, "--db-pass"),
-		DBName:    flagValue(args, "--db-name"),
+		Name:      flags.Lookup("name").Value.String(),
+		Domain:    flags.Lookup("domain").Value.String(),
+		PHPVer:    flags.Lookup("php").Value.String(),
+		Copy:      (flags.Lookup("copy").Value.String() == "true"),
+		SQLDump:   flags.Lookup("sql").Value.String(),
+		ServeOnly: (flags.Lookup("serve-only").Value.String() == "true"),
+		KeepDDEV:  (flags.Lookup("keep-ddev").Value.String() == "true"),
+		DBHost:    flags.Lookup("db-host").Value.String(),
+		DBPort:    atoi0(flags.Lookup("db-port").Value.String()),
+		DBUser:    flags.Lookup("db-user").Value.String(),
+		DBPass:    flags.Lookup("db-pass").Value.String(),
+		DBName:    flags.Lookup("db-name").Value.String(),
 		Progress:  outStage,
 	})
 	if err != nil {
@@ -1767,13 +1872,17 @@ func cmdMail(args []string) error {
 // of the same API agents use. Opening is idempotent: a second call prints
 // the URL of the share already running.
 func cmdShare(args []string) error {
-	slug, err := slugArg(args)
+	flags, pos, parseErr := parseOptions(args, "minutes", "forever off")
+	if parseErr != nil {
+		return parseErr
+	}
+	slug, err := slugArg(pos)
 	if err != nil {
 		return err
 	}
 	EnsureRouterDaemonQuiet()
 	outTitle(AppName, "share", slug)
-	if hasFlag(args, "--off") {
+	if flags.Lookup("off").Value.String() == "true" {
 		res, isErr := apiDelete("/sites/" + slug + "/share")
 		if isErr {
 			return fmt.Errorf("%s", apiErrMsg(res))
@@ -1783,10 +1892,10 @@ func cmdShare(args []string) error {
 	}
 	body := map[string]interface{}{}
 	switch {
-	case hasFlag(args, "--forever"):
+	case (flags.Lookup("forever").Value.String() == "true"):
 		body["minutes"] = -1
-	case flagValue(args, "--minutes") != "":
-		body["minutes"] = atoi0(flagValue(args, "--minutes"))
+	case flags.Lookup("minutes").Value.String() != "":
+		body["minutes"] = atoi0(flags.Lookup("minutes").Value.String())
 	}
 	res, isErr := apiPost("/sites/"+slug+"/share", body)
 	if isErr {
@@ -1858,6 +1967,9 @@ func cmdWorktrees(args []string) error {
 	store, e, err := openEnv()
 	if err != nil {
 		return err
+	}
+	if store.Site(slug) == nil {
+		return fmt.Errorf("no such site: %s", slug)
 	}
 	wts := store.WorktreesFor(slug)
 	outTitle(AppName, "worktrees", slug)
@@ -1948,16 +2060,34 @@ func cmdDoctor(args []string) error {
 		return err
 	}
 	rep := Doctor(store)
-	outTitle(AppName, "doctor")
-	fmt.Print(rep.RenderReport())
+	asJSON := hasFlag(args, "--json")
+	if !asJSON {
+		outTitle(AppName, "doctor")
+		fmt.Print(rep.RenderReport())
+	}
 	if hasFlag(args, "--fix") {
-		outBlank()
-		done := DoctorFix(store, true)
-		if len(done) == 0 {
-			outNote("nothing here is fixable without you")
+		if !asJSON {
+			outBlank()
 		}
-		for _, d := range done {
-			outStep(d)
+		done := DoctorFix(store, true)
+		rep = Doctor(store)
+		if !asJSON {
+			if len(done) == 0 {
+				outNote("nothing here is fixable without you")
+			}
+			for _, d := range done {
+				outStep(d)
+			}
+		}
+	}
+	if asJSON {
+		if err := json.NewEncoder(os.Stdout).Encode(rep); err != nil {
+			return err
+		}
+	}
+	for _, f := range rep.Findings {
+		if f.Status == "fail" {
+			return fmt.Errorf("doctor found a failed check: %s", f.Check)
 		}
 	}
 	return nil
@@ -2082,42 +2212,42 @@ func cmdSudoSetup() error {
 // trust command names the path exactly — not a wildcard. The earlier
 // `add-trusted-cert *` entry let any local process trust any certificate.
 func installSudoAllowlist() error {
-	user := os.Getenv("USER")
-	dst := "/Library/LaunchDaemons/local.agent-local.front.plist"
-	content := fmt.Sprintf(`# agent-local: scoped passwordless root. Exact commands only.
-%[1]s ALL=(root) NOPASSWD: /usr/bin/tee /etc/hosts
-%[1]s ALL=(root) NOPASSWD: /usr/bin/tee /etc/pf.conf
-%[1]s ALL=(root) NOPASSWD: /usr/bin/tee %[2]s
-%[1]s ALL=(root) NOPASSWD: /usr/sbin/chown root\:wheel %[2]s
-%[1]s ALL=(root) NOPASSWD: /bin/chmod 644 %[2]s
-%[1]s ALL=(root) NOPASSWD: /bin/launchctl load %[2]s
-%[1]s ALL=(root) NOPASSWD: /bin/launchctl unload %[2]s
-%[1]s ALL=(root) NOPASSWD: /bin/rm %[2]s
+	account, err := user.Current()
+	if err != nil {
+		return err
+	}
+	if !regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`).MatchString(account.Username) {
+		return fmt.Errorf("unsupported account name")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := RunPrivileged(true, "/usr/bin/install", "-d", "-o", "root", "-g", "wheel", "-m", "0755", filepath.Dir(hostsHelper)); err != nil {
+		return err
+	}
+	if err := RunPrivileged(true, "/usr/bin/install", "-o", "root", "-g", "wheel", "-m", "0755", self, hostsHelper); err != nil {
+		return err
+	}
+	content := fmt.Sprintf(`# agent-local scoped operations
+%[1]s ALL=(root) NOPASSWD: %[2]s add *
+%[1]s ALL=(root) NOPASSWD: %[2]s remove *
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 alias 127.0.0.2
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 -alias 127.0.0.2
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 inet6 fd00\:a10c\:\:2 prefixlen 128 alias
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 inet6 fd00\:a10c\:\:2 -alias
-%[1]s ALL=(root) NOPASSWD: /sbin/pfctl -d
-%[1]s ALL=(root) NOPASSWD: /usr/bin/tee %[3]s
-%[1]s ALL=(root) NOPASSWD: /usr/bin/security add-trusted-cert -d -r trustRoot -p ssl -k /Library/Keychains/System.keychain %[3]s
-`, user, dst, trustStagePath)
-	tmp := P().Run() + "/sudoers.agent-local"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
-		return err
-	}
-	defer os.Remove(tmp)
-	// One privileged step, validated on the root-owned copy. Checking the
-	// user-writable file and then copying it left a window in which its content
-	// could change between the two; here the staged file is root's before
-	// visudo reads it. The staging name carries a dot, which sudo ignores, so
-	// a file that fails validation never applies and is removed.
-	const script = `set -e
-stage=/etc/sudoers.d/.agent-local.tmp
-cp "$1" "$stage"
-chown root:wheel "$stage"
-chmod 440 "$stage"
-if /usr/sbin/visudo -cf "$stage"; then mv "$stage" /etc/sudoers.d/agent-local; else rm -f "$stage"; exit 1; fi`
-	if err := RunPrivileged(true, "sh", "-c", script, "_", tmp); err != nil {
+`, account.Username, hostsHelper)
+	// Keep the generated policy in this invocation until it reaches a
+	// root-owned staging file. visudo must succeed before the rename.
+	const script = `set -eu
+stage=$(/usr/bin/mktemp /etc/sudoers.d/.agent-local.XXXXXX)
+trap '/bin/rm -f "$stage"' EXIT
+printf '%s' "$1" > "$stage"
+/usr/sbin/chown root:wheel "$stage"
+/bin/chmod 440 "$stage"
+/usr/sbin/visudo -cf "$stage"
+/bin/mv -f "$stage" /etc/sudoers.d/agent-local`
+	if err := RunPrivileged(true, "/bin/sh", "-c", script, "_", content); err != nil {
 		return fmt.Errorf("sudoers install failed: %w", err)
 	}
 	return nil
@@ -2176,9 +2306,9 @@ func cmdSetup(args []string) error {
 	// The allowlist first. It is the only step that must prompt, and installing it
 	// is what makes every repair after it passwordless.
 	if allow := sudoAllowlist(); allow != "" && allowlistCurrent(allow) {
-		outRow("root", "already allowed — no password needed")
+		outRow("root", "managed hosts and aliases already allowed")
 	} else {
-		outStep("asking for your password once; root operations never prompt again")
+		outStep("installing restricted permissions for managed hosts and loopback aliases")
 		if err := installSudoAllowlist(); err != nil {
 			// Not fatal: DoctorFix below can still prompt per step, and this is
 			// most often a cancelled dialog rather than a broken machine.

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"time"
 )
@@ -13,9 +14,18 @@ import (
 const AppName = "agent-local"
 
 // Version is the release stamp. The release pipeline overrides it with
-// `-ldflags "-X main.Version=…"`; a plain `go build` reports "dev" so a
+// `-ldflags "-X main.Version=…"`. A source build uses Go build metadata when a
 // hand-built binary is never mistaken for a published one.
 var Version = "dev"
+
+func init() {
+	if Version != "dev" {
+		return
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && strings.HasPrefix(info.Main.Version, "v") {
+		Version = strings.TrimPrefix(info.Main.Version, "v")
+	}
+}
 
 // buildCommit and buildDate are stamped by the release pipeline alongside
 // Version, so a bug report from a published binary is traceable to a commit.

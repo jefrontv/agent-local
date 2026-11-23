@@ -74,6 +74,10 @@ func serveMailUI(w http.ResponseWriter, req *http.Request, id, base, rest, title
 	case rest == "" || rest == "/":
 		mailUIList(w, id, base, title)
 	case rest == "/clear" && req.Method == "POST":
+		if !sameOrigin(req) {
+			http.Error(w, "cross-origin request", http.StatusForbidden)
+			return
+		}
 		ClearMail(id)
 		http.Redirect(w, req, base, http.StatusSeeOther)
 	case strings.HasPrefix(rest, "/msg/"):

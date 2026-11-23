@@ -275,6 +275,9 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 	if domain == "" {
 		domain = e.Store.DefaultDomain(slug)
 	}
+	if !ValidDomain(domain) {
+		return nil, fmt.Errorf("invalid domain %q", domain)
+	}
 	if !e.Store.DomainFree(domain) {
 		return nil, fmt.Errorf("domain %q already in use", domain)
 	}
@@ -315,7 +318,7 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 	site := &Site{
 		Name:       name,
 		Slug:       slug,
-		WorkDir:    filepath.Dir(targetWPDir),
+		WorkDir:    importedWorkDir(targetWPDir),
 		WPDir:      targetWPDir,
 		Branch:     "main",
 		PHPVersion: php,
@@ -350,7 +353,7 @@ func (e *Engine) ImportSite(o ImportOpts) (*Site, error) {
 		switch {
 		case o.SQLDump != "":
 			cb("database", "loading "+o.SQLDump)
-			if err := e.loadSQLFile(site, o.SQLDump); err != nil {
+			if err := e.loadSQLFile(site, o.SQLDump, cb); err != nil {
 				dropIfNew()
 				return nil, fmt.Errorf("load sql: %w", err)
 			}
@@ -516,7 +519,8 @@ func (e *Engine) copyDatabase(site *Site, srcDB, srcSocket, srcHost string, srcP
 	dumpArgs = append(dumpArgs, srcDB)
 	dump := exec.Command(dumpBin, dumpArgs...)
 	load := exec.Command(clientBin, "--no-defaults",
-		"-uroot", "--password="+DBRootPassword(), "-h127.0.0.1", "-P", fmt.Sprint(DefaultDBPort), site.DBName)
+		"-uroot", "-h127.0.0.1", "-P", fmt.Sprint(DefaultDBPort), site.DBName)
+	load.Env = append(os.Environ(), "MYSQL_PWD="+DBRootPassword())
 
 	dumpOut, err := dump.StdoutPipe()
 	if err != nil {
@@ -630,7 +634,7 @@ func streamFixCollations(dst io.Writer, src io.Reader) error {
 // loadSQLFile streams a .sql dump into the site's database through the same
 // collation fixer the live copy uses. Flat memory regardless of dump size.
 // Gzipped dumps are detected by magic bytes, not by file extension.
-func (e *Engine) loadSQLFile(site *Site, path string) error {
+func (e *Engine) loadSQLFile(site *Site, path string, progress ...func(string, string)) error {
 	if err := e.EnsureDB(); err != nil {
 		return err
 	}
@@ -644,8 +648,15 @@ func (e *Engine) loadSQLFile(site *Site, path string) error {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
+	if len(progress) > 0 && progress[0] != nil {
+		st, err := f.Stat()
+		if err != nil {
+			return err
+		}
+		src = &sqlProgressReader{Reader: f, total: st.Size(), report: progress[0], last: time.Now()}
+	}
 	if len(head) == 2 && head[0] == 0x1f && head[1] == 0x8b {
-		gz, gerr := gzip.NewReader(f)
+		gz, gerr := gzip.NewReader(src)
 		if gerr != nil {
 			return fmt.Errorf("gzip: %w", gerr)
 		}
@@ -659,7 +670,8 @@ func (e *Engine) loadSQLFile(site *Site, path string) error {
 		clientBin = filepath.Join(bindir, "mysql")
 	}
 	load := exec.Command(clientBin, "--no-defaults",
-		"-uroot", "--password="+DBRootPassword(), "-h127.0.0.1", "-P", fmt.Sprint(DefaultDBPort), site.DBName)
+		"-uroot", "-h127.0.0.1", "-P", fmt.Sprint(DefaultDBPort), site.DBName)
+	load.Env = append(os.Environ(), "MYSQL_PWD="+DBRootPassword())
 	loadIn, err := load.StdinPipe()
 	if err != nil {
 		return err
@@ -671,12 +683,22 @@ func (e *Engine) loadSQLFile(site *Site, path string) error {
 	}
 	streamErr := func() error {
 		defer loadIn.Close()
-		return streamFixCollations(loadIn, src)
+		return streamFixCollations(loadIn, &dumpSchemaFilter{reader: bufio.NewReaderSize(src, 64<<10)})
 	}()
 	if waitErr := load.Wait(); waitErr != nil {
 		return fmt.Errorf("%w (%s)", waitErr, tail(loadErr.String(), 300))
 	}
-	return streamErr
+	if streamErr != nil {
+		return streamErr
+	}
+	n, err := e.countTables(site)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("SQL import left database %s empty", site.DBName)
+	}
+	return nil
 }
 
 // ImportSQL loads a .sql (or .sql.gz) dump into an existing site's database,
@@ -687,7 +709,7 @@ func (e *Engine) loadSQLFile(site *Site, path string) error {
 // redirecting to wherever it came from.
 // With snapshot, the current contents are saved first — the dump about to be
 // replaced is often the only copy of local work.
-func (e *Engine) ImportSQL(slug, path string, rewriteURLs, snapshot bool) (string, error) {
+func (e *Engine) ImportSQL(slug, path string, rewriteURLs, snapshot bool, progress ...func(string, string)) (string, error) {
 	site := e.Store.Site(slug)
 	if site == nil {
 		return "", fmt.Errorf("no such site: %s", slug)
@@ -710,7 +732,7 @@ func (e *Engine) ImportSQL(slug, path string, rewriteURLs, snapshot bool) (strin
 	if err := e.ResetDB(slug); err != nil {
 		return "", err
 	}
-	if err := e.loadSQLFile(site, path); err != nil {
+	if err := e.loadSQLFile(site, path, progress...); err != nil {
 		if preImportPath != "" {
 			if rerr := e.rollbackLoad(slug, site, preImportPath); rerr != nil {
 				return "", fmt.Errorf("import %s failed: %w; auto-restore of pre-import snapshot also failed: %v", filepath.Base(path), err, rerr)
@@ -1005,9 +1027,10 @@ func (e *Engine) dumpDB(site *Site, w io.Writer) error {
 	if !fileExists(dump) {
 		dump = filepath.Join(bindir, "mysqldump")
 	}
-	cmd := exec.Command(dump, "--no-defaults", "-uroot", "--password="+DBRootPassword(), "-h127.0.0.1",
+	cmd := exec.Command(dump, "--no-defaults", "-uroot", "-h127.0.0.1",
 		"-P", fmt.Sprint(DefaultDBPort), "--single-transaction", "--quick",
 		"--default-character-set=utf8mb4", site.DBName)
+	cmd.Env = append(os.Environ(), "MYSQL_PWD="+DBRootPassword())
 	var errb strings.Builder
 	cmd.Stdout, cmd.Stderr = w, &errb
 	if err := cmd.Run(); err != nil {
@@ -1021,6 +1044,9 @@ func (e *Engine) ResetDB(slug string) error {
 	site := e.Store.Site(slug)
 	if site == nil {
 		return fmt.Errorf("no such site: %s", slug)
+	}
+	if !ownsDB(site) {
+		return fmt.Errorf("refusing to reset unmanaged database %s", site.DBName)
 	}
 	if err := requireSQLIdent("database name", site.DBName); err != nil {
 		return err
@@ -1197,7 +1223,7 @@ func (e *Engine) rewriteImportedURLs(site *Site, olds map[string]bool, cb func(s
 		// protocol-relative URLs, and each pass scans every table.
 		// guid is an identifier, not a URL; user_email shares the old host on
 		// sites whose staff use it, and rewriting it locks them out.
-		out, err := wpCLI(site, "search-replace", "//"+old, "//"+site.Domain,
+		out, err := wpCLI(site, "search-replace", "//"+regexp.QuoteMeta(old)+`(?![a-zA-Z0-9_.-])`, "//"+site.Domain, "--regex",
 			"--all-tables", "--skip-columns=guid,user_email", "--skip-plugins", "--skip-themes")
 		if err != nil && first == nil {
 			first = fmt.Errorf("//%s: %s", old, tail(out, 200))
@@ -1393,4 +1419,61 @@ func matchInstalledPHP(s *Store, want string) string {
 		}
 	}
 	return ""
+}
+
+func importedWorkDir(docroot string) string {
+	switch filepath.Base(docroot) {
+	case "wp", "public", "web", "public_html":
+		return filepath.Dir(docroot)
+	}
+	return docroot
+}
+
+type sqlProgressReader struct {
+	io.Reader
+	total, read int64
+	last        time.Time
+	report      func(string, string)
+}
+
+func (r *sqlProgressReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.read += int64(n)
+	if time.Since(r.last) >= 10*time.Second {
+		r.report("loading", fmt.Sprintf("%d of %d bytes", r.read, r.total))
+		r.last = time.Now()
+	}
+	return n, err
+}
+
+// Ignore schema selectors emitted by mysqldump. Forward large INSERT lines in
+// fragments so there is no maximum row size.
+type dumpSchemaFilter struct {
+	reader          *bufio.Reader
+	pending         []byte
+	continued, skip bool
+}
+
+var dumpSchemaDirective = regexp.MustCompile(`(?i)^\s*(USE\s+|CREATE\s+DATABASE\s+)`)
+
+func (f *dumpSchemaFilter) Read(p []byte) (int, error) {
+	for len(f.pending) == 0 {
+		frag, err := f.reader.ReadSlice('\n')
+		if len(frag) == 0 {
+			return 0, err
+		}
+		if !f.continued {
+			f.skip = dumpSchemaDirective.Match(frag)
+		}
+		f.continued = err == bufio.ErrBufferFull
+		if err != nil && err != io.EOF && !f.continued {
+			return 0, err
+		}
+		if !f.skip {
+			f.pending = frag
+		}
+	}
+	n := copy(p, f.pending)
+	f.pending = f.pending[n:]
+	return n, nil
 }

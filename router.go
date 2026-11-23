@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -35,7 +36,7 @@ func (r *Router) ListenAndServe(httpPort, httpsPort int) error {
 		MinVersion:     tls.VersionTLS12,
 	}
 	httpSrv := &http.Server{Handler: r, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
-	httpsSrv := &http.Server{Handler: r, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
+	httpsSrv := &http.Server{ErrorLog: log.New(tlsErrorWriter{log.Writer()}, "", log.Flags()), Handler: r, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	// Loopback only: these ports used to bind 0.0.0.0 and every local WordPress
 	// was reachable from the LAN. Dual-stack: macOS can drop IPv4-mapped
 	// connections on a single dual-stack listener.
@@ -148,7 +149,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// A request that gets this far is the site being used. The tooling paths
 	// above return early and refresh themselves, and counting a hub page as
 	// traffic would keep a site awake while nobody is looking at the site.
-	r.engine.act.stamp(fpmID)
+	if shared || req.Header.Get("X-Agent-Local-Probe") != "1" || !net.ParseIP(clientIP(req)).IsLoopback() {
+		r.engine.act.stamp(fpmID)
+	}
+	req.Header.Del("X-Agent-Local-Probe")
 
 	sw := &statusWriter{ResponseWriter: w}
 	scheme := "http"
@@ -348,7 +352,7 @@ var sensitiveSuffixes = []string{".sql", ".sql.gz", ".sql.zip", ".log", ".bak", 
 func (r *Router) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	host := hello.ServerName
 	r.mu.RLock()
-	if c, ok := r.certs[host]; ok {
+	if c, ok := r.certs[host]; ok && c.Leaf != nil && time.Until(c.Leaf.NotAfter) > 30*24*time.Hour {
 		r.mu.RUnlock()
 		return c, nil
 	}
@@ -519,6 +523,23 @@ func (r *Router) proxyFCGIScript(w http.ResponseWriter, req *http.Request, wpdir
 		https = "on"
 		serverPort = "443"
 	}
+	body := io.Reader(req.Body)
+	if req.ContentLength < 0 && req.Body != nil {
+		tmp, err := os.CreateTemp("", "agent-local-body-*")
+		if err != nil {
+			http.Error(w, "cannot buffer request", 500)
+			return
+		}
+		defer os.Remove(tmp.Name())
+		defer tmp.Close()
+		n, err := io.Copy(tmp, req.Body)
+		if err != nil {
+			http.Error(w, "cannot read request", 400)
+			return
+		}
+		body = io.NewSectionReader(tmp, 0, n)
+		req.ContentLength = n
+	}
 	contentLength := "0"
 	if req.ContentLength >= 0 {
 		contentLength = fmt.Sprint(req.ContentLength)
@@ -572,7 +593,7 @@ func (r *Router) proxyFCGIScript(w http.ResponseWriter, req *http.Request, wpdir
 	if req.Body != nil {
 		buf := make([]byte, 16*1024)
 		for {
-			n, rerr := req.Body.Read(buf)
+			n, rerr := body.Read(buf)
 			if n > 0 {
 				if err := fcgiWrite(conn, fcgiStdin, reqID, buf[:n]); err != nil {
 					return
@@ -767,4 +788,16 @@ func clientIP(req *http.Request) string {
 func remotePort(req *http.Request) string {
 	_, port, _ := net.SplitHostPort(req.RemoteAddr)
 	return port
+}
+
+type tlsErrorWriter struct{ io.Writer }
+
+func (w tlsErrorWriter) Write(p []byte) (int, error) {
+	_, line, ok := strings.Cut(strings.TrimSpace(string(p)), "http: TLS handshake error from ")
+	addr, reason, _ := strings.Cut(line, ": ")
+	host, _, err := net.SplitHostPort(addr)
+	if ok && err == nil && net.ParseIP(host).IsLoopback() && reason == "EOF" {
+		return len(p), nil
+	}
+	return w.Writer.Write(p)
 }

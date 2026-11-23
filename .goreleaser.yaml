@@ -13,7 +13,7 @@ project_name: agent-local
 
 before:
   hooks:
-    - go mod tidy
+    - go mod verify
 
 builds:
   - id: agent-local
@@ -63,6 +63,13 @@ archives:
       - src: docs/*.md
         dst: docs
 
+signs:
+  - id: checksums
+    artifacts: checksum
+    cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args: ["sign-blob", "--yes", "--bundle", "${signature}", "${artifact}"]
+
 checksum:
   name_template: checksums.txt
 
@@ -105,7 +112,7 @@ release:
     ```sh
     brew install jefrontv/tap/agent-local
     # or, no Homebrew:
-    curl -fsSL https://raw.githubusercontent.com/jefrontv/agent-local/main/install.sh | bash
+    curl -fsSL https://al.tools.efront.dev/install.sh | bash
     ```
 
     Already installed? `agent-local update`
@@ -113,8 +120,7 @@ release:
     ## First run
 
     ```sh
-    agent-local doctor --fix   # installs whatever is missing (PHP, MariaDB…)
-    agent-local sudo           # one-time: no more password prompts
+    agent-local setup
     agent-local create mysite
     ```
 
@@ -158,13 +164,13 @@ homebrew_casks:
       # keeps respawning a path that no longer exists.
       launchctl:
         - local.agent-local.front
+        - local.agent-local.daemon
     zap:
       # Only on `brew uninstall --zap`: this is every managed site and database.
       trash:
         - ~/.agent-local
     caveats: |
       agent-local installs the rest of the stack on demand:
-        agent-local doctor --fix    # PHP, MariaDB, wp-cli as needed
-        agent-local sudo            # one-time, removes every password prompt
+        agent-local setup
         agent-local create mysite
-      Root is used only for /etc/hosts entries and trusting local TLS certs.
+      Setup installs the managed hosts helper, configures loopback and trusts the local CA.

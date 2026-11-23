@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"html"
 	"log"
 	"net"
 	"os"
+	"os/user"
 	"strings"
 	"sync"
 	"time"
@@ -63,8 +65,7 @@ func AliasActive() bool {
 		return false
 	}
 	aliasAt = time.Now()
-	out, err := runCmdOut("ifconfig", "lo0")
-	aliasUp = err == nil && strings.Contains(out, "inet "+LoopbackAlias+" ")
+	aliasUp = interfaceHasAddr(LoopbackAlias)
 	return aliasUp
 }
 
@@ -92,6 +93,14 @@ func frontDaemonAlive() bool {
 // An alias without this is an orphan: something started the front by hand
 // once, and the first thing that kills it takes every bare URL down with it.
 func frontDaemonInstalled() bool { return fileExists(frontPlistPath()) }
+func unprivilegedFrontInstalled() bool {
+	account, err := user.Current()
+	if err != nil || account.Uid == "0" {
+		return false
+	}
+	b, err := os.ReadFile(frontPlistPath())
+	return err == nil && strings.Contains(string(b), "<key>UserName</key><string>"+html.EscapeString(account.Username)+"</string>")
+}
 
 // watchFront runs inside the router daemon: an alias with nothing serving
 // behind it is a machine where every bare URL refuses connections while the
@@ -114,11 +123,7 @@ func watchFront() {
 		}
 		lastTry = time.Now()
 		forgetAlias()
-		if err := EnsureLoopAlias(false); err != nil {
-			log.Printf("front: %s is up but nothing serves :80/:443 on it, and the front daemon could not be reinstalled silently (%v) — run: %s alias", LoopbackAlias, err, AppName)
-		} else {
-			log.Printf("front: reinstalled the bare-URL front daemon under launchd")
-		}
+		log.Printf("front: nothing serves :80/:443 on %s; run: agent-local alias", LoopbackAlias)
 	}
 }
 
@@ -190,6 +195,15 @@ func RemovePFWiring(interactive bool) error {
 // RemoveLoopAlias tears down the front daemon + alias.
 func RemoveLoopAlias(interactive bool) error {
 	_ = RunPrivileged(interactive, "/sbin/ifconfig", "lo0", "inet6", LoopbackAlias6, "-alias")
+	for _, family := range []string{"ipv4", "ipv6"} {
+		p := "/Library/LaunchDaemons/local.agent-local.alias." + family + ".plist"
+		if fileExists(p) {
+			_ = RunPrivileged(interactive, "/bin/launchctl", "unload", p)
+			if err := RunPrivileged(interactive, "/bin/rm", p); err != nil {
+				return err
+			}
+		}
+	}
 	dst := frontPlistPath()
 	_ = RunPrivileged(interactive, "/bin/launchctl", "unload", dst)
 	_ = RunPrivileged(interactive, "/bin/rm", dst)
@@ -208,11 +222,25 @@ func installFrontDaemon(interactive bool) error {
 	if err != nil {
 		return err
 	}
+	if !interactive {
+		return fmt.Errorf("run agent-local alias to install the front daemon")
+	}
+	account, err := user.Current()
+	if err != nil {
+		return err
+	}
+	if account.Uid == "0" {
+		return fmt.Errorf("run agent-local alias as the installing user")
+	}
+	if err := installAliasBootJobs(); err != nil {
+		return err
+	}
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 	<key>Label</key><string>local.agent-local.front</string>
+ <key>UserName</key><string>%s</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>%s</string><string>front-daemon</string><string>--run-dir</string><string>%s</string>
@@ -223,7 +251,7 @@ func installFrontDaemon(interactive bool) error {
 	<key>StandardErrorPath</key><string>%s</string>
 </dict>
 </plist>
-`, self, P().Run(), P().Log("front"), P().Log("front"))
+`, html.EscapeString(account.Username), html.EscapeString(self), html.EscapeString(P().Run()), html.EscapeString(P().Log("front")), html.EscapeString(P().Log("front")))
 	dst := frontPlistPath()
 	_ = RunPrivileged(interactive, "/bin/launchctl", "unload", dst)
 	if err := runPrivilegedWrite(interactive, dst, []byte(plist)); err != nil {
@@ -264,4 +292,20 @@ func httpDomainURL(domain string) string {
 func certPathFor(domain string) string {
 	cert, _ := CertPaths(domain)
 	return cert
+}
+
+func installAliasBootJobs() error {
+	for _, family := range []string{"ipv4", "ipv6"} {
+		label := "local.agent-local.alias." + family
+		args := "<string>alias</string><string>127.0.0.2</string>"
+		if family == "ipv6" {
+			args = "<string>inet6</string><string>fd00:a10c::2</string><string>prefixlen</string><string>128</string><string>alias</string>"
+		}
+		plist := "<plist version=\"1.0\"><dict><key>Label</key><string>" + label + "</string><key>ProgramArguments</key><array><string>/sbin/ifconfig</string><string>lo0</string>" + args + "</array><key>RunAtLoad</key><true/></dict></plist>"
+		path := "/Library/LaunchDaemons/" + label + ".plist"
+		if err := runPrivilegedWrite(true, path, []byte(plist)); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -60,7 +60,7 @@ func Doctor(store *Store) *DoctorReport {
 	// brew
 	if store.Inventory().Brew == "" {
 		add(Finding{Check: "homebrew", Status: "fail", Detail: "not installed",
-			FixHint: "install.sh installs it", FixCmd: "agent-local install brew", AutoFix: true})
+			FixHint: "install.sh installs it", FixCmd: "agent-local install brew"})
 	} else {
 		add(Finding{Check: "homebrew", Status: "ok", Detail: store.Inventory().Brew})
 	}
@@ -73,7 +73,7 @@ func Doctor(store *Store) *DoctorReport {
 	rts := store.Inventory().Runtimes()
 	if len(rts) == 0 {
 		add(Finding{Check: "php", Status: "fail", Detail: "no PHP toolchain found",
-			FixCmd: "agent-local install php 8.3", AutoFix: true})
+			FixCmd: "agent-local install php 8.3"})
 	} else {
 		detail := strings.Join(rts, ", ")
 		for _, rt := range store.Inventory().PHPs {
@@ -91,7 +91,7 @@ func Doctor(store *Store) *DoctorReport {
 	// database engine
 	if store.Inventory().MySQL.Bin == "" {
 		add(Finding{Check: "database", Status: "fail", Detail: "no MySQL/MariaDB engine",
-			FixCmd: "agent-local install mariadb", AutoFix: true})
+			FixCmd: "agent-local install mariadb"})
 	} else {
 		st := "ok"
 		detail := store.Inventory().MySQL.Kind + " " + store.Inventory().MySQL.Version
@@ -125,6 +125,8 @@ func Doctor(store *Store) *DoctorReport {
 	// and then every bare URL refuses while the alias looks fine.
 	if AliasActive() {
 		switch {
+		case frontDaemonInstalled() && !unprivilegedFrontInstalled():
+			add(Finding{Check: "bare-urls", Status: "warn", Detail: "front launchd job needs migration to the installing user", FixCmd: "agent-local alias", AutoFix: true, FixRoot: true})
 		case dialable(LoopbackAlias, 80):
 			add(Finding{Check: "bare-urls", Status: "ok", Detail: LoopbackAlias + " alias up, front daemon serving :80/:443"})
 		case yieldActive():
@@ -148,26 +150,28 @@ func Doctor(store *Store) *DoctorReport {
 	// the failure this finding exists to get ahead of.
 	switch allow := sudoAllowlist(); {
 	case allow == "":
-		add(Finding{Check: "sudo", Status: "warn", Detail: "no passwordless root — first hosts/cert write will stop and ask",
+		add(Finding{Check: "sudo", Status: "warn", Detail: "managed hosts helper needs installation",
 			FixCmd: "agent-local sudo", FixRoot: true})
 	case !allowlistCurrent(allow):
 		add(Finding{Check: "sudo", Status: "warn", Detail: "sudo allowlist predates this release — re-run agent-local sudo once",
 			FixCmd: "agent-local sudo", FixRoot: true})
 	default:
-		add(Finding{Check: "sudo", Status: "ok", Detail: "passwordless root for hosts, alias, front, cert trust"})
+		add(Finding{Check: "sudo", Status: "ok", Detail: "scoped access for managed hosts and loopback aliases"})
 	}
 
 	// per-site + per-worktree hosts entries
+	hostsBody, hostsErr := os.ReadFile("/etc/hosts")
+	hostsText := string(hostsBody)
 	var missingHosts []string
 	for _, site := range store.Sites() {
 		for _, d := range append([]string{site.Domain}, site.Aliases...) {
-			if !hostsHas(d) {
+			if !hostsHas(hostsText, d) {
 				missingHosts = append(missingHosts, d)
 			}
 		}
 	}
 	for _, w := range store.Worktrees() {
-		if !hostsHas(w.Domain) {
+		if !hostsHas(hostsText, w.Domain) {
 			missingHosts = append(missingHosts, w.Domain)
 		}
 	}
@@ -182,7 +186,7 @@ func Doctor(store *Store) *DoctorReport {
 	// Renames used to leave the old name behind (the store's domain index was
 	// not rebuilt, so the old name still looked like ours), and each one keeps
 	// resolving to this machine forever. Name them; --fix removes them.
-	if orphans := orphanHostsEntries(store); len(orphans) > 0 {
+	if orphans := orphanHostsIn(store, hostsBody); len(orphans) > 0 {
 		add(Finding{Check: "dns-orphans", Status: "warn",
 			Detail: "managed /etc/hosts lines for domains no site serves: " + strings.Join(orphans, ", "),
 			FixCmd: "agent-local doctor --fix", AutoFix: true, FixRoot: true})
@@ -191,7 +195,7 @@ func Doctor(store *Store) *DoctorReport {
 	// A domain can be "in hosts" and still resolve to LocalWP's leftover ::1 /
 	// 127.0.0.1 lines that sit above ours. Then the printed URL grows :10443
 	// and the bare name never hits 127.0.0.2:443.
-	if hostsBody, err := os.ReadFile("/etc/hosts"); err == nil {
+	if hostsErr == nil {
 		var shadowed []string
 		for _, d := range store.AllDomains() {
 			if ips := hostsShadowedIPs(string(hostsBody), d); len(ips) > 0 {
@@ -221,15 +225,28 @@ func Doctor(store *Store) *DoctorReport {
 	}
 
 	// certs
-	var missingCerts []string
+	var missingCerts, legacyCerts, untrusted []string
 	for _, d := range store.AllDomains() {
-		cert, _ := CertPaths(d)
-		if !fileExists(cert) {
+		st := InspectCert(d)
+		expiry, err := time.Parse(time.RFC3339, st.NotAfter)
+		if st.Exists && st.Issuer == d {
+			legacyCerts = append(legacyCerts, d)
+		}
+		if st.Exists && !st.Trusted {
+			untrusted = append(untrusted, d)
+		}
+		if !st.Exists || err != nil || time.Until(expiry) <= 30*24*time.Hour {
 			missingCerts = append(missingCerts, d)
 		}
 	}
+	if len(legacyCerts) > 0 {
+		add(Finding{Check: "legacy-certs", Status: "warn", Detail: fmt.Sprintf("%d self-signed site certificates", len(legacyCerts))})
+	}
+	if len(untrusted) > 0 {
+		add(Finding{Check: "tls-trust", Status: "warn", Detail: "untrusted: " + strings.Join(untrusted, ", ")})
+	}
 	if len(missingCerts) > 0 {
-		add(Finding{Check: "tls", Status: "warn", Detail: "no certs: " + strings.Join(missingCerts, ", "),
+		add(Finding{Check: "tls", Status: "warn", Detail: "missing, invalid or expiring certificates: " + strings.Join(missingCerts, ", "),
 			FixCmd: "agent-local doctor --fix", AutoFix: true})
 	} else if len(store.AllDomains()) > 0 {
 		add(Finding{Check: "tls", Status: "ok", Detail: "certs present for all domains"})
@@ -297,6 +314,7 @@ func Doctor(store *Store) *DoctorReport {
 	// the IPv6 alias and its hosts line, both families answer from the file and the
 	// five-second wait disappears — so the check is whether that is in place, not
 	// whether the suffix is ".local".
+	passing := 0
 	if dual := Alias6Active(); true {
 		for _, site := range store.Sites() {
 			if !strings.HasSuffix(site.Domain, ".local") {
@@ -308,18 +326,20 @@ func Doctor(store *Store) *DoctorReport {
 					Detail:  site.Domain + " ends in .local and there is no IPv6 alias — macOS asks mDNS for the AAAA and waits ~5s per lookup",
 					FixHint: "agent-local alias   (adds " + LoopbackAlias6 + " and the matching hosts line)",
 					FixCmd:  "agent-local alias", AutoFix: true})
-			case !hostsHasIP(site.Domain, LoopbackAlias6):
+			case !hostLineHasIP(hostsText, site.Domain, LoopbackAlias6):
 				add(Finding{Check: "dns:" + site.Slug, Status: "warn",
 					Detail:  site.Domain + " has no IPv6 hosts line, so its AAAA lookup still waits on mDNS (~5s)",
 					FixHint: "agent-local start " + site.Slug + "   (rewrites the entry)",
 					FixCmd:  "agent-local start " + site.Slug, AutoFix: true})
 			default:
-				add(Finding{Check: "dns:" + site.Slug, Status: "ok",
-					Detail: site.Domain + " answers both families from /etc/hosts (no mDNS wait)"})
+				passing++
 			}
 		}
 	}
 
+	if passing > 0 {
+		add(Finding{Check: "dns-local", Status: "ok", Detail: fmt.Sprintf("%d .local sites resolve over IPv4 and IPv6", passing)})
+	}
 	// Two local-dev tools, one pair of privileged ports. Ours is bound to the
 	// loopback alias, which coexists with a wildcard listener — but only if the
 	// wildcard got there first: BSD refuses a wildcard bind while any specific
@@ -438,23 +458,9 @@ func Doctor(store *Store) *DoctorReport {
 	return rep
 }
 
-// hostsHasIP reports whether /etc/hosts maps a domain at a specific address. The
-// IPv6 line is what keeps a .local name off the mDNS path, so its presence is a
-// separate question from whether the domain resolves at all.
-func hostsHasIP(domain, ip string) bool {
-	b, err := os.ReadFile("/etc/hosts")
-	if err != nil {
-		return false
-	}
-	return hostLineHasIP(string(b), domain, ip)
-}
-
-func hostsHas(domain string) bool {
-	b, err := os.ReadFile("/etc/hosts")
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(string(b), "\n") {
+func hostsHas(content, domain string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		line, _, _ = strings.Cut(line, "#")
 		fields := strings.Fields(line)
 		if len(fields) < 2 || strings.HasPrefix(fields[0], "#") {
 			continue
@@ -547,6 +553,7 @@ func brokenPHPFindings(inv *Inventory) []Finding {
 func DoctorFix(store *Store, interactive bool) []string {
 	var done []string
 	rep := Doctor(store)
+	fixedDNS := false
 	for _, f := range rep.Findings {
 		if !f.AutoFix || f.Status == "ok" {
 			continue
@@ -569,6 +576,15 @@ func DoctorFix(store *Store, interactive bool) []string {
 				done = append(done, fmt.Sprintf("removed %d orphaned /etc/hosts name(s): %s", len(orphans), strings.Join(orphans, ", ")))
 			}
 		case strings.HasPrefix(f.Check, "dns"):
+			if fixedDNS {
+				continue
+			}
+			fixedDNS = true
+			if !Alias6Active() {
+				if err := EnsureLoopAlias(interactive); err != nil {
+					done = append(done, "failed: IPv6 alias: "+err.Error())
+				}
+			}
 			// AllDomains, not just missing: EnsureHosts also comments leftover
 			// LocalWP ::1 / 127.0.0.1 lines that shadow our alias.
 			if n, err := EnsureHosts(interactive, store.AllDomains()); err != nil {

@@ -192,6 +192,9 @@ func finishWPInfo(info *wpInfo, site *Site) {
 // is the install's self-report, distinct from ProbeSite's outside-in view
 // of what a browser actually receives.
 func (e *Engine) WPInfo(site *Site) (*wpInfo, error) {
+	if err := e.requireWordPress(site, "wp_info"); err != nil {
+		return nil, err
+	}
 	out, err := wpCLI(site, "eval", wpInfoPHP)
 	body := extractJSONObject(out)
 	if err != nil || body == "" {

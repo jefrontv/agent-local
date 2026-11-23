@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // Priv handles the few operations that need root (hosts file, cert trust).
@@ -28,16 +30,23 @@ func RunPrivileged(interactive bool, argv ...string) error {
 		return fmt.Errorf("needs root: %s (run: agent-local sudo)", strings.Join(argv, " "))
 	}
 	script := fmt.Sprintf(`do shell script %s with administrator privileges`, quoteForOsascript(argv))
-	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	out, err := exec.Command(osascriptPath, "-e", script).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("authorization failed: %v %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
+// sudoPath and osascriptPath are the two ways to root. Tests point both at
+// /usr/bin/false so no test can reach the real allowlist or raise a dialog.
+var (
+	sudoPath      = "/usr/bin/sudo"
+	osascriptPath = "osascript"
+)
+
 // sudoN runs sudo with args (pure variadic so a slice can be spread).
 func sudoN(args ...string) error {
-	cmd := exec.Command("sudo", args...)
+	cmd := exec.Command(sudoPath, args...)
 	cmd.Stdin = nil
 	return cmd.Run()
 }
@@ -59,16 +68,13 @@ func sudoAllowlist() string {
 }
 
 // allowlistCurrent reports whether a `sudo -n -l` listing covers this
-// release's scoped operations. A general NOPASSWD grant covers everything;
-// otherwise the template's newest entry — cert trust against the fixed
-// staging path — marks it current. Anything older (staged-file cp entries,
-// the cert-trust wildcard, or the 0.22.x template that dropped cert trust
-// entirely) fails this even though its own entries still pass.
+// release's managed hosts helper and excludes the retired broad grants.
 func allowlistCurrent(listing string) bool {
 	if strings.Contains(listing, "NOPASSWD: ALL") {
 		return true
 	}
-	return strings.Contains(listing, "add-trusted-cert") && strings.Contains(listing, trustStagePath)
+	return strings.Contains(listing, hostsHelper+" add *") && strings.Contains(listing, hostsHelper+" remove *") && !strings.Contains(listing, "add-trusted-cert") && !strings.Contains(listing, "/usr/bin/tee")
+
 }
 
 // SetupState reports the two machine-level things a caller should know before it
@@ -228,7 +234,7 @@ func EnsureHosts(interactive bool, domains []string) (int, error) {
 		}
 		newContent += strings.Join(add, "\n") + "\n"
 	}
-	if err := writeRootFile("/etc/hosts", newContent, interactive); err != nil {
+	if err := updateManagedHosts("add", domains, newContent, interactive); err != nil {
 		return 0, err
 	}
 	return changed, nil
@@ -433,7 +439,7 @@ func RemoveHosts(interactive bool, domains []string) error {
 	if removed == 0 {
 		return nil
 	}
-	return writeRootFile("/etc/hosts", strings.Join(keep, "\n"), interactive)
+	return updateManagedHosts("remove", domains, strings.Join(keep, "\n"), interactive)
 }
 
 // orphanHostsEntries lists the domains on agent-local-managed /etc/hosts lines
@@ -444,6 +450,9 @@ func orphanHostsEntries(store *Store) []string {
 	if err != nil {
 		return nil
 	}
+	return orphanHostsIn(store, b)
+}
+func orphanHostsIn(store *Store, b []byte) []string {
 	served := map[string]bool{}
 	for _, d := range store.AllDomains() {
 		served[d] = true
@@ -485,7 +494,7 @@ func runPrivilegedWrite(interactive bool, path string, content []byte) error {
 	cmd := fmt.Sprintf("echo %s | base64 -D | /usr/bin/tee %s", shQuote(b64), shQuote(path))
 	script := fmt.Sprintf(`do shell script "%s" with administrator privileges`,
 		strings.ReplaceAll(strings.ReplaceAll(cmd, `\`, `\\`), `"`, `\"`))
-	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	out, err := exec.Command(osascriptPath, "-e", script).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("authorization failed: %v %s", err, strings.TrimSpace(string(out)))
 	}
@@ -494,7 +503,7 @@ func runPrivilegedWrite(interactive bool, path string, content []byte) error {
 
 // sudoNStdin runs sudo -n with args, feeding stdin bytes to the child.
 func sudoNStdin(stdin []byte, args ...string) error {
-	cmd := exec.Command("sudo", append([]string{"-n"}, args...)...)
+	cmd := exec.Command(sudoPath, append([]string{"-n"}, args...)...)
 	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -513,4 +522,47 @@ func writeRootFile(path, content string, interactive bool) error {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
+}
+
+const hostsHelper = "/Library/PrivilegedHelperTools/agent-local-hosts"
+
+func runHostsHelper(args []string) error {
+	if os.Geteuid() != 0 || len(args) < 2 {
+		return fmt.Errorf("expected add or remove and domains")
+	}
+	for _, d := range args[1:] {
+		if !ValidDomain(d) {
+			return fmt.Errorf("invalid domain %q", d)
+		}
+	}
+	// Serialize the complete read-modify-write across independent callers.
+	lock, err := os.OpenFile("/var/run/agent-local-hosts.lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	switch args[0] {
+	case "add":
+		_, err := EnsureHosts(false, args[1:])
+		return err
+	case "remove":
+		return RemoveHosts(false, args[1:])
+	default:
+		return fmt.Errorf("unknown hosts operation")
+	}
+}
+func updateManagedHosts(op string, domains []string, content string, interactive bool) error {
+	if os.Geteuid() == 0 && filepath.Base(os.Args[0]) == "agent-local-hosts" {
+		return atomicWriteMode("/etc/hosts", []byte(content), 0644)
+	}
+	if fileExists(hostsHelper) {
+		return RunPrivileged(interactive, append([]string{hostsHelper, op}, domains...)...)
+	}
+	if !interactive {
+		return fmt.Errorf("needs root: run agent-local sudo")
+	}
+	return writeRootFile("/etc/hosts", content, interactive)
 }

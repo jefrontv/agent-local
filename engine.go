@@ -203,18 +203,12 @@ func (e *Engine) dbExecIn(pass, db, sql string) (string, error) {
 		client = "mysql"
 	}
 	args := []string{"--no-defaults", "-uroot", "-h127.0.0.1", "-P", fmt.Sprint(DefaultDBPort), "--batch"}
-	if pass != "" {
-		// Passed as an argument, not on stdin: the port is loopback-only and the
-		// process list is already visible to this user, who owns the password
-		// file anyway.
-		args = append(args, "--password="+pass)
-	}
 	if db != "" {
 		args = append(args, "-D", db)
 	}
 	args = append(args, "-e", sql)
 	cmd := exec.Command(client, args...)
-	cmd.Env = append(os.Environ(), "PATH="+bindir+":"+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "MYSQL_PWD="+pass, "PATH="+bindir+":"+os.Getenv("PATH"))
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -403,6 +397,12 @@ func (e *Engine) StartFPM(id, wpdir, phpVersion string) error {
 	e.reapStrayFPM(id, 0)
 	if err := e.writeFPMConf(id, wpdir, phpVersion); err != nil {
 		return err
+	}
+	logPath := e.fpmLog(id)
+	if st, err := os.Stat(logPath); err == nil && st.Size() > 10<<20 {
+		if err := os.Rename(logPath, logPath+".1"); err != nil {
+			return err
+		}
 	}
 	os.Remove(e.fpmSock(id)) // stale socket
 	proc := &Proc{

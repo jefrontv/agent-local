@@ -197,7 +197,14 @@ func (h *JobHub) List() []JobView {
 	out := make([]JobView, 0, len(h.order))
 	for i := len(h.order) - 1; i >= 0; i-- {
 		if j := h.jobs[h.order[i]]; j != nil {
-			out = append(out, j.Snapshot())
+			view := j.Snapshot()
+			if site, ok := view.Result.(*Site); ok && site != nil {
+				copy := *site
+				copy.DBPass = ""
+				copy.AdminPass = ""
+				view.Result = &copy
+			}
+			out = append(out, view)
 		}
 	}
 	return out

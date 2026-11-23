@@ -112,3 +112,27 @@ type kindError struct {
 func (e *kindError) Error() string {
 	return e.slug + " is a " + e.kind.Label() + " site; " + e.tool + " only applies to WordPress"
 }
+
+// healKind replaces a placeholder kind with whatever the docroot now holds.
+// "empty" is the only placeholder, so every other site costs nothing, and the
+// store is written only when the answer actually changed.
+func (e *Engine) healKind(site *Site) {
+	if site.Kind != KindEmpty {
+		return
+	}
+	detected := DetectKind(site.WPDir)
+	if detected == KindEmpty {
+		return
+	}
+	site.Kind = detected
+	e.Store.PutSite(site)
+	_ = e.Store.Save()
+}
+
+func (e *Engine) requireWordPress(site *Site, tool string) error {
+	e.healKind(site)
+	if !site.IsWordPress() {
+		return notWordPress(site, tool)
+	}
+	return nil
+}
