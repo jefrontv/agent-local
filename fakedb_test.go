@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,21 +70,10 @@ func withFakeDB(t *testing.T, e *Engine) string {
 	if err := e.Store.Save(); err != nil {
 		t.Fatal(err)
 	}
-	if !portOpen(DefaultDBPort) {
-		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", DefaultDBPort))
-		if err != nil {
-			t.Fatal(err)
-		}
-		go func() {
-			for {
-				c, err := ln.Accept()
-				if err != nil {
-					return
-				}
-				c.Close()
-			}
-		}()
-		t.Cleanup(func() { ln.Close() })
-	}
+	// The fake is always up. A real port probe made this pass on a machine
+	// running MariaDB and fail on CI, where nothing reliably held the port.
+	old := dbPortOpen
+	dbPortOpen = func() bool { return true }
+	t.Cleanup(func() { dbPortOpen = old })
 	return state
 }

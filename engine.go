@@ -56,7 +56,11 @@ func (e *Engine) dbLog() string  { return P().Log("mysql") }
 func (e *Engine) dbPid() string  { return filepath.Join(P().Run(), "mysql.pid") }
 
 // DBRunning reports whether the shared DB server is up.
-func (e *Engine) DBRunning() bool { return portOpen(DefaultDBPort) }
+func (e *Engine) DBRunning() bool { return dbPortOpen() }
+
+// dbPortOpen is DBRunning's probe. Tests with a fake database replace it, so
+// whether they pass does not depend on what else holds the port on the host.
+var dbPortOpen = func() bool { return portOpen(DefaultDBPort) }
 
 func (e *Engine) EnsureDB() error {
 	inv := e.Store.Inventory()
