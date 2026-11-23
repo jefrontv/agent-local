@@ -7,8 +7,10 @@ import (
 	"net"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -93,13 +95,50 @@ func frontDaemonAlive() bool {
 // An alias without this is an orphan: something started the front by hand
 // once, and the first thing that kills it takes every bare URL down with it.
 func frontDaemonInstalled() bool { return fileExists(frontPlistPath()) }
-func unprivilegedFrontInstalled() bool {
-	account, err := user.Current()
-	if err != nil || account.Uid == "0" {
+
+// frontHelper is the root-owned copy of agent-local that the front
+// LaunchDaemon runs. Root running a file only root can replace means no user
+// process can swap the code launchd starts as root.
+const frontHelper = "/Library/PrivilegedHelperTools/agent-local-front"
+
+// frontLogPath is root-owned too: a root process appending to a file in the
+// user's home would follow whatever that path is swapped for.
+const frontLogPath = "/Library/Logs/agent-local-front.log"
+
+// frontHelperInstalled reports whether the front job runs the root-owned
+// helper. Any other program (the legacy ~/.local/bin binary run as root, or a
+// UserName job that macOS refuses the ports) needs `agent-local alias`.
+func frontHelperInstalled() bool {
+	b, err := os.ReadFile(frontPlistPath())
+	return err == nil && frontPlistUsesHelper(b) && rootOwned(frontHelper)
+}
+
+// frontPlistUsesHelper is frontHelperInstalled's reading of the plist.
+func frontPlistUsesHelper(plist []byte) bool {
+	s := string(plist)
+	return strings.Contains(s, "<string>"+frontHelper+"</string>") && !strings.Contains(s, "<key>UserName</key>")
+}
+
+// rootOwned reports whether path is a regular file that root owns in a
+// root-owned directory, neither writable by group or others, so only root can
+// change what runs from it.
+func rootOwned(path string) bool {
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() {
 		return false
 	}
-	b, err := os.ReadFile(frontPlistPath())
-	return err == nil && strings.Contains(string(b), "<key>UserName</key><string>"+html.EscapeString(account.Username)+"</string>")
+	for _, p := range []string{path, filepath.Dir(path)} {
+		if p != path {
+			if fi, err = os.Stat(p); err != nil {
+				return false
+			}
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok || st.Uid != 0 || fi.Mode().Perm()&0o022 != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // watchFront runs inside the router daemon: an alias with nothing serving
@@ -194,22 +233,19 @@ func RemovePFWiring(interactive bool) error {
 
 // RemoveLoopAlias tears down the front daemon + alias.
 func RemoveLoopAlias(interactive bool) error {
-	_ = RunPrivileged(interactive, "/sbin/ifconfig", "lo0", "inet6", LoopbackAlias6, "-alias")
-	for _, family := range []string{"ipv4", "ipv6"} {
-		p := "/Library/LaunchDaemons/local.agent-local.alias." + family + ".plist"
-		if fileExists(p) {
-			_ = RunPrivileged(interactive, "/bin/launchctl", "unload", p)
-			if err := RunPrivileged(interactive, "/bin/rm", p); err != nil {
-				return err
-			}
-		}
-	}
-	dst := frontPlistPath()
-	_ = RunPrivileged(interactive, "/bin/launchctl", "unload", dst)
-	_ = RunPrivileged(interactive, "/bin/rm", dst)
-	_ = RunPrivileged(interactive, "/sbin/ifconfig", "lo0", "-alias", LoopbackAlias)
+	// One root script, so one password dialog at most (see installFrontDaemon).
+	const script = `/sbin/ifconfig lo0 inet6 "$2" -alias 2>/dev/null
+for p in /Library/LaunchDaemons/local.agent-local.alias.ipv4.plist /Library/LaunchDaemons/local.agent-local.alias.ipv6.plist "$1"; do
+	[ -e "$p" ] || continue
+	/bin/launchctl unload "$p" 2>/dev/null
+	/bin/rm -f "$p" || exit 1
+done
+/bin/rm -f "$4"
+/sbin/ifconfig lo0 -alias "$3" 2>/dev/null
+exit 0`
+	err := RunPrivileged(interactive, "/bin/sh", "-c", script, "_", frontPlistPath(), LoopbackAlias6, LoopbackAlias, frontHelper)
 	forgetAlias()
-	return nil
+	return err
 }
 
 // installFrontDaemon writes + loads the root LaunchDaemon running
@@ -232,15 +268,43 @@ func installFrontDaemon(interactive bool) error {
 	if account.Uid == "0" {
 		return fmt.Errorf("run agent-local alias as the installing user")
 	}
-	if err := installAliasBootJobs(); err != nil {
-		return err
-	}
-	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+	plist := frontPlist(P().Run())
+	v4, v6 := aliasBootPlists()
+	// One root script for every file and launchctl call, so a machine without
+	// the allowlist sees one password dialog: each RunPrivileged call that
+	// sudo -n refuses opens its own, and this install used to be seven.
+	// The helper and each plist are staged in a root-only directory and moved
+	// into place, so nothing is ever half written where launchd reads it.
+	const script = `set -eu
+dir=$(/usr/bin/mktemp -d)
+trap '/bin/rm -rf "$dir"' EXIT
+put() {
+	printf '%s' "$2" > "$dir/stage"
+	/usr/sbin/chown root:wheel "$dir/stage"
+	/bin/chmod 644 "$dir/stage"
+	/bin/mv -f "$dir/stage" "$1"
+}
+/usr/bin/install -d -o root -g wheel -m 0755 "$(/usr/bin/dirname "$5")"
+/usr/bin/install -o root -g wheel -m 0755 "$6" "$dir/helper"
+/bin/mv -f "$dir/helper" "$5"
+put /Library/LaunchDaemons/local.agent-local.alias.ipv4.plist "$1"
+put /Library/LaunchDaemons/local.agent-local.alias.ipv6.plist "$2"
+/bin/launchctl unload "$4" 2>/dev/null || true
+put "$4" "$3"
+/bin/launchctl load "$4"`
+	return RunPrivileged(interactive, "/bin/sh", "-c", script, "_", v4, v6, plist, frontPlistPath(), frontHelper, self)
+}
+
+// frontPlist is the LaunchDaemon for the front. It runs as root, because macOS
+// lets an ordinary user bind ports below 1024 only on the wildcard address and
+// the front binds 127.0.0.2. What keeps that safe is the program: frontHelper,
+// a copy only root can replace, never the user-writable installed binary.
+func frontPlist(runDir string) string {
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 	<key>Label</key><string>local.agent-local.front</string>
- <key>UserName</key><string>%s</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>%s</string><string>front-daemon</string><string>--run-dir</string><string>%s</string>
@@ -251,15 +315,7 @@ func installFrontDaemon(interactive bool) error {
 	<key>StandardErrorPath</key><string>%s</string>
 </dict>
 </plist>
-`, html.EscapeString(account.Username), html.EscapeString(self), html.EscapeString(P().Run()), html.EscapeString(P().Log("front")), html.EscapeString(P().Log("front")))
-	dst := frontPlistPath()
-	_ = RunPrivileged(interactive, "/bin/launchctl", "unload", dst)
-	if err := runPrivilegedWrite(interactive, dst, []byte(plist)); err != nil {
-		return err
-	}
-	_ = RunPrivileged(interactive, "/usr/sbin/chown", "root:wheel", dst)
-	_ = RunPrivileged(interactive, "/bin/chmod", "644", dst)
-	return RunPrivileged(interactive, "/bin/launchctl", "load", dst)
+`, html.EscapeString(frontHelper), html.EscapeString(runDir), html.EscapeString(frontLogPath), html.EscapeString(frontLogPath))
 }
 
 // BareURL is the URL a browser should use for a site: https, because every domain
@@ -294,7 +350,10 @@ func certPathFor(domain string) string {
 	return cert
 }
 
-func installAliasBootJobs() error {
+// aliasBootPlists are the boot jobs that restore the loopback aliases, which
+// lo0 forgets on every restart. installFrontDaemon writes them as root.
+func aliasBootPlists() (ipv4, ipv6 string) {
+	var out []string
 	for _, family := range []string{"ipv4", "ipv6"} {
 		label := "local.agent-local.alias." + family
 		args := "<string>alias</string><string>127.0.0.2</string>"
@@ -302,10 +361,7 @@ func installAliasBootJobs() error {
 			args = "<string>inet6</string><string>fd00:a10c::2</string><string>prefixlen</string><string>128</string><string>alias</string>"
 		}
 		plist := "<plist version=\"1.0\"><dict><key>Label</key><string>" + label + "</string><key>ProgramArguments</key><array><string>/sbin/ifconfig</string><string>lo0</string>" + args + "</array><key>RunAtLoad</key><true/></dict></plist>"
-		path := "/Library/LaunchDaemons/" + label + ".plist"
-		if err := runPrivilegedWrite(true, path, []byte(plist)); err != nil {
-			return err
-		}
+		out = append(out, plist)
 	}
-	return nil
+	return out[0], out[1]
 }

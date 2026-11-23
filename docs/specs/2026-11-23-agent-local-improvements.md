@@ -212,6 +212,7 @@ Addresses remaining UX, test gap, docs drift, and workspace hygiene items (F40â€
 
 ### Decisions needed before Phase 2 / Phase 4
 1. **Unprivileged `127.0.0.2:80/:443` bind (Phase 2 / F8):** Verify on this macOS version whether launchd with `UserName` binds `127.0.0.2:80/:443` without root, or commit straight to the root-owned `/Library/PrivilegedHelperTools/agent-local-front` helper.
+   **Resolved 2026-11-23:** on macOS 26 (Darwin 25.6) the `UserName` job fails with `bind: permission denied`, because an unprivileged process may bind ports below 1024 only on the wildcard address. The front runs as root from the root-owned helper, logging to `/Library/Logs/agent-local-front.log`. A legacy root job keeps serving after an update without following binary changes, and `doctor` sends it to `agent-local alias`, which needs one password prompt.
 2. **Release signing tool (Phase 2 / F29):** Choose `minisign` (tiny embedded verifier, single CI secret key) vs `cosign` (keyless/OIDC or keypair) for `checksums.txt` signing.
 3. **`bitbucket` remote (Phase 4 hygiene):** Push `origin/main` to `bitbucket` (`git@ssh.bitbucket.org:efront_au/agent-local.git`) or remove the stale remote.
 

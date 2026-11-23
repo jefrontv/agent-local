@@ -2223,12 +2223,6 @@ func installSudoAllowlist() error {
 	if err != nil {
 		return err
 	}
-	if err := RunPrivileged(true, "/usr/bin/install", "-d", "-o", "root", "-g", "wheel", "-m", "0755", filepath.Dir(hostsHelper)); err != nil {
-		return err
-	}
-	if err := RunPrivileged(true, "/usr/bin/install", "-o", "root", "-g", "wheel", "-m", "0755", self, hostsHelper); err != nil {
-		return err
-	}
 	content := fmt.Sprintf(`# agent-local scoped operations
 %[1]s ALL=(root) NOPASSWD: %[2]s add *
 %[1]s ALL=(root) NOPASSWD: %[2]s remove *
@@ -2237,9 +2231,13 @@ func installSudoAllowlist() error {
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 inet6 fd00\:a10c\:\:2 prefixlen 128 alias
 %[1]s ALL=(root) NOPASSWD: /sbin/ifconfig lo0 inet6 fd00\:a10c\:\:2 -alias
 `, account.Username, hostsHelper)
+	// The helper and the policy go in one root script: without an allowlist
+	// every separate root call is its own password dialog.
 	// Keep the generated policy in this invocation until it reaches a
 	// root-owned staging file. visudo must succeed before the rename.
 	const script = `set -eu
+/usr/bin/install -d -o root -g wheel -m 0755 "$2"
+/usr/bin/install -o root -g wheel -m 0755 "$3" "$4"
 stage=$(/usr/bin/mktemp /etc/sudoers.d/.agent-local.XXXXXX)
 trap '/bin/rm -f "$stage"' EXIT
 printf '%s' "$1" > "$stage"
@@ -2247,7 +2245,7 @@ printf '%s' "$1" > "$stage"
 /bin/chmod 440 "$stage"
 /usr/sbin/visudo -cf "$stage"
 /bin/mv -f "$stage" /etc/sudoers.d/agent-local`
-	if err := RunPrivileged(true, "/bin/sh", "-c", script, "_", content); err != nil {
+	if err := RunPrivileged(true, "/bin/sh", "-c", script, "_", content, filepath.Dir(hostsHelper), self, hostsHelper); err != nil {
 		return fmt.Errorf("sudoers install failed: %w", err)
 	}
 	return nil

@@ -29,15 +29,17 @@ func RunFrontDaemon(args []string) error {
 	}
 	log.Printf("front-daemon: %s:80 -> :%d, %s:443 -> :%d (yield file %s)",
 		LoopbackAlias, DefaultHTTPPort, LoopbackAlias, DefaultHTTPSPort, frontYieldPath())
-	// A legacy root plist must be replaced by the user before this process
-	// may follow an updated executable: watching the binary as root is what
-	// re-runs a user-writable file as root on every update. Refusing to serve
-	// would not help, though. launchd keeps relaunching this same path as root
-	// either way, so exiting only took every bare URL down after an update.
-	// Serve, skip the watch, and let doctor name the fix (agent-local alias).
-	if os.Geteuid() == 0 {
-		log.Printf("front-daemon: running as root from a legacy LaunchDaemon; binary updates are not followed until agent-local alias reinstalls the unprivileged front")
-	} else if self, err := os.Executable(); err == nil {
+	// Following an updated executable as root is only safe when only root can
+	// update it. A legacy plist runs the user-writable ~/.local/bin binary as
+	// root, and watching that would re-run whatever lands there as root. Refusing
+	// to serve would not help: launchd relaunches the same path either way, and
+	// exiting only took every bare URL down after an update. Serve, skip the
+	// watch, and let doctor name the fix (agent-local alias installs the helper).
+	if self, err := os.Executable(); err != nil {
+		log.Printf("front-daemon: cannot find own executable: %v", err)
+	} else if os.Geteuid() == 0 && !rootOwned(self) {
+		log.Printf("front-daemon: running as root from %s, which root does not own; binary updates are not followed until agent-local alias installs %s", self, frontHelper)
+	} else {
 		go watchBinary(self, binaryWatchEvery, func(v string) {
 			log.Printf("front-daemon: binary on disk is now %s (running %s) — exiting for launchd to restart", v, Version)
 			os.Exit(3)

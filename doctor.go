@@ -125,8 +125,13 @@ func Doctor(store *Store) *DoctorReport {
 	// and then every bare URL refuses while the alias looks fine.
 	if AliasActive() {
 		switch {
-		case frontDaemonInstalled() && !unprivilegedFrontInstalled():
-			add(Finding{Check: "bare-urls", Status: "warn", Detail: "front launchd job needs migration to the installing user", FixCmd: "agent-local alias", AutoFix: true, FixRoot: true})
+		case frontDaemonInstalled() && !frontHelperInstalled():
+			// A legacy root front still serves; a UserName job never can.
+			status, detail := "warn", "front launchd job does not run the root-owned helper; reinstall it (one password prompt)"
+			if !dialable(LoopbackAlias, 80) && !yieldActive() {
+				status, detail = "fail", "nothing serves :80/:443 on "+LoopbackAlias+" and the front launchd job does not run the root-owned helper; reinstall it (one password prompt)"
+			}
+			add(Finding{Check: "bare-urls", Status: status, Detail: detail, FixCmd: "agent-local alias", AutoFix: true, FixRoot: true})
 		case dialable(LoopbackAlias, 80):
 			add(Finding{Check: "bare-urls", Status: "ok", Detail: LoopbackAlias + " alias up, front daemon serving :80/:443"})
 		case yieldActive():
