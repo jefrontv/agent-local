@@ -155,10 +155,8 @@ homebrew_casks:
         # The binary is ad-hoc signed, not notarized, so a downloaded copy
         # carries com.apple.quarantine and macOS refuses to run it. Clearing it
         # here avoids a first-run "developer cannot be verified" death.
-        install: |
-          if OS.mac?
-            system "xattr", "-dr", "com.apple.quarantine", "#{staged_path}/agent-local"
-          end
+        install_steps: |
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/agent-local"]
     uninstall:
       # Stop the root front daemon before the binary disappears, or launchd
       # keeps respawning a path that no longer exists.
