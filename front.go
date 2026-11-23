@@ -118,6 +118,33 @@ func waitForRival() {
 	log.Printf("front-daemon: nothing claimed :80 within %s — taking %s:80/443", startupGrace, LoopbackAlias)
 }
 
+// ensureAliasBound puts the loopback aliases back on lo0, which macOS does
+// not keep across a reboot. The boot jobs agent-local alias installs do this
+// too, but a machine still on the legacy root front has none until alias runs,
+// and its front used to restore the alias itself. The front runs as root
+// either way, so this needs no prompt.
+func ensureAliasBound() {
+	if os.Geteuid() != 0 {
+		return
+	}
+	if !interfaceHasAddr(LoopbackAlias) {
+		if out, err := runCmdOut("/sbin/ifconfig", "lo0", "alias", LoopbackAlias); err != nil {
+			log.Printf("front-daemon: could not add the %s alias: %v %s", LoopbackAlias, err, strings.TrimSpace(out))
+		} else {
+			log.Printf("front-daemon: re-added the %s alias to lo0 (it does not survive a reboot)", LoopbackAlias)
+		}
+	}
+	// IPv6 keeps ".local" domains off the five-second mDNS path. Its absence
+	// is not fatal, so it never blocks the IPv4 half.
+	if !interfaceHasAddr(LoopbackAlias6) {
+		if out, err := runCmdOut("/sbin/ifconfig", "lo0", "inet6", LoopbackAlias6, "prefixlen", "128", "alias"); err != nil {
+			log.Printf("front-daemon: could not add the %s alias (.local will be slow): %v %s", LoopbackAlias6, err, strings.TrimSpace(out))
+		} else {
+			log.Printf("front-daemon: re-added the %s alias to lo0", LoopbackAlias6)
+		}
+	}
+}
+
 // dialableAlias reports whether lo0 carries the address the listeners are
 // bound to. Only the IPv4 half counts: bind() serves IPv6 when it is present
 // and carries on without it, so a machine where the ULA alias cannot be added
@@ -132,6 +159,7 @@ func dialableAlias() bool {
 // supervise keeps the listeners in the right state forever: bound normally,
 // released while a competing router is starting up.
 func (f *frontDaemon) supervise() {
+	ensureAliasBound()
 	waitForRival()
 	f.bind()
 	var pausedAt time.Time
@@ -141,8 +169,9 @@ func (f *frontDaemon) supervise() {
 		case f.paused && yieldActive():
 			// explicitly requested: wait it out, however long it asked for
 		case !dialableAlias():
-			// The root one-shot boot job owns the alias. Release stale sockets
-			// until launchd has restored it, then resume binding.
+			// A reboot clears lo0 aliases. Put them back, and release stale
+			// sockets until the address is there again, then resume binding.
+			ensureAliasBound()
 			if !f.paused {
 				f.release()
 			}

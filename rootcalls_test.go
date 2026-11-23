@@ -88,3 +88,19 @@ func TestRootOwnedRefusesUserFiles(t *testing.T) {
 		t.Error("a directory counts as a root-owned executable")
 	}
 }
+
+// A machine upgraded from 0.36.1 has no hosts helper yet, only the old
+// allowlist's passwordless tee /etc/hosts. Background callers (the daemon, an
+// agent creating a site) must keep writing hosts entries through it.
+func TestHostsWriteWithoutHelperUsesOldAllowlist(t *testing.T) {
+	if fileExists(hostsHelper) {
+		t.Skip("this machine has the hosts helper, which takes precedence")
+	}
+	calls := countRootCalls(t)
+	if err := updateManagedHosts("add", []string{"demo.test"}, "127.0.0.1 demo.test\n", false); err != nil {
+		t.Fatalf("non-interactive hosts write without the helper: %v", err)
+	}
+	if got := calls(); len(got) != 1 || got[0] != "/usr/bin/tee" {
+		t.Errorf("hosts write reached root as %v, want one tee", got)
+	}
+}

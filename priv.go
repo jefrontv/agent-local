@@ -561,8 +561,9 @@ func updateManagedHosts(op string, domains []string, content string, interactive
 	if fileExists(hostsHelper) {
 		return RunPrivileged(interactive, append([]string{hostsHelper, op}, domains...)...)
 	}
-	if !interactive {
-		return fmt.Errorf("needs root: run agent-local sudo")
-	}
+	// No helper yet. An allowlist from before the helper existed grants a
+	// passwordless `tee /etc/hosts`, which runPrivilegedWrite tries first, so
+	// an upgraded machine keeps writing hosts entries until setup runs. Without
+	// that rule a non-interactive caller gets "needs root" from there.
 	return writeRootFile("/etc/hosts", content, interactive)
 }
