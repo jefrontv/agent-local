@@ -14,7 +14,7 @@ jobs:
     # macOS, not Linux: the build ad-hoc signs the universal binary with
     # codesign, and lipo/codesign only exist here. Unsigned arm64 binaries are
     # killed by macOS on some machines, so this is not optional.
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

@@ -9,7 +9,7 @@ jobs:
   build:
     # The app is macOS-only (LaunchDaemons, /etc/hosts, System keychain,
     # Homebrew), so CI runs where the code actually has to work.
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
