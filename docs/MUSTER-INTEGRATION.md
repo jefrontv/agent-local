@@ -103,9 +103,9 @@ assume every feature". Feature floors worth knowing:
 | `GET /resolve`, `GET /certs/{domain}` | 0.1.1 |
 | nested `db` block everywhere, ancestor resolve, `?db=keep`, `POST /yield` | 0.2.0 |
 | `404` for unknown slug, secrets omitted from list, password-protected DB root | 0.3.0 |
-| Local diagnostic probes preserve idle activity | 0.36.2 (planned) |
-| Loopback Host validation | 0.37.0 (planned) |
-| Optional error codes, warnings and certificate CA status | 0.38.0 (planned) |
+| Local diagnostic probes preserve idle activity | 0.38.0 |
+| Loopback Host validation | 0.38.0 |
+| Optional error codes, warnings and certificate CA status | 0.38.0 |
 
 **`db.socket` is always `""` and always will be.** The engine is one TCP server
 on `127.0.0.1:10360`; there is no per-site socket to report and no setup where
