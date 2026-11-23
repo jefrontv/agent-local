@@ -17,6 +17,7 @@
 # A flag rather than a prompt because under `curl | bash` stdin is this script,
 # so a `read` would consume the rest of it. Setup's own steps are pipe-safe:
 # sudo reads /dev/tty and the authorization dialogs are native GUIs.
+main() {
 set -euo pipefail
 
 RUN_SETUP=0
@@ -37,7 +38,10 @@ done
 BIN_NAME="agent-local"
 REPO="jefrontv/agent-local"
 DEST="${INSTALL_DIR:-$HOME/.local/bin}"
-REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT=""
+if [[ -f "${BASH_SOURCE[0]:-}" ]]; then
+  REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 ASSET_SUFFIX="darwin_universal.tar.gz"
 
 echo "==> agent-local installer"
@@ -53,7 +57,7 @@ trap cleanup EXIT
 
 # 1. Locate a binary: prebuilt beside the script, published release, or source.
 BINARY=""
-if [[ -x "$REPO_ROOT/$BIN_NAME" && -z "${FORCE_DOWNLOAD:-}" ]]; then
+if [[ -n "$REPO_ROOT" && -x "$REPO_ROOT/$BIN_NAME" && -z "${FORCE_DOWNLOAD:-}" ]]; then
   BINARY="$REPO_ROOT/$BIN_NAME"
   echo "    using prebuilt binary: $BINARY"
 else
@@ -99,7 +103,7 @@ else
     # A downloaded file is quarantined by Gatekeeper; the binary is ad-hoc
     # signed, not notarized, so clear the flag or the first run is killed.
     xattr -d com.apple.quarantine "$BINARY" 2>/dev/null || true
-  elif command -v go >/dev/null 2>&1 && [[ -f "$REPO_ROOT/go.mod" ]]; then
+  elif command -v go >/dev/null 2>&1 && [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/go.mod" ]]; then
     echo "    building from source (go $(go version | awk '{print $3}'))…"
     (cd "$REPO_ROOT" && go build -o "$BIN_NAME" .)
     BINARY="$REPO_ROOT/$BIN_NAME"
@@ -151,3 +155,6 @@ else
   echo "    or install and set up in one go:"
   echo "    curl -fsSL https://al.tools.efront.dev/install.sh | bash -s -- --setup"
 fi
+
+}
+main "$@"

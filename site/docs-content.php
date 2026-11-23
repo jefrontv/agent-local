@@ -22,7 +22,7 @@ return array(
 				'**An embedded MariaDB** — one instance, one database per site, snapshots as plain `.sql.gz`.',
 				'**A front daemon** — holds `127.0.0.2:80/443`, so sites answer on `https://name.test` with no port suffix and no warning page.',
 				'**A dashboard, a CLI and an agent API** — the TUI is `agent-local` with no arguments; every site-facing command is also an MCP tool.',
-				'**A tools page on every site** — `https://name.test/.agent-local`: the database GUI, the captured-mail inbox, the error log, what the site served, and one click into wp-admin. In your system\'s light or dark appearance. Local only; a share link never exposes it.',
+				'**A tools page on every site** (open `/.al` for short) — `https://name.test/.agent-local`: the database GUI, the captured-mail inbox, the error log, what the site served, and one click into wp-admin. In your system\'s light or dark appearance. Local only; a share link never exposes it.',
 			) ),
 			array( 'h', 'Requirements' ),
 			array( 'ul', array(
@@ -211,7 +211,7 @@ return array(
 	'agents' => array(
 		'title'  => 'Agents',
 		'kicker' => 'Docs',
-		'intro'  => 'The whole engine is an API. Seventy-five MCP tools over stdio, the same surface over HTTP, no prompts ever — the same calls you type are the calls an agent makes.',
+		'intro'  => 'The whole engine is an API. 76 MCP tools over stdio, the same surface over HTTP, no prompts ever — the same calls you type are the calls an agent makes.',
 		'sections' => array(
 			array( 'h', 'Connect a harness' ),
 			array( 'pre', "agent-local connect                  # Claude Code, Codex, Cursor, Gemini CLI, …\nagent-local connect --list           # what is registered\nagent-local connect --remove codex\nagent-local mcp --config             # the config block, for any other client" ),
@@ -233,7 +233,7 @@ return array(
 			) ),
 			array( 'h', 'HTTP API' ),
 			array( 'p', 'Every tool is also an endpoint on `127.0.0.1:10809`, bearer-token authenticated (`agent-local api-token`). The shape mirrors the CLI: `GET /status`, `GET|POST /sites`, `POST /import`, `POST /sites/{slug}/probe`, `POST /sites/{slug}/db/query`, `GET /sites/{slug}/mail` and so on. Long-running calls return a job with `?async=1`; `GET /jobs/{id}` follows it. A missing required argument comes back as a protocol error naming it, never a confusing 404.' ),
-			array( 'note', 'Root steps (hosts, certificates, ports) go through a scoped passwordless sudo allowlist after the one-time `agent-local sudo` — exact commands, and cert trust on one fixed path. Not exposed as tools: `sudo`, `alias`, `connect`, `update` and the daemon controls — one-time installs and binary lifecycle that only make sense run by hand.' ),
+			array( 'note', 'Setup trusts the local certificate authority for supported site domains. Hosts updates go through a scoped helper after the one-time `agent-local sudo` — exact commands, and cert trust on one fixed path. Not exposed as tools: `sudo`, `alias`, `connect`, `update` and the daemon controls — one-time installs and binary lifecycle that only make sense run by hand.' ),
 		),
 	),
 

@@ -37,7 +37,7 @@ $defaults = array(
 	'compare_rows'   => array(
 		array( 'label' => 'Runs on', 'agentlocal' => 'native processes', 'localwp' => 'Electron + services', 'mamp' => 'bundled Apache/MySQL', 'ddev' => 'Docker containers' ),
 		array( 'label' => 'Prerequisites', 'agentlocal' => 'none, installs what it needs', 'localwp' => 'app download', 'mamp' => 'app download', 'ddev' => 'Docker Desktop / Colima' ),
-		array( 'label' => 'Agent control', 'agentlocal' => '75 MCP tools + HTTP API', 'localwp' => 'none', 'mamp' => 'none', 'ddev' => 'CLI with JSON output' ),
+		array( 'label' => 'Agent control', 'agentlocal' => '76 MCP tools + HTTP API', 'localwp' => 'none', 'mamp' => 'none', 'ddev' => 'CLI with JSON output' ),
 		array( 'label' => 'New WordPress site', 'agentlocal' => '19 seconds', 'localwp' => 'about a minute', 'mamp' => 'manual setup', 'ddev' => 'fast after first pull' ),
 		array( 'label' => 'Memory for one site', 'agentlocal' => '52 MB', 'localwp' => '601 MB', 'mamp' => 'not measured', 'ddev' => '2.5 GB' ),
 		array( 'label' => 'Trusted HTTPS', 'agentlocal' => 'automatic, every domain', 'localwp' => 'a Trust button per site', 'mamp' => 'by hand', 'ddev' => 'mkcert, once' ),
@@ -203,7 +203,7 @@ $bench_rows = al_rows( 'benchmarks', $benchmark_defaults );
 			<ul class="how__lines">
 				<li><b>tui</b>the dashboard: sites, previews, runtimes, doctor</li>
 				<li><b>cli</b>one command per action, scriptable</li>
-				<li><b>mcp</b>75 tools over stdio, plus the HTTP API</li>
+				<li><b>mcp</b>76 tools over stdio, plus the HTTP API</li>
 			</ul>
 		</div>
 		<div class="how__link how__link--in" aria-hidden="true"><span>http</span><i class="how__pkt"></i></div>

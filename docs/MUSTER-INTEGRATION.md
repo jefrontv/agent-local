@@ -66,6 +66,17 @@ Everything downstream reads `config.site.*`. Generalize that one function and th
 
 ## 2. agent-local in one page
 
+The daemon exposes 81 HTTP routes and 76 MCP tools. The control listener accepts
+loopback Host headers on port 10809. Use the bearer token from
+`~/.agent-local/token`. The response envelope keeps `ok`, `data`, and a string
+`error`. Newer daemons also supply an optional error `code` and operation
+`warnings`. Clients should keep their existing string fallbacks.
+
+`GET /sites` returns an array. Each site and resolve result retains its slug,
+docroot, work directory, domain, PHP version, state and running flag. Start and
+resolve return the same nested database connection fields as the DB endpoint.
+
+
 Single Go binary, macOS. Install: `./install.sh` → `~/.local/bin/agent-local`.
 
 | Fact | Value |
@@ -92,6 +103,9 @@ assume every feature". Feature floors worth knowing:
 | `GET /resolve`, `GET /certs/{domain}` | 0.1.1 |
 | nested `db` block everywhere, ancestor resolve, `?db=keep`, `POST /yield` | 0.2.0 |
 | `404` for unknown slug, secrets omitted from list, password-protected DB root | 0.3.0 |
+| Local diagnostic probes preserve idle activity | 0.36.2 (planned) |
+| Loopback Host validation | 0.37.0 (planned) |
+| Optional error codes, warnings and certificate CA status | 0.38.0 (planned) |
 
 **`db.socket` is always `""` and always will be.** The engine is one TCP server
 on `127.0.0.1:10360`; there is no per-site socket to report and no setup where
@@ -108,11 +122,24 @@ in any API response.
 
 **Unknown slug answers `404`** on every `/sites/{slug}/…` route. `500` now means
 "this site exists and the operation failed", which is the distinction worth
-retrying on.
+retrying on. From 0.38.0 a snapshot or checkpoint name that does not exist
+also answers `404` with `"code": "not_found"`, instead of `500`.
 
 ---
 
-## 3. Endpoints you need (all verified)
+## 3. Endpoints
+
+Long-running operations that support `?async=1` return a job ID. Poll
+`GET /jobs/{id}` for `status`, `steps[].stage`, `steps[].detail`, `result`
+and `error`. Terminal statuses remain `ok` and `error`.
+
+| Site operation | Endpoint |
+|---|---|
+| Captured messages | `GET /sites/{slug}/mail` |
+| Database GUI | `GET /sites/{slug}/adminer` |
+| Database snapshots | `GET /sites/{slug}/db/snapshots` |
+| Checkpoints | `GET /sites/{slug}/checkpoints` |
+
 
 ### Resolve a checkout path → site  *(added for this integration)*
 
@@ -290,7 +317,7 @@ even though its `wp-config` says `DB_HOST=localhost`.
 to detach a folder that you intend to re-adopt: keeping files while dropping the
 database leaves a `wp-config.php` pointing at nothing.
 
-An MCP server (`agent-local mcp`, 40 tools) mirrors all of the above if you would rather drive it that way than over HTTP.
+An MCP server (`agent-local mcp`, 76 tools) mirrors all of the above if you would rather drive it that way than over HTTP.
 
 ---
 
@@ -427,19 +454,19 @@ Do not extend the LocalWP `app/public` remap to agent-local. Read `wp_dir` from 
 | Per-site PHP version | yes | yes (`POST /sites/{slug}/php`, live pool restart) |
 | Install a new PHP version | via Local UI | `POST /install` (~1 min, verified) |
 | Per-site MySQL | per-site mysqld on a unix socket | one shared MariaDB, per-site db+user over TCP |
-| HTTPS + trusted cert | yes | yes, per domain, trust queryable |
-| Bare domains (no port) | yes (`*:80` wildcard) | yes (`127.0.0.2:80` via root daemon) |
+| HTTPS + trusted cert | yes | local CA and per-domain certificates, trust queryable |
+| Bare domains (no port) | yes (`*:80` wildcard) | yes (`127.0.0.2:80` via the front daemon) |
 | Site creation / import | GraphQL + Local UI | `POST /sites` / `POST /import` |
 | Branch previews on their own domain | no | yes (git worktrees, shared uploads, APFS clones) |
-| Mail catcher | mailpit | **absent** |
-| DB GUI (Adminer/phpMyAdmin) | yes | **absent** (`db/query`, `db/tables` instead) |
+| Mail catcher | mailpit | built-in inbox |
+| DB GUI (Adminer/phpMyAdmin) | yes | Adminer |
 | Xdebug toggle | yes | **absent** |
-| Backups / snapshots | yes | **absent** (`db/export` only) |
+| Backups / snapshots | yes | database snapshots and site checkpoints |
 | Push/event stream of state changes | — | **absent**: poll `GET /status` / `/sites` |
 | Per-site php.ini overrides | yes | **absent** (pool config is generated) |
 | Multisite | yes | **untested** |
 
-If Muster surfaces mail, Xdebug or backups for LocalWP sites, gate those affordances on `localStack === 'localwp'` rather than letting them fail.
+If Muster surfaces Xdebug for LocalWP sites, gate those affordances on `localStack === 'localwp'` rather than letting them fail.
 
 ### Port 80 coexistence (matters if both stacks are installed)
 
