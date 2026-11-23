@@ -62,7 +62,7 @@ func TestEnsureCertSignsWithLocalCA(t *testing.T) {
 	if got := trustAnchorFor(cert); got != ca.certPath {
 		t.Errorf("trust anchor = %s, want the CA %s", got, ca.certPath)
 	}
-	if leaf.NotAfter.Sub(leaf.NotBefore) > 399*24*time.Hour {
+	if leaf.NotAfter.Sub(leaf.NotBefore) > 397*24*time.Hour {
 		t.Errorf("leaf lifetime %v exceeds the 398-day cap", leaf.NotAfter.Sub(leaf.NotBefore))
 	}
 }

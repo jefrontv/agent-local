@@ -275,7 +275,7 @@ func TestKeysAreHeldWhileBusy(t *testing.T) {
 		}
 	}
 	out, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if !out.(model).quitting || cmd == nil {
-		t.Error("ctrl+c must still quit while busy")
+	if out.(model).quitting || cmd != nil {
+		t.Error("ctrl+c interrupted a busy action")
 	}
 }

@@ -12,5 +12,6 @@ import (
 func TestMain(m *testing.M) {
 	os.Unsetenv("AGENT_LOCAL_HOME")
 	autostartDisabled = true
+	sudoPath, osascriptPath = "/usr/bin/false", "/usr/bin/false"
 	os.Exit(m.Run())
 }

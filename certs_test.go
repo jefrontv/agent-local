@@ -13,7 +13,7 @@ import (
 // and must not have it bolted on twice.
 func TestTrustCertOrReport(t *testing.T) {
 	plain := errors.New("the password prompt was cancelled or the keychain refused; x.test.crt is still untrusted")
-	named := errors.New("needs root to trust x.test.crt (run: agent-local sudo, or: agent-local cert x.test --trust)")
+	named := errors.New("needs root to trust x.test.crt (run: agent-local cert x.test --trust)")
 
 	cases := []struct {
 		name  string
@@ -22,8 +22,8 @@ func TestTrustCertOrReport(t *testing.T) {
 		wants []string
 	}{
 		{name: "trusted", trust: nil, calls: 0},
-		{name: "plain failure", trust: plain, calls: 1, wants: []string{"cert not trusted: ", "agent-local sudo"}},
-		{name: "already names the remedy", trust: named, calls: 1, wants: []string{"agent-local sudo"}},
+		{name: "plain failure", trust: plain, calls: 1, wants: []string{"cert not trusted: ", "agent-local setup"}},
+		{name: "already names the remedy", trust: named, calls: 1, wants: []string{"agent-local cert"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -48,7 +48,7 @@ func TestTrustCertOrReport(t *testing.T) {
 			if tc.calls == 1 && stages[0] != "warn" {
 				t.Errorf("stage = %q, want warn", stages[0])
 			}
-			if tc.calls == 1 && strings.Count(details[0], "agent-local sudo") != 1 {
+			if tc.calls == 1 && strings.Count(details[0], "run: agent-local") != 1 {
 				t.Errorf("remedy duplicated in %q", details[0])
 			}
 		})

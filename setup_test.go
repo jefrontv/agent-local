@@ -73,7 +73,7 @@ func TestEnsureHostsOrReportPassesInteractive(t *testing.T) {
 // produces an unreachable site; bare URLs are degraded-but-working, so they must
 // not fail `ok` or a caller would refuse to create anything on a fine machine.
 func TestSetupStateFrom(t *testing.T) {
-	current := "NOPASSWD: /usr/bin/security add-trusted-cert -d -r trustRoot -p ssl -k " + trustStagePath
+	current := hostsHelper + " add *\n" + hostsHelper + " remove *"
 
 	missing := setupStateFrom("", true)
 	if missing["root"] != "missing" || missing["ok"] != false {

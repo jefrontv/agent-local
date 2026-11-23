@@ -3,8 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"net/http"
-	"net/http/httptest"
+
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,11 +28,7 @@ func TestVerifyChecksumRejectsMalformedEntries(t *testing.T) {
 		"missing":  {good + "  other.tar.gz\n", "no entry"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Write([]byte(c.body))
-			}))
-			defer srv.Close()
-			err := verifyChecksum(archive, "a.tar.gz", srv.URL)
+			err := checkArchiveChecksum(archive, "a.tar.gz", []byte(c.body))
 			switch {
 			case c.wantErr == "" && err != nil:
 				t.Fatalf("unexpected error: %v", err)

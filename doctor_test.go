@@ -9,10 +9,7 @@ import "testing"
 // fail: the first is a security hole, the second is what makes the daemon's
 // trust endpoint dead-end with no prompt.
 func TestAllowlistCurrent(t *testing.T) {
-	current := `User jake may run the following commands on mac:
-    (root) NOPASSWD: /usr/bin/tee /etc/hosts
-    (root) NOPASSWD: /usr/bin/tee /var/db/agent-local-trust.crt
-    (root) NOPASSWD: /usr/bin/security add-trusted-cert -d -r trustRoot -p ssl -k /Library/Keychains/System.keychain /var/db/agent-local-trust.crt`
+	current := hostsHelper + " add *\n" + hostsHelper + " remove *"
 	preTee := `User jake may run the following commands on mac:
     (root) NOPASSWD: /bin/cp /Users/jake/.agent-local/run/hosts.tmp /etc/hosts
     (root) NOPASSWD: /usr/bin/security add-trusted-cert *`
@@ -35,19 +32,5 @@ func TestAllowlistCurrent(t *testing.T) {
 	}
 	if allowlistCurrent("") {
 		t.Error("empty listing should not count as current")
-	}
-}
-
-// The staging path the allowlist names must be fixed and outside any
-// user-writable tree: a path under $HOME or /tmp would let the allowlist entry
-// be aimed at an arbitrary certificate, which is the hole the wildcard had.
-func TestTrustStagePathIsRootOnly(t *testing.T) {
-	for _, bad := range []string{"/tmp/", "/Users/", "/private/tmp/", "/var/folders/"} {
-		if len(trustStagePath) >= len(bad) && trustStagePath[:len(bad)] == bad {
-			t.Fatalf("trustStagePath %q lives under user-writable %s", trustStagePath, bad)
-		}
-	}
-	if trustStagePath[0] != '/' {
-		t.Fatalf("trustStagePath must be absolute: %q", trustStagePath)
 	}
 }

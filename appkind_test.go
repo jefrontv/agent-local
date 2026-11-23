@@ -278,7 +278,7 @@ func TestHealKindOpensTheImportURLRewrite(t *testing.T) {
 	if site.IsWordPress() {
 		t.Fatal("an empty attach must not look like WordPress before the heal")
 	}
-	healKind(store, site)
+	NewEngine(store).healKind(site)
 	if !site.IsWordPress() {
 		t.Error("import would still skip the url rewrite after the heal")
 	}
@@ -306,7 +306,7 @@ func TestHealKindLeavesASettledRecordAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	healKind(store, site)
+	NewEngine(store).healKind(site)
 	after, err := os.ReadFile(P().Store())
 	if err != nil {
 		t.Fatal(err)
